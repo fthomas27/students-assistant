@@ -139,7 +139,8 @@ flex-direction: column;
 
 .sidebar-col-1,
 .sidebar-col-2,
-.sidebar-col-3 {
+.sidebar-col-3,
+.sidebar-col-4 {
 border-right: 1px solid var(--border);
 }
 
@@ -185,16 +186,16 @@ display: flex;
 }
 }
 
-/* Desktop: 1280px and up - 4 column layout (3 sidebars + chat) */
+/* Desktop: 1280px and up - 5 column layout (4 sidebars + chat) */
 @media (min-width: 1280px) {
 .main-container {
-grid-template-columns: 260px 260px 260px 1fr;
+grid-template-columns: 240px 240px 240px 240px 1fr;
 grid-template-rows: 1fr;
 }
 .sidebar {
 display: flex;
 grid-row: 1;
-width: 260px;
+width: 240px;
 }
 .sidebar-col-1 {
 grid-column: 1;
@@ -205,8 +206,11 @@ grid-column: 2;
 .sidebar-col-3 {
 grid-column: 3;
 }
-.content-wrapper {
+.sidebar-col-4 {
 grid-column: 4;
+}
+.content-wrapper {
+grid-column: 5;
 grid-row: 1;
 }
 .menu-btn {
@@ -951,18 +955,11 @@ margin-bottom: 0;
 </div>
 </aside>
 
-<!-- LEFT COLUMN 2: Calendar & Events & Assignments -->
+<!-- LEFT COLUMN 2: Calendar & Events -->
 <aside class="sidebar sidebar-col-2" id="sidebarCol2">
 <div class="sidebar-header">📅 Calendar</div>
 
 <div class="sidebar-stats">
-<div class="stat-card">
-<div class="stat-icon">📋</div>
-<div class="stat-info">
-<div class="stat-label">Assignments</div>
-<div class="stat-count" id="assignmentCount">0</div>
-</div>
-</div>
 <div class="stat-card">
 <div class="stat-icon">📅</div>
 <div class="stat-info">
@@ -975,13 +972,6 @@ margin-bottom: 0;
 <div class="sidebar-section">
 <div id="calendarSection" class="section-content">
 <div id="calendarList"></div>
-</div>
-</div>
-
-<div class="sidebar-header" style="margin-top: 16px;">📋 Assignments</div>
-<div class="sidebar-section">
-<div id="assignmentsSection" class="section-content">
-<div id="assignmentsList"></div>
 </div>
 </div>
 </aside>
@@ -1001,6 +991,27 @@ margin-bottom: 0;
 </div>
 
 <span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
+</aside>
+
+<!-- LEFT COLUMN 4: Assignments -->
+<aside class="sidebar sidebar-col-4" id="sidebarCol4">
+<div class="sidebar-header">📋 Assignments</div>
+
+<div class="sidebar-stats">
+<div class="stat-card">
+<div class="stat-icon">📋</div>
+<div class="stat-info">
+<div class="stat-label">Due Soon</div>
+<div class="stat-count" id="assignmentCount">0</div>
+</div>
+</div>
+</div>
+
+<div class="sidebar-section">
+<div id="assignmentsSection" class="section-content">
+<div id="assignmentsList"></div>
+</div>
+</div>
 </aside>
 
 <div class="content-wrapper">
@@ -1040,14 +1051,14 @@ function isMobile() {
 
 function toggleSidebar() {
   if (isMobile()) {
-    document.getElementById('mobileSidebarWrapper').classList.toggle('open');
+    document.getElementById('sidebarCol1').classList.toggle('open');
     document.getElementById('sidebarBackdrop').classList.toggle('visible');
   }
 }
 
 function closeSidebar() {
   if (isMobile()) {
-    document.getElementById('mobileSidebarWrapper').classList.remove('open');
+    document.getElementById('sidebarCol1').classList.remove('open');
     document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
 }
@@ -1249,12 +1260,25 @@ function renderProjects() {
   }
 
   container.innerHTML = projectsCache.filter(p => p.status === 'active').slice(0, 5).map(p => `
-    <div class="sidebar-item">
+    <div class="sidebar-item" style="cursor: pointer;" onclick="viewProject('${(p.title || '').replace(/'/g, "\\'")}', '${(p.description || '').replace(/'/g, "\\'")}')">
       <div class="sidebar-item-title">${p.title}</div>
       <div class="sidebar-item-meta">Project</div>
     </div>
   `).join('');
   updateSidebarStats();
+}
+
+function viewProject(title, description) {
+  const messagesDiv = document.getElementById('chatMessages');
+  if (messagesDiv.querySelector('.empty-state')) {
+    messagesDiv.innerHTML = '';
+  }
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message assistant';
+  bubble.innerHTML = `<div class="message-bubble"><strong>${escapeHtml(title)}</strong><br/>${description ? escapeHtml(description) : 'No description available'}</div>`;
+  messagesDiv.appendChild(bubble);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
 function renderCalendar() {
