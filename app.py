@@ -67,6 +67,7 @@ def require_auth():
         if request.path.startswith('/api/'):
             return jsonify({"error": "Not authenticated"}), 401
         return redirect("/login")
+
 _timer_lock = threading.Lock()
 _workout_lock = threading.Lock()
 _plan_lock = threading.Lock()
@@ -1230,9 +1231,7 @@ def login():
             record_login_attempt(ip_addr, True)
             session.permanent = True
             session["authenticated"] = True
-            session.cookie_httponly = True
-            session.cookie_secure = True
-            session.cookie_samesite = 'Strict'
+            session.modified = True
             return jsonify({"status": "ok"})
         else:
             lockout_info = record_login_attempt(ip_addr, False)
@@ -1251,9 +1250,7 @@ def login():
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
                 session["authenticated"] = True
-                session.cookie_httponly = True
-                session.cookie_secure = True
-                session.cookie_samesite = 'Strict'
+                session.modified = True
                 return jsonify({"status": "ok"})
             else:
                 lockout_info = record_login_attempt(ip_addr, False)
@@ -1308,9 +1305,7 @@ def admin():
             record_login_attempt(ip_addr, True)
             session.permanent = True
             session["admin_authenticated"] = True
-            session.cookie_httponly = True
-            session.cookie_secure = True
-            session.cookie_samesite = 'Strict'
+            session.modified = True
             return jsonify({"status": "ok"})
         else:
             lockout_info = record_login_attempt(ip_addr, False)
@@ -1328,9 +1323,7 @@ def admin():
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
                 session["admin_authenticated"] = True
-                session.cookie_httponly = True
-                session.cookie_secure = True
-                session.cookie_samesite = 'Strict'
+                session.modified = True
                 return jsonify({"status": "ok"})
             else:
                 lockout_info = record_login_attempt(ip_addr, False)
