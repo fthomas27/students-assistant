@@ -143,6 +143,48 @@ flex-direction: column;
 border-right: 1px solid var(--border);
 }
 
+/* Mobile first (default): up to 639px - single column */
+.main-container {
+grid-template-columns: 1fr;
+}
+.sidebar {
+display: none;
+}
+.sidebar-col-1,
+.sidebar-col-2,
+.sidebar-col-3 {
+display: none;
+}
+.content-wrapper {
+grid-column: 1;
+grid-row: 2;
+}
+.menu-btn {
+display: flex;
+}
+
+/* Tablet: 640px to 1279px - single column with hamburger menu */
+@media (min-width: 640px) and (max-width: 1279px) {
+.main-container {
+grid-template-columns: 1fr;
+}
+.sidebar {
+display: none;
+}
+.sidebar-col-1,
+.sidebar-col-2,
+.sidebar-col-3 {
+display: none;
+}
+.content-wrapper {
+grid-column: 1;
+grid-row: 2;
+}
+.menu-btn {
+display: flex;
+}
+}
+
 /* Desktop: 1280px and up - 4 column layout (3 sidebars + chat) */
 @media (min-width: 1280px) {
 .main-container {
@@ -166,28 +208,8 @@ grid-column: 3;
 grid-column: 4;
 grid-row: 2;
 }
-}
-
-/* Tablet/Kindle: 640px to 1279px - single column with hamburger menu */
-@media (min-width: 640px) and (max-width: 1279px) {
-.main-container {
-grid-template-columns: 1fr;
-}
-.sidebar {
-display: none;
-}
-.sidebar-col-1,
-.sidebar-col-2,
-.sidebar-col-3 {
-display: none;
-}
-.content-wrapper {
-grid-column: 1;
-grid-row: 2;
-}
-/* Show hamburger menu for tablet */
 .menu-btn {
-display: flex;
+display: none;
 }
 }
 
