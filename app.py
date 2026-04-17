@@ -1029,7 +1029,7 @@ def api_csrf_token():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", tz=str(get_tz()))
 
 
 @app.route("/api/assignments")
