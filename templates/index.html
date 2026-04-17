@@ -532,6 +532,31 @@ color: var(--accent);
 .quick-action-btn:active {
 background: var(--surface3);
 }
+
+.complete-btn {
+width: 28px;
+height: 28px;
+border: none;
+background: transparent;
+color: var(--text3);
+border-radius: 50%;
+cursor: pointer;
+font-size: 14px;
+display: flex;
+align-items: center;
+justify-content: center;
+transition: all 0.15s;
+flex-shrink: 0;
+}
+
+.complete-btn:hover {
+background: var(--accent);
+color: white;
+}
+
+.complete-btn:active {
+background: #ff6a3a;
+}
 </style>
 </head>
 <body>
@@ -711,10 +736,15 @@ function renderAssignments() {
   });
 
   container.innerHTML = sorted.slice(0, 8).map(a => `
-    <div class="sidebar-item">
-      <div class="sidebar-item-title">${a.title}</div>
-      <div class="sidebar-item-meta">${a.class_name || ''}</div>
-      <div class="sidebar-item-due">${formatDate(a.due_iso)}</div>
+    <div class="sidebar-item assignment-item">
+      <div style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
+        <div style="flex: 1;">
+          <div class="sidebar-item-title">${a.title}</div>
+          <div class="sidebar-item-meta">${a.class_name || ''}</div>
+          <div class="sidebar-item-due">${formatDate(a.due_iso)}</div>
+        </div>
+        <button class="complete-btn" onclick="completeAssignment(event, '${a.title.replace(/'/g, "\\'")}', '${(a.class_name || '').replace(/'/g, "\\'")}', ${a.estimate_minutes || 30})" title="Mark as done">✓</button>
+      </div>
     </div>
   `).join('');
 }
@@ -900,6 +930,46 @@ async function deletePlan() {
     }
   } catch (e) {
     console.error('Failed to delete plan:', e);
+  }
+}
+
+async function completeAssignment(event, title, className, estimateMinutes) {
+  event.stopPropagation();
+  const btn = event.target;
+  btn.disabled = true;
+
+  try {
+    const response = await fetch('/api/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: title,
+        class_name: className,
+        estimate_minutes: estimateMinutes
+      })
+    });
+
+    if (response.ok) {
+      btn.style.opacity = '0.5';
+      btn.style.color = 'var(--accent)';
+      setTimeout(() => {
+        btn.closest('.assignment-item').style.opacity = '0.4';
+      }, 200);
+
+      // Reload assignments after a short delay
+      setTimeout(() => {
+        const resp = fetch('/api/assignments');
+        if (resp.ok) {
+          resp.json().then(data => {
+            assignmentsCache = data.assignments || [];
+            renderAssignments();
+          });
+        }
+      }, 500);
+    }
+  } catch (e) {
+    console.error('Failed to complete assignment:', e);
+    btn.disabled = false;
   }
 }
 
