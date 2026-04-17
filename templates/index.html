@@ -1041,7 +1041,7 @@ margin-bottom: 0;
 
 <!-- LEFT COLUMN 2: Calendar & Events -->
 <aside class="sidebar sidebar-col-2" id="sidebarCol2">
-<div class="sidebar-header">📅 Calendar</div>
+<div class="sidebar-header">📅 Personal & Sports</div>
 
 <div class="sidebar-stats">
 <div class="stat-card">
@@ -1356,7 +1356,7 @@ function renderAssignments() {
   });
 
   container.innerHTML = sorted.slice(0, 8).map(a => `
-    <div class="sidebar-item assignment-item">
+    <div class="sidebar-item assignment-item" style="cursor: pointer;" onclick="viewAssignment('${(a.title || '').replace(/'/g, "\\'")}', '${(a.class_name || '').replace(/'/g, "\\'")}', '${(a.due_iso || '').replace(/'/g, "\\'")}', ${a.estimate_minutes || 30})">
       <div style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
         <div style="flex: 1;">
           <div class="sidebar-item-title">${a.title}</div>
@@ -1385,7 +1385,7 @@ function renderTasks() {
   container.innerHTML = sorted.slice(0, 8).map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
     return `
-      <div class="sidebar-item ${urgencyClass}">
+      <div class="sidebar-item ${urgencyClass}" style="cursor: pointer;" onclick="viewTask('${(t.title || '').replace(/'/g, "\\'")}', '${(t.urgency || '').replace(/'/g, "\\'")}', '${(t.notes || '').replace(/'/g, "\\'")}')">
         <div class="sidebar-item-title">${t.title}</div>
         <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
       </div>
@@ -1423,6 +1423,52 @@ function viewProject(title, description) {
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
+function viewAssignment(title, className, dueDate, estimateMinutes) {
+  const messagesDiv = document.getElementById('chatMessages');
+  if (messagesDiv.querySelector('.empty-state')) {
+    messagesDiv.innerHTML = '';
+  }
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message assistant';
+  bubble.innerHTML = `
+    <div class="message-bubble">
+      <strong>📝 ${escapeHtml(title)}</strong><br/>
+      <strong>Class:</strong> ${escapeHtml(className || 'N/A')}<br/>
+      <strong>Due:</strong> ${escapeHtml(dueDate || 'No due date')}<br/>
+      <strong>Estimated Time:</strong> ${estimateMinutes} minutes
+    </div>
+  `;
+  messagesDiv.appendChild(bubble);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function viewTask(title, urgency, notes) {
+  const messagesDiv = document.getElementById('chatMessages');
+  if (messagesDiv.querySelector('.empty-state')) {
+    messagesDiv.innerHTML = '';
+  }
+
+  const urgencyColor = {
+    'critical': '🔴',
+    'high': '🟠',
+    'medium': '🟡',
+    'low': '🟢'
+  };
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message assistant';
+  bubble.innerHTML = `
+    <div class="message-bubble">
+      <strong>✓ ${escapeHtml(title)}</strong><br/>
+      <strong>Priority:</strong> ${urgencyColor[urgency] || '⚪'} ${urgency.toUpperCase()}<br/>
+      ${notes ? `<strong>Notes:</strong> ${escapeHtml(notes)}` : 'No notes'}
+    </div>
+  `;
+  messagesDiv.appendChild(bubble);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
 function renderCalendar() {
   const container = document.getElementById('calendarList');
   if (!calendarCache || calendarCache.length === 0) {
@@ -1430,7 +1476,18 @@ function renderCalendar() {
     return;
   }
 
-  container.innerHTML = calendarCache.slice(0, 6).map(e => `
+  // Filter out Canvas calendar, show only Personal and Sports
+  const filtered = calendarCache.filter(e => {
+    const isCanvas = e.source === 'canvas' || e.calendar_type === 'canvas' || (e.calendar && e.calendar.includes('Canvas'));
+    return !isCanvas;
+  });
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No personal or sports events</div>';
+    return;
+  }
+
+  container.innerHTML = filtered.slice(0, 6).map(e => `
     <div class="sidebar-item">
       <div class="sidebar-item-title">${e.title || 'Event'}</div>
       <div class="sidebar-item-meta">${formatEventTime(e.start_iso)}</div>
