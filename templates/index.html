@@ -1266,27 +1266,49 @@ async function loadSidebarData() {
     assignments: {
       url: '/api/assignments',
       containerId: 'assignmentsList',
-      processor: (data) => { assignmentsCache = data.assignments || []; renderAssignments(); }
+      processor: (data) => {
+        const newData = data.assignments || [];
+        if (!dataChanged(assignmentsCache, newData)) return;
+        assignmentsCache = newData;
+        renderAssignments();
+      }
     },
     tasks: {
       url: '/api/tasks',
       containerId: 'tasksList',
-      processor: (data) => { tasksCache = data.tasks || []; renderTasks(); }
+      processor: (data) => {
+        const newData = data.tasks || [];
+        if (!dataChanged(tasksCache, newData)) return;
+        tasksCache = newData;
+        renderTasks();
+      }
     },
     projects: {
       url: '/api/projects',
       containerId: 'projectsList',
-      processor: (data) => { projectsCache = data.projects || []; renderProjects(); }
+      processor: (data) => {
+        const newData = data.projects || [];
+        if (!dataChanged(projectsCache, newData)) return;
+        projectsCache = newData;
+        renderProjects();
+      }
     },
     calendar: {
       url: '/api/calendar',
       containerId: 'calendarList',
-      processor: (data) => { calendarCache = data.events || []; renderCalendar(); }
+      processor: (data) => {
+        const newData = data.events || [];
+        if (!dataChanged(calendarCache, newData)) return;
+        calendarCache = newData;
+        renderCalendar();
+      }
     },
     plan: {
       url: '/api/plan-my-day',
       containerId: 'planContent',
-      processor: (data) => { renderPlan(data); }
+      processor: (data) => {
+        renderPlan(data);
+      }
     }
   };
 
@@ -1301,6 +1323,20 @@ async function loadSidebarData() {
         const errorMsg = getErrorMessage(e);
         document.getElementById(handler.containerId).innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
       });
+  }
+}
+
+function dataChanged(oldData, newData) {
+  if (!oldData || !newData) return true;
+  if (oldData.length !== newData.length) return true;
+
+  // Quick stringified comparison for detecting changes
+  try {
+    const oldStr = JSON.stringify(oldData);
+    const newStr = JSON.stringify(newData);
+    return oldStr !== newStr;
+  } catch (e) {
+    return true;
   }
 }
 
