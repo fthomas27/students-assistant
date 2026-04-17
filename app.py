@@ -1458,6 +1458,15 @@ def api_lockdown_status():
     return jsonify({"is_locked_down": is_locked})
 
 
+@app.route("/api/test-admin-password")
+def api_test_admin_password():
+    """Debug endpoint - shows if ADMIN_PASSWORD is set"""
+    if ADMIN_PASSWORD == "admin-change-me":
+        return jsonify({"status": "USING_DEFAULT", "message": "ADMIN_PASSWORD not set in environment, using default"})
+    else:
+        return jsonify({"status": "SET_FROM_ENV", "length": len(ADMIN_PASSWORD), "message": "ADMIN_PASSWORD is set from environment variable"})
+
+
 @app.route("/api/admin/lockdown", methods=["POST"])
 def api_admin_lockdown():
     if not session.get("admin_authenticated"):
