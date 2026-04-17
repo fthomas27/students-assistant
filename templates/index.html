@@ -452,6 +452,28 @@ opacity: 0.5;
 font-size: 15px;
 line-height: 1.6;
 }
+
+.quick-action-btn {
+padding: 8px 12px;
+background: var(--surface);
+border: 1px solid var(--border);
+border-radius: var(--r-sm);
+font-size: 12px;
+cursor: pointer;
+transition: all 0.15s;
+color: var(--text2);
+font-weight: 500;
+}
+
+.quick-action-btn:hover {
+background: var(--surface2);
+border-color: var(--accent);
+color: var(--accent);
+}
+
+.quick-action-btn:active {
+background: var(--surface3);
+}
 </style>
 </head>
 <body>
@@ -496,6 +518,12 @@ line-height: 1.6;
 <div class="empty-state">
 <div class="empty-state-icon">💬</div>
 <div class="empty-state-text">Hey! Ask me anything about your assignments, tasks, projects, or calendar.</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 20px;">
+<button onclick="suggestMessage('What assignments are due soon?')" class="quick-action-btn">Assignments</button>
+<button onclick="suggestMessage('What tasks do I need to do?')" class="quick-action-btn">My tasks</button>
+<button onclick="suggestMessage('What do I have today?')" class="quick-action-btn">Today</button>
+<button onclick="suggestMessage('Help me prioritize')" class="quick-action-btn">Prioritize</button>
+</div>
 </div>
 </div>
 
@@ -734,7 +762,7 @@ async function sendMessage() {
     const data = await response.json();
     const assistantMessage = data.content || 'Sorry, I encountered an error.';
 
-    loadingBubble.innerHTML = `<div class="message-bubble">${escapeHtml(assistantMessage)}</div>`;
+    loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(assistantMessage)}</div>`;
     conversationHistory.push({ role: 'assistant', content: assistantMessage });
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
   } catch (e) {
@@ -747,6 +775,20 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function formatMessage(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/\n/g, '<br>');
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__(.*?)__/g, '<strong>$1</strong>');
+  return html;
+}
+
+function suggestMessage(text) {
+  chatInput.value = text;
+  chatInput.focus();
+  chatInput.style.height = 'auto';
 }
 
 window.addEventListener('resize', () => {
