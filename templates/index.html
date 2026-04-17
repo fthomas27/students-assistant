@@ -174,8 +174,7 @@ display: none;
 }
 .sidebar-col-1,
 .sidebar-col-2,
-.sidebar-col-3,
-.sidebar-col-4 {
+.sidebar-col-3 {
 display: none;
 }
 .content-wrapper {
@@ -185,23 +184,18 @@ grid-row: 2;
 .menu-btn {
 display: flex;
 }
-.sidebar-toggle-panel {
-display: none;
-}
 }
 
 /* Desktop: 1280px and up - toggle buttons + expanded sidebar + chat */
 @media (min-width: 1280px) {
 .main-container {
-grid-template-columns: 350px 1fr;
+grid-template-columns: 60px 350px 1fr;
 grid-template-rows: 1fr;
 }
 .sidebar {
-display: flex;
+display: none;
 grid-row: 1;
 width: 350px;
-overflow-y: auto;
-max-height: 100vh;
 }
 .sidebar.open {
 display: flex;
@@ -216,29 +210,28 @@ border-right: 1px solid var(--border);
 .sidebar-col-3,
 .sidebar-col-4 {
 border-right: none;
-display: block;
 }
 .sidebar-col-1 {
-grid-column: 1;
+grid-column: 2;
 }
 .sidebar-col-2 {
-grid-column: 1;
+grid-column: 2;
 }
 .sidebar-col-3 {
-grid-column: 1;
+grid-column: 2;
 }
 .sidebar-col-4 {
-grid-column: 1;
+grid-column: 2;
 }
 .content-wrapper {
-grid-column: 2;
+grid-column: 3;
 grid-row: 1;
 }
 .menu-btn {
 display: none;
 }
 .sidebar-toggle-panel {
-display: none;
+display: flex;
 }
 }
 
@@ -1002,17 +995,20 @@ margin-bottom: 0;
 <div class="header-title">Finn</div>
 <div class="header-actions">
 <button class="menu-btn" id="sidebarToggle" onclick="toggleSidebar()">☰</button>
-<button class="gear-btn" title="Tasks">✓</button>
-<button class="gear-btn" title="Calendar">📅</button>
-<button class="gear-btn" title="Projects">📦</button>
-<button class="gear-btn" title="Plan My Day">🎯</button>
-<button class="gear-btn" title="Assignments">📋</button>
-<button class="gear-btn" onclick="openChatHistory()">💬</button>
-<button class="gear-btn" onclick="openSettings()">⚙</button>
 </div>
 </div>
 
 <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebarColumn()"></div>
+
+<!-- Sidebar Column Toggle Buttons -->
+<div class="sidebar-toggle-panel">
+  <button class="sidebar-toggle-btn" onclick="openChatHistory()" title="Chat History">💬</button>
+  <button class="sidebar-toggle-btn active" data-column="1" onclick="toggleSidebarColumn(1)" title="Tasks">✓</button>
+  <button class="sidebar-toggle-btn" data-column="2" onclick="toggleSidebarColumn(2)" title="Calendar">📅</button>
+  <button class="sidebar-toggle-btn" data-column="3" onclick="toggleSidebarColumn(3)" title="Plan">🎯</button>
+  <button class="sidebar-toggle-btn" data-column="4" onclick="toggleSidebarColumn(4)" title="Assignments">📋</button>
+  <button class="sidebar-toggle-btn" onclick="openSettings()" title="Settings">⚙</button>
+</div>
 
 <!-- Settings Modal -->
 <div class="settings-modal-backdrop" id="settingsBackdrop" onclick="closeSettingsModal()"></div>
@@ -1078,11 +1074,9 @@ margin-bottom: 0;
 </div>
 
 <!-- LEFT COLUMN 1: Tasks & Projects -->
-<!-- CONSOLIDATED SIDEBAR: All sections visible and scrollable -->
 <aside class="sidebar sidebar-col-1" id="sidebarCol1">
-
-<!-- Section 1: Tasks & Projects -->
 <div class="sidebar-header">✓ Tasks</div>
+
 <div class="sidebar-section">
 <div id="tasksSection" class="section-content">
 <div id="tasksList"></div>
@@ -1095,9 +1089,12 @@ margin-bottom: 0;
 <div id="projectsList"></div>
 </div>
 </div>
+</aside>
 
-<!-- Section 2: Calendar & Events -->
-<div class="sidebar-header" style="margin-top: 16px;">📅 Personal & Sports</div>
+<!-- LEFT COLUMN 2: Calendar & Events -->
+<aside class="sidebar sidebar-col-2" id="sidebarCol2">
+<div class="sidebar-header">📅 Personal & Sports</div>
+
 <div class="sidebar-stats">
 <div class="stat-card">
 <div class="stat-icon">📅</div>
@@ -1107,14 +1104,18 @@ margin-bottom: 0;
 </div>
 </div>
 </div>
+
 <div class="sidebar-section">
 <div id="calendarSection" class="section-content">
 <div id="calendarList"></div>
 </div>
 </div>
+</aside>
 
-<!-- Section 3: Plan My Day -->
-<div class="sidebar-header" style="margin-top: 16px;">🎯 Plan My Day</div>
+<!-- LEFT COLUMN 3: Plan My Day -->
+<aside class="sidebar sidebar-col-3" id="sidebarCol3">
+<div class="sidebar-header">🎯 Plan My Day</div>
+
 <div class="sidebar-section">
 <div id="planSection" class="section-content">
 <div id="planContent"></div>
@@ -1124,10 +1125,14 @@ margin-bottom: 0;
 </div>
 </div>
 </div>
-<span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
 
-<!-- Section 4: Assignments -->
-<div class="sidebar-header" style="margin-top: 16px;">📋 Assignments</div>
+<span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
+</aside>
+
+<!-- LEFT COLUMN 4: Assignments -->
+<aside class="sidebar sidebar-col-4" id="sidebarCol4">
+<div class="sidebar-header">📋 Assignments</div>
+
 <div class="sidebar-stats">
 <div class="stat-card">
 <div class="stat-icon">📋</div>
@@ -1137,12 +1142,12 @@ margin-bottom: 0;
 </div>
 </div>
 </div>
+
 <div class="sidebar-section">
 <div id="assignmentsSection" class="section-content">
 <div id="assignmentsList"></div>
 </div>
 </div>
-
 </aside>
 
 <div class="content-wrapper">
@@ -1180,9 +1185,40 @@ function isMobile() {
   return window.innerWidth < 640;
 }
 
+function toggleSidebarColumn(colNumber) {
+  const sidebar = document.getElementById(`sidebarCol${colNumber}`);
+  const isOpen = sidebar.classList.contains('open');
+
+  // Close all sidebars
+  document.getElementById('sidebarCol1').classList.remove('open');
+  document.getElementById('sidebarCol2').classList.remove('open');
+  document.getElementById('sidebarCol3').classList.remove('open');
+  document.getElementById('sidebarCol4').classList.remove('open');
+
+  // Update button states
+  document.querySelectorAll('.sidebar-toggle-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+
+  // Open selected sidebar if it wasn't open
+  if (!isOpen) {
+    sidebar.classList.add('open');
+    document.querySelector(`[data-column="${colNumber}"]`).classList.add('active');
+    document.getElementById('sidebarBackdrop').classList.add('visible');
+  } else {
+    document.getElementById('sidebarBackdrop').classList.remove('visible');
+  }
+}
+
 function closeSidebarColumn() {
   document.getElementById('sidebarCol1').classList.remove('open');
+  document.getElementById('sidebarCol2').classList.remove('open');
+  document.getElementById('sidebarCol3').classList.remove('open');
+  document.getElementById('sidebarCol4').classList.remove('open');
   document.getElementById('sidebarBackdrop').classList.remove('visible');
+  document.querySelectorAll('.sidebar-toggle-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
 }
 
 function toggleSection(sectionId) {
