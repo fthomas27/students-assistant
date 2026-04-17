@@ -217,20 +217,65 @@ display: none;
 /* Mobile/Overlay sidebar: up to 639px */
 @media (max-width: 639px) {
 .sidebar {
-display: none;
+display: none !important;
 }
-.sidebar.open {
-display: flex;
+.sidebar-col-1,
+.sidebar-col-2,
+.sidebar-col-3 {
+display: none !important;
+}
+.mobile-sidebar-wrapper {
+display: none;
 position: fixed;
 left: 0;
 top: var(--header-h);
-width: 100%;
-max-width: 280px;
+width: 280px;
 max-height: calc(100% - var(--header-h));
 z-index: 50;
+background: var(--bg);
+border-right: 1px solid var(--border);
 flex-direction: column;
 box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+}
+.mobile-sidebar-wrapper.open {
+display: flex;
+}
+.mobile-sidebar-tabs {
+display: flex;
+border-bottom: 1px solid var(--border);
+gap: 0;
+padding: 0;
+}
+.mobile-tab {
+flex: 1;
+padding: 12px 8px;
+background: transparent;
+border: none;
+border-bottom: 2px solid transparent;
+color: var(--text3);
+cursor: pointer;
+font-size: 11px;
+font-weight: 600;
+transition: all 0.2s;
+text-transform: uppercase;
+letter-spacing: 0.05em;
+}
+.mobile-tab.active {
+color: var(--accent);
+border-bottom-color: var(--accent);
+}
+.mobile-tab:hover {
+color: var(--text);
+}
+.mobile-sidebar-content {
+flex: 1;
 overflow-y: auto;
+}
+.mobile-sidebar-col {
+display: none;
+}
+.mobile-sidebar-col.active {
+display: block;
 }
 }
 
@@ -941,6 +986,20 @@ margin-bottom: 0;
   </div>
 </div>
 
+<!-- Mobile sidebar wrapper with tabs -->
+<div class="mobile-sidebar-wrapper" id="mobileSidebarWrapper">
+  <div class="mobile-sidebar-tabs">
+    <button class="mobile-tab active" onclick="switchMobileTab(0)">Tasks</button>
+    <button class="mobile-tab" onclick="switchMobileTab(1)">Calendar</button>
+    <button class="mobile-tab" onclick="switchMobileTab(2)">Plan</button>
+  </div>
+  <div class="mobile-sidebar-content">
+    <div class="mobile-sidebar-col active" data-col="1"></div>
+    <div class="mobile-sidebar-col" data-col="2"></div>
+    <div class="mobile-sidebar-col" data-col="3"></div>
+  </div>
+</div>
+
 <!-- LEFT COLUMN 1: Tasks & Projects -->
 <aside class="sidebar sidebar-col-1" id="sidebarCol1">
 <div class="sidebar-header">✓ Tasks</div>
@@ -1048,16 +1107,53 @@ function isMobile() {
 
 function toggleSidebar() {
   if (isMobile()) {
-    document.getElementById('sidebarCol1').classList.toggle('open');
+    document.getElementById('mobileSidebarWrapper').classList.toggle('open');
     document.getElementById('sidebarBackdrop').classList.toggle('visible');
   }
 }
 
 function closeSidebar() {
   if (isMobile()) {
-    document.getElementById('sidebarCol1').classList.remove('open');
+    document.getElementById('mobileSidebarWrapper').classList.remove('open');
     document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
+}
+
+function switchMobileTab(tabIndex) {
+  document.querySelectorAll('.mobile-tab').forEach((tab, i) => {
+    tab.classList.toggle('active', i === tabIndex);
+  });
+  document.querySelectorAll('.mobile-sidebar-col').forEach((col, i) => {
+    col.classList.toggle('active', i === tabIndex);
+  });
+}
+
+function updateMobileSidebarContent() {
+  if (!isMobile()) return;
+
+  const cols = document.querySelectorAll('.mobile-sidebar-col');
+
+  // Column 1: Tasks & Projects
+  cols[0].innerHTML = `
+    <div class="sidebar-header">✓ Tasks</div>
+    <div class="sidebar-section"><div id="mobileTasksList"></div></div>
+    <div class="sidebar-header" style="margin-top: 16px;">📦 Projects</div>
+    <div class="sidebar-section"><div id="mobileProjectsList"></div></div>
+  `;
+
+  // Column 2: Calendar & Assignments
+  cols[1].innerHTML = `
+    <div class="sidebar-header">📅 Calendar</div>
+    <div class="sidebar-section"><div id="mobileCalendarList"></div></div>
+    <div class="sidebar-header" style="margin-top: 16px;">📋 Assignments</div>
+    <div class="sidebar-section"><div id="mobileAssignmentsList"></div></div>
+  `;
+
+  // Column 3: Plan My Day
+  cols[2].innerHTML = `
+    <div class="sidebar-header">🎯 Plan My Day</div>
+    <div class="sidebar-section"><div id="mobilePlanContent"></div></div>
+  `;
 }
 
 function toggleSection(sectionId) {
@@ -1152,61 +1248,51 @@ async function loadSidebarData() {
   document.getElementById('tasksList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
   document.getElementById('projectsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
   document.getElementById('calendarList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+  document.getElementById('planContent').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
 
-  // Fetch all data in parallel
-  const requests = [
-    fetchWithTimeout('/api/assignments').then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
-    fetchWithTimeout('/api/tasks').then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
-    fetchWithTimeout('/api/projects').then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
-    fetchWithTimeout('/api/calendar').then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
-    fetchWithTimeout('/api/plan-my-day').then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-  ];
+  // Handle each API request individually for progressive rendering
+  const dataHandlers = {
+    assignments: {
+      url: '/api/assignments',
+      containerId: 'assignmentsList',
+      processor: (data) => { assignmentsCache = data.assignments || []; renderAssignments(); }
+    },
+    tasks: {
+      url: '/api/tasks',
+      containerId: 'tasksList',
+      processor: (data) => { tasksCache = data.tasks || []; renderTasks(); }
+    },
+    projects: {
+      url: '/api/projects',
+      containerId: 'projectsList',
+      processor: (data) => { projectsCache = data.projects || []; renderProjects(); }
+    },
+    calendar: {
+      url: '/api/calendar',
+      containerId: 'calendarList',
+      processor: (data) => { calendarCache = data.events || []; renderCalendar(); }
+    },
+    plan: {
+      url: '/api/plan-my-day',
+      containerId: 'planContent',
+      processor: (data) => { renderPlan(data); }
+    }
+  };
 
-  const results = await Promise.allSettled(requests);
-
-  // Process assignments
-  if (results[0].status === 'fulfilled') {
-    assignmentsCache = results[0].value.assignments || [];
-    renderAssignments();
-  } else {
-    const errorMsg = getErrorMessage(results[0].reason);
-    document.getElementById('assignmentsList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
+  // Fetch each endpoint independently for progressive rendering
+  for (const [key, handler] of Object.entries(dataHandlers)) {
+    fetchWithTimeout(handler.url)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(data => {
+        handler.processor(data);
+      })
+      .catch(e => {
+        const errorMsg = getErrorMessage(e);
+        document.getElementById(handler.containerId).innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
+      });
   }
 
-  // Process tasks
-  if (results[1].status === 'fulfilled') {
-    tasksCache = results[1].value.tasks || [];
-    renderTasks();
-  } else {
-    const errorMsg = getErrorMessage(results[1].reason);
-    document.getElementById('tasksList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
-  }
-
-  // Process projects
-  if (results[2].status === 'fulfilled') {
-    projectsCache = results[2].value.projects || [];
-    renderProjects();
-  } else {
-    const errorMsg = getErrorMessage(results[2].reason);
-    document.getElementById('projectsList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
-  }
-
-  // Process calendar
-  if (results[3].status === 'fulfilled') {
-    calendarCache = results[3].value.events || [];
-    renderCalendar();
-  } else {
-    const errorMsg = getErrorMessage(results[3].reason);
-    document.getElementById('calendarList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
-  }
-
-  // Process plan
-  if (results[4].status === 'fulfilled') {
-    renderPlan(results[4].value);
-  } else {
-    const errorMsg = getErrorMessage(results[4].reason);
-    document.getElementById('planContent').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
-  }
+  updateMobileSidebarContent();
 }
 
 function renderAssignments() {
