@@ -21,7 +21,7 @@ pip install --ignore-installed --break-system-packages -q \
 
 # 4. Start the app with proper environment
 echo "Starting Flask app..."
-cd /home/user/student-assistant
+cd /home/user/students-assistant
 export DATABASE_URL="postgresql://root:root@localhost/student_assistant"
 export FLASK_ENV=production
 export FLASK_APP=app.py

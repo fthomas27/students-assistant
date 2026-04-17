@@ -2812,7 +2812,7 @@ def api_plan_my_day_generate():
                 resp = requests.get("http://localhost:5000/api/availability", timeout=5)
                 if resp.status_code == 200:
                     data = resp.json()
-                    free_windows = data.get("free", [])
+                    free_windows = data.get("free_windows", [])
             except Exception as e:
                 log.warning(f"Could not fetch availability for plan: {e}")
 
@@ -2874,7 +2874,7 @@ Return ONLY valid JSON, no markdown or extra text."""
                         "item_type": item["type"],
                         "item_id": item["id"],
                         "item_title": item["title"],
-                        "scheduled_start_time": f"{current_hour:02d}:{0:02d}",
+                        "scheduled_start_time": f"{current_hour:02d}:00",
                         "scheduled_end_time": f"{end_min // 60:02d}:{end_min % 60:02d}"
                     })
                     current_hour = end_min // 60
