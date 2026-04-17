@@ -147,20 +147,22 @@ border-left: 1px solid var(--border);
 border-right: none;
 }
 
-@media (min-width: 1024px) {
+/* Desktop: 1280px and up - 3 column layout */
+@media (min-width: 1280px) {
 .main-container {
-grid-template-columns: 280px 1fr 280px;
+grid-template-columns: 320px 1fr 280px;
 }
 .sidebar {
 display: flex;
 grid-row: 2;
-width: 280px;
 }
 .sidebar.left-panel {
 grid-column: 1;
+width: 320px;
 }
 .sidebar.right-panel {
 grid-column: 3;
+width: 280px;
 }
 .content-wrapper {
 grid-column: 2;
@@ -168,7 +170,8 @@ grid-row: 2;
 }
 }
 
-@media (min-width: 640px) and (max-width: 1023px) {
+/* Tablet/Kindle: 640px to 1279px - single column with hamburger menu */
+@media (min-width: 640px) and (max-width: 1279px) {
 .main-container {
 grid-template-columns: 1fr;
 }
@@ -179,9 +182,13 @@ display: none;
 grid-column: 1;
 grid-row: 2;
 }
+/* Show hamburger menu for tablet */
+.menu-btn {
+display: flex;
+}
 }
 
-/* Mobile sidebar as overlay */
+/* Mobile/Overlay sidebar: up to 639px */
 @media (max-width: 639px) {
 .sidebar.open {
 display: flex;
@@ -664,6 +671,199 @@ color: white;
 .complete-btn:active {
 background: #ff6a3a;
 }
+
+/* Settings Modal */
+.settings-modal-backdrop {
+display: none;
+position: fixed;
+inset: 0;
+background: rgba(0,0,0,0.5);
+z-index: 100;
+}
+
+.settings-modal-backdrop.visible {
+display: block;
+}
+
+.settings-modal {
+display: none;
+position: fixed;
+top: 50%;
+left: 50%;
+transform: translate(-50%, -50%);
+background: var(--surface);
+border: 1px solid var(--border);
+border-radius: var(--r);
+z-index: 101;
+box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+max-width: 400px;
+width: 90%;
+max-height: 80vh;
+overflow-y: auto;
+}
+
+.settings-modal.visible {
+display: block;
+animation: modalSlideIn 0.2s ease-out;
+}
+
+@keyframes modalSlideIn {
+from { opacity: 0; transform: translate(-50%, -48%); }
+to { opacity: 1; transform: translate(-50%, -50%); }
+}
+
+.settings-modal-content {
+display: flex;
+flex-direction: column;
+height: 100%;
+}
+
+.settings-modal-header {
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 16px;
+border-bottom: 1px solid var(--border);
+flex-shrink: 0;
+}
+
+.settings-modal-header h2 {
+font-size: 18px;
+font-weight: 600;
+color: var(--text);
+margin: 0;
+}
+
+.settings-modal-close {
+background: none;
+border: none;
+color: var(--text3);
+font-size: 20px;
+cursor: pointer;
+padding: 0;
+width: 24px;
+height: 24px;
+display: flex;
+align-items: center;
+justify-content: center;
+transition: color 0.15s;
+}
+
+.settings-modal-close:hover {
+color: var(--text);
+}
+
+.settings-modal-body {
+padding: 16px;
+flex: 1;
+overflow-y: auto;
+}
+
+.settings-section {
+margin-bottom: 24px;
+}
+
+.settings-section:last-child {
+margin-bottom: 0;
+}
+
+.settings-section h3 {
+font-size: 12px;
+font-weight: 700;
+color: var(--text2);
+text-transform: uppercase;
+letter-spacing: 0.05em;
+margin-bottom: 12px;
+}
+
+.settings-item {
+display: flex;
+justify-content: space-between;
+align-items: center;
+padding: 10px 0;
+border-bottom: 1px solid var(--border);
+font-size: 14px;
+}
+
+.settings-item label {
+color: var(--text2);
+font-weight: 500;
+}
+
+.settings-item span {
+color: var(--text);
+}
+
+.logout-btn {
+width: 100%;
+padding: 10px;
+background: var(--red);
+color: white;
+border: none;
+border-radius: var(--r-sm);
+font-weight: 600;
+cursor: pointer;
+transition: background 0.15s;
+font-size: 14px;
+}
+
+.logout-btn:hover {
+background: #c62828;
+}
+
+.logout-btn:active {
+background: #b71c1c;
+}
+
+/* Calendar Timeline */
+.calendar-timeline {
+background: var(--surface);
+border: 1px solid var(--border);
+border-radius: var(--r-sm);
+padding: 12px;
+margin: 8px 0;
+font-size: 12px;
+font-family: monospace;
+overflow-x: auto;
+}
+
+.timeline-row {
+display: flex;
+gap: 12px;
+margin-bottom: 8px;
+padding-bottom: 8px;
+border-bottom: 1px solid var(--border);
+}
+
+.timeline-row:last-child {
+border-bottom: none;
+margin-bottom: 0;
+padding-bottom: 0;
+}
+
+.timeline-time {
+color: var(--accent);
+font-weight: 600;
+min-width: 70px;
+text-align: right;
+}
+
+.timeline-content {
+flex: 1;
+}
+
+.timeline-item {
+color: var(--text);
+margin-bottom: 4px;
+padding: 6px 8px;
+background: var(--surface2);
+border-left: 3px solid var(--accent);
+border-radius: 3px;
+}
+
+.timeline-item:last-child {
+margin-bottom: 0;
+}
 </style>
 </head>
 <body>
@@ -677,6 +877,37 @@ background: #ff6a3a;
 </div>
 
 <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebar()"></div>
+
+<!-- Settings Modal -->
+<div class="settings-modal-backdrop" id="settingsBackdrop" onclick="closeSettingsModal()"></div>
+<div class="settings-modal" id="settingsModal">
+  <div class="settings-modal-content">
+    <div class="settings-modal-header">
+      <h2>Settings</h2>
+      <button class="settings-modal-close" onclick="closeSettingsModal()">✕</button>
+    </div>
+    <div class="settings-modal-body">
+      <div class="settings-section">
+        <h3>Profile</h3>
+        <div class="settings-item">
+          <label>Name:</label>
+          <span id="settingsName">-</span>
+        </div>
+      </div>
+      <div class="settings-section">
+        <h3>Preferences</h3>
+        <div class="settings-item">
+          <label>Timezone:</label>
+          <span id="settingsTimezone">-</span>
+        </div>
+      </div>
+      <div class="settings-section">
+        <h3>Account</h3>
+        <button class="logout-btn" onclick="confirmLogout()">Log Out</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- LEFT PANEL: Projects, Tasks, Plan My Day -->
 <aside class="sidebar left-panel" id="sidebarLeft">
@@ -848,68 +1079,97 @@ function updateSidebarStats() {
 }
 
 function openSettings() {
+  document.getElementById('settingsModal').classList.add('visible');
+  document.getElementById('settingsBackdrop').classList.add('visible');
+
+  // Load user name from config (could also fetch from API)
+  document.getElementById('settingsName').textContent = 'Finn';
+  document.getElementById('settingsTimezone').textContent = TZ || 'America/Denver';
+}
+
+function closeSettingsModal() {
+  document.getElementById('settingsModal').classList.remove('visible');
+  document.getElementById('settingsBackdrop').classList.remove('visible');
+}
+
+function confirmLogout() {
   const confirmed = confirm('Are you sure you want to log out?');
   if (confirmed) window.location.href = '/logout';
 }
 
 async function loadSidebarData() {
+  // Load assignments
   try {
     const response = await fetch('/api/assignments');
-    if (response.ok) {
-      const data = await response.json();
-      assignmentsCache = data.assignments || [];
-      renderAssignments();
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+    const data = await response.json();
+    assignmentsCache = data.assignments || [];
+    renderAssignments();
   } catch (e) {
     console.error('Failed to load assignments:', e);
-    document.getElementById('assignmentsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading assignments</div>';
+    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    document.getElementById('assignmentsList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
+  // Load tasks
   try {
     const response = await fetch('/api/tasks');
-    if (response.ok) {
-      const data = await response.json();
-      tasksCache = data.tasks || [];
-      renderTasks();
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+    const data = await response.json();
+    tasksCache = data.tasks || [];
+    renderTasks();
   } catch (e) {
     console.error('Failed to load tasks:', e);
-    document.getElementById('tasksList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading tasks</div>';
+    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    document.getElementById('tasksList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
+  // Load projects
   try {
     const response = await fetch('/api/projects');
-    if (response.ok) {
-      const data = await response.json();
-      projectsCache = data.projects || [];
-      renderProjects();
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+    const data = await response.json();
+    projectsCache = data.projects || [];
+    renderProjects();
   } catch (e) {
     console.error('Failed to load projects:', e);
-    document.getElementById('projectsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading projects</div>';
+    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    document.getElementById('projectsList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
+  // Load calendar
   try {
     const response = await fetch('/api/calendar');
-    if (response.ok) {
-      const data = await response.json();
-      calendarCache = data.events || [];
-      renderCalendar();
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+    const data = await response.json();
+    calendarCache = data.events || [];
+    renderCalendar();
   } catch (e) {
     console.error('Failed to load calendar:', e);
-    document.getElementById('calendarList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading calendar</div>';
+    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    document.getElementById('calendarList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
+  // Load plan
   try {
     const response = await fetch('/api/plan-my-day');
-    if (response.ok) {
-      const data = await response.json();
-      renderPlan(data);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+    const data = await response.json();
+    renderPlan(data);
   } catch (e) {
     console.error('Failed to load plan:', e);
-    document.getElementById('planContent').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading plan</div>';
+    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    document.getElementById('planContent').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 }
 
@@ -1097,6 +1357,9 @@ async function generatePlan() {
       if (planResp.ok) {
         const planData = await planResp.json();
         renderPlan(planData);
+
+        // Display plan in chat
+        displayPlanInChat(planData);
       }
     } else {
       const error = await response.json();
@@ -1129,6 +1392,85 @@ async function deletePlan() {
   }
 }
 
+function displayPlanInChat(planData) {
+  const messagesDiv = document.getElementById('chatMessages');
+  if (messagesDiv.querySelector('.empty-state')) {
+    messagesDiv.innerHTML = '';
+  }
+
+  // AI message summarizing the plan
+  const summaryBubble = document.createElement('div');
+  summaryBubble.className = 'message assistant';
+  const itemCount = planData.items ? planData.items.length : 0;
+  summaryBubble.innerHTML = `<div class="message-bubble">I've created your daily schedule! You have ${itemCount} items scheduled for today. Here's your optimized timeline with breaks included:</div>`;
+  messagesDiv.appendChild(summaryBubble);
+
+  if (!planData.items || planData.items.length === 0) {
+    const emptyBubble = document.createElement('div');
+    emptyBubble.className = 'message assistant';
+    emptyBubble.innerHTML = `<div class="message-bubble">No items scheduled for today. Great job staying on top of things! 🎉</div>`;
+    messagesDiv.appendChild(emptyBubble);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    return;
+  }
+
+  // Calendar timeline
+  const timelineBubble = document.createElement('div');
+  timelineBubble.className = 'message assistant';
+
+  let timelineHTML = '<div class="message-bubble"><div class="calendar-timeline">';
+
+  // Group items by hour
+  const hourMap = {};
+  planData.items.forEach(item => {
+    const hour = item.scheduled_start_time.split(':')[0];
+    if (!hourMap[hour]) hourMap[hour] = [];
+    hourMap[hour].push(item);
+  });
+
+  // Display timeline
+  for (let h = 7; h < 22; h++) {
+    const hourStr = h.toString().padStart(2, '0');
+    const displayHour = h > 12 ? h - 12 : h;
+    const ampm = h >= 12 ? 'PM' : 'AM';
+
+    timelineHTML += `<div class="timeline-row">
+      <div class="timeline-time">${displayHour}:00 ${ampm}</div>
+      <div class="timeline-content">`;
+
+    if (hourMap[hourStr]) {
+      hourMap[hourStr].forEach(item => {
+        const typeEmoji = item.item_type === 'assignment' ? '📝' :
+                         item.item_type === 'task' ? '✓' :
+                         item.item_type === 'calendar' ? '📅' : '⏱';
+        const typeLabel = item.item_type.charAt(0).toUpperCase() + item.item_type.slice(1);
+        timelineHTML += `<div class="timeline-item">[${item.scheduled_start_time}] ${typeEmoji} ${item.item_title}</div>`;
+      });
+    }
+
+    timelineHTML += `</div></div>`;
+  }
+
+  timelineHTML += '</div>';
+
+  // Add breakdown list
+  timelineHTML += '<div style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;"><strong>Detailed Breakdown:</strong><ul style="margin: 8px 0; padding-left: 20px;">';
+  planData.items.forEach(item => {
+    const typeEmoji = item.item_type === 'assignment' ? '📝' :
+                     item.item_type === 'task' ? '✓' :
+                     item.item_type === 'calendar' ? '📅' : '⏱';
+    const duration = item.estimated_minutes ? `${item.estimated_minutes} min` : 'TBD';
+    timelineHTML += `<li>${item.scheduled_start_time}-${item.scheduled_end_time}: ${typeEmoji} ${item.item_title} (${duration})</li>`;
+  });
+  timelineHTML += '</ul></div>';
+
+  timelineHTML += '</div>';
+  timelineBubble.innerHTML = timelineHTML;
+  messagesDiv.appendChild(timelineBubble);
+
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
 async function completeAssignment(event, title, className, estimateMinutes) {
   event.stopPropagation();
   const btn = event.target;
@@ -1153,13 +1495,16 @@ async function completeAssignment(event, title, className, estimateMinutes) {
       }, 200);
 
       // Reload assignments after a short delay
-      setTimeout(() => {
-        const resp = fetch('/api/assignments');
-        if (resp.ok) {
-          resp.json().then(data => {
+      setTimeout(async () => {
+        try {
+          const resp = await fetch('/api/assignments');
+          if (resp.ok) {
+            const data = await resp.json();
             assignmentsCache = data.assignments || [];
             renderAssignments();
-          });
+          }
+        } catch (e) {
+          console.error('Failed to reload assignments:', e);
         }
       }, 500);
     }
