@@ -1308,7 +1308,21 @@ function renderPlan(planData) {
   }
 
   if (!planData.items || planData.items.length === 0) {
-    container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No plan for today. Click "Generate" to create one.</div>';
+    // Show incomplete tasks if no plan exists
+    const incompleteTasks = tasksCache.filter(t => !t.completed);
+    if (incompleteTasks.length > 0) {
+      container.innerHTML = incompleteTasks.slice(0, 5).map(t => {
+        const urgencyColor = ['critical', 'high'].includes(t.urgency) ? 'var(--red)' : 'var(--accent)';
+        return `
+          <div class="sidebar-item" style="border-left: 3px solid ${urgencyColor};">
+            <div class="sidebar-item-title">${t.title}</div>
+            <div class="sidebar-item-meta">[${t.urgency}]</div>
+          </div>
+        `;
+      }).join('');
+    } else {
+      container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No tasks. Click "Generate" to create a plan.</div>';
+    }
     return;
   }
 
