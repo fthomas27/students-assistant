@@ -11,22 +11,22 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
---bg: #ffffff;
---surface: #f8f9fa;
---surface2: #f0f2f5;
---surface3: #e8eaed;
---border: rgba(0,0,0,0.1);
---border2: rgba(0,0,0,0.15);
---text: #1a1a1a;
---text2: #404040;
---text3: #666666;
---accent: #0052cc;
---accent2: #0052cc;
---blue: #0052cc;
---red: #d32f2f;
---amber: #ff9500;
---green: #2e7d32;
---purple: #7c3aed;
+--bg: #0f0f0f;
+--surface: #1a1a1a;
+--surface2: #262626;
+--surface3: #333333;
+--border: rgba(255,255,255,0.1);
+--border2: rgba(255,255,255,0.15);
+--text: #ffffff;
+--text2: #d0d0d0;
+--text3: #999999;
+--accent: #FF7F50;
+--accent2: #FF7F50;
+--blue: #FF7F50;
+--red: #ff6b6b;
+--amber: #ffa940;
+--green: #5cb85c;
+--purple: #b197fc;
 --header-h: 56px;
 --r: 16px;
 --r-sm: 10px;
@@ -48,7 +48,7 @@ letter-spacing: -0.003em;
 /* ── HEADER ── */
 .header {
 height: var(--header-h);
-background: rgba(255,255,255,0.98);
+background: rgba(15,15,15,0.98);
 backdrop-filter: blur(32px);
 border-bottom: 1px solid var(--border);
 display: flex;
@@ -212,14 +212,19 @@ padding: 8px 12px 6px;
 padding: 10px 12px;
 margin: 4px 0;
 border-radius: var(--r-sm);
+border-left: 3px solid transparent;
 cursor: pointer;
-transition: background 0.15s;
+transition: background 0.15s, border-color 0.15s;
 font-size: 13px;
 color: var(--text);
 line-height: 1.4;
+background: var(--surface);
 }
 
-.sidebar-item:hover { background: var(--surface); }
+.sidebar-item:hover {
+  background: var(--surface2);
+  border-left-color: var(--accent);
+}
 .sidebar-item:active { background: var(--surface2); }
 
 .sidebar-item-title {
@@ -403,10 +408,15 @@ padding: 10px 12px;
 font-family: inherit;
 font-size: 14px;
 color: var(--text);
+background: var(--surface);
 outline: none;
-transition: border-color 0.2s;
+transition: border-color 0.2s, background 0.2s;
 max-height: 100px;
 resize: none;
+}
+
+.chat-input::placeholder {
+  color: var(--text3);
 }
 
 .chat-input:focus {
@@ -429,7 +439,7 @@ transition: background 0.15s;
 }
 
 .send-btn:active {
-background: #003da8;
+background: #ff6a3a;
 }
 
 .send-btn:disabled {
@@ -703,8 +713,8 @@ function renderAssignments() {
   container.innerHTML = sorted.slice(0, 8).map(a => `
     <div class="sidebar-item">
       <div class="sidebar-item-title">${a.title}</div>
-      <div class="sidebar-item-meta">${a.class_name || 'Assignment'}</div>
-      <div class="sidebar-item-due">Due: ${formatDate(a.due_iso)}</div>
+      <div class="sidebar-item-meta">${a.class_name || ''}</div>
+      <div class="sidebar-item-due">${formatDate(a.due_iso)}</div>
     </div>
   `).join('');
 }
