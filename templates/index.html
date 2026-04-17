@@ -1021,20 +1021,33 @@ margin-bottom: 0;
       <div class="settings-section">
         <h3>Profile</h3>
         <div class="settings-item">
-          <label>Name:</label>
-          <span id="settingsName">-</span>
+          <label>What the AI calls you:</label>
+          <input type="text" id="settingsNameInput" placeholder="e.g., Student, Alex, etc." style="width: 100%; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
         </div>
       </div>
       <div class="settings-section">
         <h3>Preferences</h3>
         <div class="settings-item">
           <label>Timezone:</label>
-          <span id="settingsTimezone">-</span>
+          <select id="settingsTimezoneSelect" style="width: 100%; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+            <option value="America/Denver">America/Denver (Mountain)</option>
+            <option value="America/Chicago">America/Chicago (Central)</option>
+            <option value="America/New_York">America/New_York (Eastern)</option>
+            <option value="America/Los_Angeles">America/Los_Angeles (Pacific)</option>
+            <option value="UTC">UTC</option>
+            <option value="Europe/London">Europe/London</option>
+            <option value="Europe/Paris">Europe/Paris</option>
+            <option value="Asia/Tokyo">Asia/Tokyo</option>
+            <option value="Asia/Shanghai">Asia/Shanghai</option>
+            <option value="Australia/Sydney">Australia/Sydney</option>
+          </select>
         </div>
       </div>
       <div class="settings-section">
-        <h3>Account</h3>
-        <button class="logout-btn" onclick="confirmLogout()">Log Out</button>
+        <div style="display: flex; gap: 8px;">
+          <button class="logout-btn" onclick="confirmLogout()" style="flex: 1;">Log Out</button>
+          <button onclick="saveSettings()" style="flex: 1; padding: 10px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Save</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1221,14 +1234,33 @@ function openSettings() {
   document.getElementById('settingsModal').classList.add('visible');
   document.getElementById('settingsBackdrop').classList.add('visible');
 
-  // Load user name from config (could also fetch from API)
-  document.getElementById('settingsName').textContent = 'Finn';
-  document.getElementById('settingsTimezone').textContent = TZ || 'America/Denver';
+  // Load settings from localStorage
+  const customName = localStorage.getItem('aiCustomName') || 'Student';
+  const timezone = localStorage.getItem('userTimezone') || TZ || 'America/Denver';
+
+  document.getElementById('settingsNameInput').value = customName;
+  document.getElementById('settingsTimezoneSelect').value = timezone;
 }
 
 function closeSettingsModal() {
   document.getElementById('settingsModal').classList.remove('visible');
   document.getElementById('settingsBackdrop').classList.remove('visible');
+}
+
+function saveSettings() {
+  const customName = document.getElementById('settingsNameInput').value.trim();
+  const timezone = document.getElementById('settingsTimezoneSelect').value;
+
+  if (!customName) {
+    alert('Please enter a name');
+    return;
+  }
+
+  localStorage.setItem('aiCustomName', customName);
+  localStorage.setItem('userTimezone', timezone);
+
+  closeSettingsModal();
+  alert('Settings saved successfully');
 }
 
 function confirmLogout() {
@@ -1961,12 +1993,13 @@ async function sendMessage() {
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
   try {
+    const customName = localStorage.getItem('aiCustomName') || 'Student';
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: conversationHistory,
-        system: `You are Finn, a personalized AI assistant for a busy student. Your role is to help manage assignments, tasks, projects, and schedule efficiently.
+        system: `You are Finn, a personalized AI assistant for ${customName}. Your role is to help manage assignments, tasks, projects, and schedule efficiently.
 
 Guidelines:
 - Be concise and actionable - get to the point quickly
@@ -1978,6 +2011,7 @@ Guidelines:
 - Use bullet points for lists - keep responses scannable
 - If something is due soon, emphasize it
 - Help with planning, prioritization, and motivation
+- Address ${customName} by their preferred name when appropriate
 
 You have access to the user's assignments, tasks, projects, and calendar. Use this context to give personalized, relevant advice.`
       })
