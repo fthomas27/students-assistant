@@ -21,6 +21,14 @@ import anthropic
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "finn-dashboard-secret-change-me")
 app.permanent_session_lifetime = timedelta(days=30)
+
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_SAMESITE='Strict',
+    PREFERRED_URL_SCHEME='https'
+)
+
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "finn2025")
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -348,6 +356,23 @@ CREATE TABLE IF NOT EXISTS daily_plan_items (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )""")
 
+    cur.execute("""
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id SERIAL PRIMARY KEY,
+    ip_address TEXT NOT NULL,
+    success BOOLEAN NOT NULL,
+    attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    user_agent TEXT
+)""")
+
+    cur.execute("""
+CREATE TABLE IF NOT EXISTS login_lockouts (
+    ip_address TEXT PRIMARY KEY,
+    locked_until TIMESTAMPTZ NOT NULL,
+    failure_count INT NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)""")
+
     defaults = {
         "name": "Finn",
         "morning_briefing_time": "07:00",
@@ -376,6 +401,8 @@ ON CONFLICT (key) DO NOTHING""", (k, v))
     cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_plans_date ON daily_plans(plan_date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_plan_items_plan_id ON daily_plan_items(plan_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_plan_items_completed ON daily_plan_items(completed)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_address, attempted_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_login_lockouts_ip ON login_lockouts(ip_address)")
 
     conn.commit()
     cur.close()
@@ -1027,7 +1054,87 @@ def timer_response(row):
         "over_estimate": elapsed_min > estimate,
         "over_cutoff": elapsed_min > cutoff_min
     }
+# ── Security Functions ──────────────────────────────────────────────────────────
 
+_login_lock = threading.Lock()
+
+def get_client_ip():
+    """Get client IP address, accounting for proxies."""
+    if request.headers.get('X-Forwarded-For'):
+        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    return request.remote_addr or 'unknown'
+
+def is_ip_locked(ip_addr):
+    """Check if IP is currently locked out."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT locked_until FROM login_lockouts WHERE ip_address = %s", (ip_addr,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and row["locked_until"] > datetime.now(TZ):
+            return True
+    except Exception as e:
+        log.warning(f"Error checking lockout status: {e}")
+    return False
+
+def record_login_attempt(ip_addr, success):
+    """Record login attempt and update lockout status."""
+    try:
+        with _login_lock:
+            conn = get_db()
+            cur = conn.cursor()
+
+            cur.execute("""
+INSERT INTO login_attempts (ip_address, success, user_agent)
+VALUES (%s, %s, %s)""", (ip_addr, success, request.headers.get('User-Agent', '')[:500]))
+
+            if not success:
+                cur.execute("""
+SELECT COALESCE(failure_count, 0) + 1 as new_count, locked_until
+FROM login_lockouts WHERE ip_address = %s""", (ip_addr,))
+                row = cur.fetchone()
+                new_count = row["new_count"] if row else 1
+
+                if new_count >= 5:
+                    lockout_duration = timedelta(minutes=15 * (2 ** (new_count - 5)))
+                    locked_until = datetime.now(TZ) + lockout_duration
+                    cur.execute("""
+INSERT INTO login_lockouts (ip_address, locked_until, failure_count)
+VALUES (%s, %s, %s)
+ON CONFLICT (ip_address) DO UPDATE SET locked_until = %s, failure_count = %s""",
+                        (ip_addr, locked_until, new_count, locked_until, new_count))
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    return {"locked": True, "minutes_remaining": 15}
+            else:
+                cur.execute("DELETE FROM login_lockouts WHERE ip_address = %s", (ip_addr,))
+
+            conn.commit()
+            cur.close()
+            conn.close()
+    except Exception as e:
+        log.warning(f"Error recording login attempt: {e}")
+
+    return {"locked": False, "minutes_remaining": 0}
+
+def get_lockout_info(ip_addr):
+    """Get remaining lockout time for IP."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT locked_until FROM login_lockouts WHERE ip_address = %s", (ip_addr,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and row["locked_until"] > datetime.now(TZ):
+            remaining = (row["locked_until"] - datetime.now(TZ)).total_seconds() / 60
+            return int(remaining) + 1
+    except Exception as e:
+        log.warning(f"Error getting lockout info: {e}")
+    return 0
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
@@ -1037,11 +1144,35 @@ def login():
         if session.get("authenticated"):
             return redirect("/")
         return render_template("login.html")
+
+    ip_addr = get_client_ip()
+
+    if is_ip_locked(ip_addr):
+        remaining_mins = get_lockout_info(ip_addr)
+        return jsonify({
+            "error": f"Too many failed attempts. Try again in {remaining_mins} minute(s).",
+            "lockout": True,
+            "minutes_remaining": remaining_mins
+        }), 429
+
     data = request.get_json(force=True) or {}
     if data.get("password") == APP_PASSWORD:
+        record_login_attempt(ip_addr, True)
         session.permanent = True
         session["authenticated"] = True
+        session.cookie_httponly = True
+        session.cookie_secure = True
+        session.cookie_samesite = 'Strict'
         return jsonify({"status": "ok"})
+
+    lockout_info = record_login_attempt(ip_addr, False)
+    if lockout_info["locked"]:
+        return jsonify({
+            "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
+            "lockout": True,
+            "minutes_remaining": lockout_info["minutes_remaining"]
+        }), 429
+
     return jsonify({"error": "Wrong password"}), 401
 
 

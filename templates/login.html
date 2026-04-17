@@ -174,6 +174,28 @@ height: 18px;
 transition: opacity 0.2s;
 }
 
+.error-msg.lockout {
+color: #ff6b6b;
+font-weight: 600;
+height: auto;
+}
+
+.security-info {
+font-size: 11px;
+color: var(--text3);
+text-align: center;
+margin-top: 20px;
+padding: 12px;
+background: var(--surface);
+border-radius: 8px;
+border-left: 3px solid var(--accent);
+}
+
+.security-info.warning {
+border-left-color: var(--red);
+background: rgba(240, 92, 92, 0.05);
+}
+
 .session-note {
 font-size: 11px;
 color: var(--text3);
@@ -207,17 +229,21 @@ letter-spacing: 0.02em;
 <button class="submit-btn" id="submit-btn" onclick="submitLogin()">Unlock</button>
 
   <div class="error-msg" id="error-msg"></div>
-  <div class="session-note">Session lasts 30 days</div>
+  <div class="security-info" id="security-info" style="display:none;"></div>
+  <div class="session-note">Secure session • 30 days</div>
 </div>
 
 <script>
 var input = document.getElementById('pw-input');
 var btn = document.getElementById('submit-btn');
 var errMsg = document.getElementById('error-msg');
+var securityInfo = document.getElementById('security-info');
 var visible = false;
+var isLocked = false;
+var lockoutTimer = null;
 
 input.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') submitLogin();
+  if (e.key === 'Enter' && !isLocked) submitLogin();
 });
 
 function toggleVisibility() {
@@ -226,36 +252,89 @@ function toggleVisibility() {
   document.getElementById('toggle-btn').textContent = visible ? '🙈' : '👁';
 }
 
+function showSecurityInfo(message, isWarning) {
+  securityInfo.textContent = message;
+  securityInfo.className = 'security-info' + (isWarning ? ' warning' : '');
+  securityInfo.style.display = 'block';
+}
+
+function startLockoutCountdown(minutesRemaining) {
+  isLocked = true;
+  btn.disabled = true;
+  btn.textContent = minutesRemaining + 'm locked';
+  input.classList.add('error');
+  showSecurityInfo('🔒 Too many failed attempts. Please wait before trying again.', true);
+
+  lockoutTimer = setInterval(function() {
+    minutesRemaining--;
+    if (minutesRemaining <= 0) {
+      clearInterval(lockoutTimer);
+      isLocked = false;
+      btn.disabled = false;
+      btn.textContent = 'Unlock';
+      input.classList.remove('error');
+      errMsg.textContent = '';
+      securityInfo.style.display = 'none';
+      input.focus();
+    } else {
+      btn.textContent = minutesRemaining + 'm locked';
+    }
+  }, 60000);
+}
+
 function submitLogin() {
+  if (isLocked) return;
+
   var pw = input.value;
-  if (!pw) return;
+  if (!pw) {
+    errMsg.textContent = 'Password required';
+    return;
+  }
+
   btn.disabled = true;
   btn.textContent = 'Checking...';
   errMsg.textContent = '';
+  securityInfo.style.display = 'none';
   input.classList.remove('error');
 
   fetch('/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: pw })
+    body: JSON.stringify({ password: pw }),
+    credentials: 'same-origin'
   }).then(function(r) {
-    if (r.ok) {
-      btn.textContent = '✓ Opening...';
+    return r.json().then(function(data) {
+      return { status: r.status, data: data };
+    });
+  }).then(function(response) {
+    if (response.status === 200) {
+      btn.textContent = '✓ Authenticated';
+      showSecurityInfo('✓ Secure connection established', false);
       setTimeout(function() { window.location.href = '/'; }, 300);
+    } else if (response.status === 429) {
+      var minutesRemaining = response.data.minutes_remaining || 15;
+      startLockoutCountdown(minutesRemaining);
+      errMsg.textContent = response.data.error || 'Account locked. Too many attempts.';
     } else {
       input.value = '';
       input.classList.add('error');
-      errMsg.textContent = 'Wrong password. Try again.';
+      errMsg.textContent = response.data.error || 'Invalid password';
       btn.disabled = false;
       btn.textContent = 'Unlock';
       input.focus();
+      showSecurityInfo('⚠ Incorrect password. Multiple attempts may lock your account.', true);
     }
-  }).catch(function() {
-    errMsg.textContent = 'Connection error.';
+  }).catch(function(error) {
+    console.error('Login error:', error);
+    errMsg.textContent = 'Connection error. Please try again.';
     btn.disabled = false;
     btn.textContent = 'Unlock';
   });
 }
+
+window.addEventListener('beforeunload', function() {
+  if (lockoutTimer) clearInterval(lockoutTimer);
+});
 </script>
 
 </body>
