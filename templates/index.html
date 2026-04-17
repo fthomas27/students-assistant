@@ -225,8 +225,66 @@ display: none !important;
 }
 .sidebar-col-1,
 .sidebar-col-2,
-.sidebar-col-3 {
+.sidebar-col-3,
+.sidebar-col-4 {
 display: none !important;
+}
+.sidebar.open {
+display: flex;
+position: fixed;
+left: 0;
+top: calc(var(--header-h) + 50px);
+width: 280px;
+max-height: calc(100% - var(--header-h) - 50px);
+z-index: 50;
+flex-direction: column;
+box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+overflow-y: auto;
+border-right: 1px solid var(--border);
+}
+.mobile-selector {
+display: none;
+position: fixed;
+left: 0;
+top: var(--header-h);
+width: 280px;
+height: 50px;
+background: var(--bg);
+border-bottom: 1px solid var(--border);
+border-right: 1px solid var(--border);
+z-index: 49;
+flex-direction: row;
+gap: 0;
+padding: 0;
+}
+.mobile-selector.open {
+display: flex;
+}
+.mobile-col-btn {
+flex: 1;
+padding: 12px 8px;
+background: transparent;
+border: none;
+border-bottom: 2px solid transparent;
+color: var(--text3);
+cursor: pointer;
+font-size: 10px;
+font-weight: 600;
+transition: all 0.2s;
+text-transform: uppercase;
+letter-spacing: 0.05em;
+border-right: 1px solid var(--border);
+}
+.mobile-col-btn:last-child {
+border-right: none;
+}
+.mobile-col-btn.active {
+color: var(--accent);
+border-bottom-color: var(--accent);
+background: var(--surface);
+}
+.mobile-col-btn:hover {
+color: var(--text);
 }
 }
 
@@ -906,6 +964,14 @@ margin-bottom: 0;
 
 <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebar()"></div>
 
+<!-- Mobile Sidebar Selector -->
+<div class="mobile-selector" id="mobileSelector">
+  <button class="mobile-col-btn active" onclick="switchMobileColumn(1)">Tasks</button>
+  <button class="mobile-col-btn" onclick="switchMobileColumn(2)">Calendar</button>
+  <button class="mobile-col-btn" onclick="switchMobileColumn(3)">Plan</button>
+  <button class="mobile-col-btn" onclick="switchMobileColumn(4)">Assign</button>
+</div>
+
 <!-- Settings Modal -->
 <div class="settings-modal-backdrop" id="settingsBackdrop" onclick="closeSettingsModal()"></div>
 <div class="settings-modal" id="settingsModal">
@@ -1052,6 +1118,10 @@ function isMobile() {
 function toggleSidebar() {
   if (isMobile()) {
     document.getElementById('sidebarCol1').classList.toggle('open');
+    document.getElementById('sidebarCol2').classList.toggle('open');
+    document.getElementById('sidebarCol3').classList.toggle('open');
+    document.getElementById('sidebarCol4').classList.toggle('open');
+    document.getElementById('mobileSelector').classList.toggle('open');
     document.getElementById('sidebarBackdrop').classList.toggle('visible');
   }
 }
@@ -1059,8 +1129,28 @@ function toggleSidebar() {
 function closeSidebar() {
   if (isMobile()) {
     document.getElementById('sidebarCol1').classList.remove('open');
+    document.getElementById('sidebarCol2').classList.remove('open');
+    document.getElementById('sidebarCol3').classList.remove('open');
+    document.getElementById('sidebarCol4').classList.remove('open');
+    document.getElementById('mobileSelector').classList.remove('open');
     document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
+}
+
+function switchMobileColumn(colNumber) {
+  // Hide all columns
+  document.getElementById('sidebarCol1').classList.remove('open');
+  document.getElementById('sidebarCol2').classList.remove('open');
+  document.getElementById('sidebarCol3').classList.remove('open');
+  document.getElementById('sidebarCol4').classList.remove('open');
+
+  // Show selected column
+  document.getElementById(`sidebarCol${colNumber}`).classList.add('open');
+
+  // Update button styles
+  document.querySelectorAll('.mobile-col-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', i === colNumber - 1);
+  });
 }
 
 function toggleSection(sectionId) {
@@ -1308,7 +1398,21 @@ function renderPlan(planData) {
   }
 
   if (!planData.items || planData.items.length === 0) {
-    container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No plan for today. Click "Generate" to create one.</div>';
+    // Show incomplete tasks if no plan exists
+    const incompleteTasks = tasksCache.filter(t => !t.completed);
+    if (incompleteTasks.length > 0) {
+      container.innerHTML = incompleteTasks.slice(0, 5).map(t => {
+        const urgencyColor = ['critical', 'high'].includes(t.urgency) ? 'var(--red)' : 'var(--accent)';
+        return `
+          <div class="sidebar-item" style="border-left: 3px solid ${urgencyColor};">
+            <div class="sidebar-item-title">${t.title}</div>
+            <div class="sidebar-item-meta">[${t.urgency}]</div>
+          </div>
+        `;
+      }).join('');
+    } else {
+      container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No tasks. Click "Generate" to create a plan.</div>';
+    }
     return;
   }
 
