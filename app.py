@@ -53,6 +53,7 @@ TZ = _TZ_DEFAULT
 _briefing_lock = threading.Lock()
 _timer_lock = threading.Lock()
 _workout_lock = threading.Lock()
+_plan_lock = threading.Lock()
 
 # Workout rotation: advances each time a plan is generated (not by calendar day).
 WORKOUT_FOCUS_CYCLE = [
@@ -318,6 +319,35 @@ CREATE TABLE IF NOT EXISTS workout_logs (
     perceived_difficulty INT
 )""")
 
+    cur.execute("""
+CREATE TABLE IF NOT EXISTS daily_plans (
+    id SERIAL PRIMARY KEY,
+    plan_date DATE NOT NULL,
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    needs_update BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(plan_date)
+)""")
+
+    cur.execute("""
+CREATE TABLE IF NOT EXISTS daily_plan_items (
+    id SERIAL PRIMARY KEY,
+    plan_id INTEGER NOT NULL REFERENCES daily_plans(id) ON DELETE CASCADE,
+    item_type VARCHAR(20) NOT NULL,
+    item_id VARCHAR(255),
+    item_title VARCHAR(500) NOT NULL,
+    scheduled_start_time TIME NOT NULL,
+    scheduled_end_time TIME NOT NULL,
+    estimated_minutes INTEGER,
+    order_index INTEGER,
+    completed BOOLEAN NOT NULL DEFAULT FALSE,
+    completed_at TIMESTAMPTZ,
+    user_edited BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)""")
+
     defaults = {
         "name": "Finn",
         "morning_briefing_time": "07:00",
@@ -343,6 +373,9 @@ ON CONFLICT (key) DO NOTHING""", (k, v))
     cur.execute("CREATE INDEX IF NOT EXISTS idx_project_tasks_assignee_status ON project_tasks(assignee, status)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_completions_completed_at ON completions(completed_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_plans_date ON daily_plans(plan_date)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_plan_items_plan_id ON daily_plan_items(plan_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_plan_items_completed ON daily_plan_items(completed)")
 
     conn.commit()
     cur.close()
@@ -1991,6 +2024,12 @@ def api_tasks_update(task_id):
         cur.execute("""
 UPDATE tasks SET completed=%s, completed_at=%s WHERE id=%s""",
                     (completed, datetime.now(TZ) if completed else None, task_id))
+        # Mark today's plan as needing update if task is completed
+        if completed:
+            today = datetime.now(TZ).date()
+            cur.execute("""
+UPDATE daily_plans SET needs_update = TRUE, last_updated_at = NOW()
+WHERE plan_date = %s""", (today,))
     if "title" in data:
         cur.execute("UPDATE tasks SET title=%s WHERE id=%s", (str(data["title"])[:300], task_id))
     if "urgency" in data:
@@ -2642,6 +2681,328 @@ ORDER BY pn.created_at DESC LIMIT 6""")
     except Exception:
         log.exception("/api/chat failed")
         return jsonify({"error": "Failed to reach AI. Check server logs."}), 500
+
+
+# ── Plan My Day ──────────────────────────────────────────────────────────────
+
+@app.route("/api/plan-my-day", methods=["GET"])
+def api_plan_my_day_get():
+    """Get today's daily plan with all scheduled items."""
+    today = datetime.now(TZ).date()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT id, needs_update FROM daily_plans WHERE plan_date = %s", (today,))
+        plan_row = cur.fetchone()
+        if not plan_row:
+            cur.close()
+            conn.close()
+            return jsonify({"plan_id": None, "items": [], "needs_update": False})
+
+        plan_id = plan_row["id"]
+        needs_update = plan_row["needs_update"]
+
+        cur.execute("""
+SELECT id, item_type, item_id, item_title, scheduled_start_time, scheduled_end_time,
+       estimated_minutes, completed, order_index
+FROM daily_plan_items
+WHERE plan_id = %s
+ORDER BY order_index ASC""", (plan_id,))
+        items = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+
+        # Format time fields to strings
+        for item in items:
+            if isinstance(item["scheduled_start_time"], str):
+                start_str = item["scheduled_start_time"]
+            else:
+                start_str = item["scheduled_start_time"].strftime("%H:%M")
+
+            if isinstance(item["scheduled_end_time"], str):
+                end_str = item["scheduled_end_time"]
+            else:
+                end_str = item["scheduled_end_time"].strftime("%H:%M")
+
+            item["scheduled_start_time"] = start_str
+            item["scheduled_end_time"] = end_str
+
+        return jsonify({"plan_id": plan_id, "items": items, "needs_update": needs_update})
+    except Exception as e:
+        log.exception("Error getting daily plan")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/plan-my-day/generate", methods=["POST"])
+def api_plan_my_day_generate():
+    """Generate a new daily plan using AI."""
+    today = datetime.now(TZ).date()
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    try:
+        with _plan_lock:
+            conn = get_db()
+            cur = conn.cursor()
+
+            # Check if plan already exists
+            cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s", (today,))
+            existing = cur.fetchone()
+            if existing:
+                # Delete old plan
+                cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
+
+            # Fetch assignments, tasks, and calendar events for today
+            assignments = []
+            tasks = []
+            calendar_events = []
+
+            # Get assignments
+            try:
+                resp = requests.get("http://localhost:5000/api/assignments", timeout=5)
+                if resp.status_code == 200:
+                    all_asgn = resp.json().get("assignments", [])
+                    for a in all_asgn:
+                        due_iso = a.get("due_iso", "")
+                        if due_iso:
+                            try:
+                                due_dt = datetime.fromisoformat(due_iso.replace("Z", "+00:00"))
+                                due_date = due_dt.astimezone(TZ).date()
+                                if due_date == today:
+                                    est_mins = estimate_assignment(a.get("title", ""), a.get("class_name", ""))
+                                    assignments.append({
+                                        "type": "assignment",
+                                        "id": a.get("uid", ""),
+                                        "title": a.get("title", ""),
+                                        "estimated_minutes": int(est_mins)
+                                    })
+                            except Exception:
+                                pass
+            except Exception as e:
+                log.warning(f"Could not fetch assignments for plan: {e}")
+
+            # Get tasks due today
+            cur.execute("SELECT id, title FROM tasks WHERE due_date = %s AND completed = FALSE", (today,))
+            for task_row in cur.fetchall():
+                tasks.append({
+                    "type": "task",
+                    "id": str(task_row["id"]),
+                    "title": task_row["title"],
+                    "estimated_minutes": 30
+                })
+
+            # Get calendar events for today
+            try:
+                cal = fetch_ical(PERSONAL_ICAL_URL)
+                if cal:
+                    for event in parse_calendar_events(cal, days_ahead=1):
+                        if event["date"] == today.isoformat() and not event.get("all_day"):
+                            calendar_events.append({
+                                "type": "calendar",
+                                "id": event.get("uid", ""),
+                                "title": event["title"],
+                                "start_time": event.get("start_iso", ""),
+                                "end_time": event.get("end_iso", "")
+                            })
+            except Exception as e:
+                log.warning(f"Could not fetch calendar for plan: {e}")
+
+            # Get free time windows
+            free_windows = []
+            try:
+                resp = requests.get("http://localhost:5000/api/availability", timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    free_windows = data.get("free", [])
+            except Exception as e:
+                log.warning(f"Could not fetch availability for plan: {e}")
+
+            # Use Claude to generate optimal schedule
+            if not api_key:
+                cur.close()
+                conn.close()
+                return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
+
+            client = anthropic.Anthropic(api_key=api_key)
+            schedule_prompt = f"""You are a time management assistant. Generate an optimal daily schedule for today.
+
+Today is {today}.
+
+Available time windows (free slots):
+{json.dumps(free_windows, indent=2)}
+
+Tasks to schedule (estimated duration):
+{json.dumps(assignments + tasks, indent=2)}
+
+Fixed calendar events (cannot be moved):
+{json.dumps(calendar_events, indent=2)}
+
+Return a JSON array of scheduled items. Each item should have:
+- item_type: "assignment", "task", or "calendar"
+- item_id: the original ID
+- item_title: the title
+- scheduled_start_time: "HH:MM" format (24-hour)
+- scheduled_end_time: "HH:MM" format (24-hour)
+
+Rules:
+1. Respect all fixed calendar events (don't schedule over them)
+2. Fit assignments and tasks into free windows only
+3. Prioritize high-effort tasks earlier in the day
+4. Keep tasks grouped by subject/type when possible
+5. Avoid context switching (keep similar tasks together)
+6. If something doesn't fit, omit it and note that in a separate "warning" field
+
+Return ONLY valid JSON, no markdown or extra text."""
+
+            try:
+                message = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=2048,
+                    messages=[{"role": "user", "content": schedule_prompt}]
+                )
+                response_text = message.content[0].text if message.content else "[]"
+                scheduled_items = json.loads(response_text)
+            except Exception as e:
+                log.warning(f"Claude plan generation failed: {e}")
+                # Fallback: create a simple schedule
+                scheduled_items = []
+                current_hour = 15  # Start at 3 PM
+                for item in assignments + tasks:
+                    estimated_mins = item.get("estimated_minutes", 30)
+                    start_min = current_hour * 60
+                    end_min = start_min + estimated_mins
+                    scheduled_items.append({
+                        "item_type": item["type"],
+                        "item_id": item["id"],
+                        "item_title": item["title"],
+                        "scheduled_start_time": f"{current_hour:02d}:{0:02d}",
+                        "scheduled_end_time": f"{end_min // 60:02d}:{end_min % 60:02d}"
+                    })
+                    current_hour = end_min // 60
+
+            # Insert plan into database
+            cur.execute(
+                "INSERT INTO daily_plans (plan_date, generated_at) VALUES (%s, NOW()) RETURNING id",
+                (today,)
+            )
+            plan_id = cur.fetchone()["id"]
+
+            # Insert scheduled items
+            for idx, item in enumerate(scheduled_items):
+                cur.execute("""
+INSERT INTO daily_plan_items (plan_id, item_type, item_id, item_title,
+                              scheduled_start_time, scheduled_end_time, estimated_minutes, order_index)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        plan_id,
+                        item.get("item_type", ""),
+                        str(item.get("item_id", "")),
+                        item.get("item_title", ""),
+                        item.get("scheduled_start_time", "09:00"),
+                        item.get("scheduled_end_time", "09:30"),
+                        item.get("estimated_minutes", 30),
+                        idx
+                    )
+                )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            return jsonify({
+                "status": "ok",
+                "plan_id": plan_id,
+                "items_count": len(scheduled_items)
+            })
+    except Exception as e:
+        log.exception("Error generating daily plan")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/plan-my-day/reorder", methods=["PATCH"])
+def api_plan_my_day_reorder():
+    """Reorder items in today's plan."""
+    data = request.get_json(force=True) or {}
+    try:
+        with _plan_lock:
+            conn = get_db()
+            cur = conn.cursor()
+
+            today = datetime.now(TZ).date()
+            cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s", (today,))
+            plan_row = cur.fetchone()
+
+            if not plan_row:
+                cur.close()
+                conn.close()
+                return jsonify({"error": "No plan for today"}), 404
+
+            plan_id = plan_row["id"]
+
+            # Update all items' order
+            items = data.get("items", [])
+            for item in items:
+                cur.execute("""
+UPDATE daily_plan_items SET order_index = %s, user_edited = TRUE, updated_at = NOW()
+WHERE id = %s AND plan_id = %s""",
+                    (item.get("order_index"), item.get("id"), plan_id)
+                )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"status": "ok"})
+    except Exception as e:
+        log.exception("Error reordering plan items")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/plan-my-day/items/<int:item_id>", methods=["PATCH"])
+def api_plan_my_day_item_update(item_id):
+    """Update a specific plan item's times."""
+    data = request.get_json(force=True) or {}
+    try:
+        with _plan_lock:
+            conn = get_db()
+            cur = conn.cursor()
+
+            start_time = data.get("scheduled_start_time")
+            end_time = data.get("scheduled_end_time")
+
+            cur.execute("""
+UPDATE daily_plan_items
+SET scheduled_start_time = COALESCE(%s, scheduled_start_time),
+    scheduled_end_time = COALESCE(%s, scheduled_end_time),
+    user_edited = TRUE,
+    updated_at = NOW()
+WHERE id = %s""",
+                (start_time, end_time, item_id)
+            )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"status": "ok"})
+    except Exception as e:
+        log.exception("Error updating plan item")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/plan-my-day", methods=["DELETE"])
+def api_plan_my_day_delete():
+    """Delete today's plan."""
+    today = datetime.now(TZ).date()
+    try:
+        with _plan_lock:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"status": "ok"})
+    except Exception as e:
+        log.exception("Error deleting daily plan")
+        return jsonify({"error": str(e)}), 500
 
 
 # ──────────────────────────────────────────────────────────────────────────────

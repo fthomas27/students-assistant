@@ -249,6 +249,54 @@ color: var(--amber);
 font-weight: 600;
 }
 
+.plan-item {
+background: linear-gradient(90deg, var(--surface), var(--surface2));
+border-left: 4px solid var(--accent);
+padding: 10px 12px;
+margin: 6px 0;
+border-radius: var(--r-sm);
+cursor: move;
+transition: background 0.15s, box-shadow 0.15s, opacity 0.15s;
+font-size: 13px;
+user-select: none;
+}
+
+.plan-item:hover {
+background: var(--surface2);
+box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.plan-item.dragging {
+opacity: 0.5;
+box-shadow: 0 4px 12px rgba(0,82,204,0.2);
+}
+
+.plan-item-time {
+font-size: 11px;
+color: var(--text2);
+font-weight: 600;
+margin-bottom: 2px;
+}
+
+.plan-item-title {
+color: var(--text);
+}
+
+.notification-dot {
+display: inline-block;
+width: 8px;
+height: 8px;
+background: var(--red);
+border-radius: 50%;
+margin-left: 4px;
+animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+0%, 100% { opacity: 1; }
+50% { opacity: 0.5; }
+}
+
 /* Mobile overlay backdrop */
 .sidebar-backdrop {
 display: none;
@@ -510,6 +558,18 @@ background: var(--surface3);
 <div class="sidebar-section-title">📅 Calendar</div>
 <div id="calendarList"></div>
 </div>
+
+<div class="sidebar-section">
+<div class="sidebar-section-title">
+📋 Plan My Day
+<span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
+</div>
+<div id="planContent"></div>
+<div style="display: flex; gap: 6px; margin-top: 8px;">
+<button onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Generate</button>
+<button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
+</div>
+</div>
 </aside>
 
 <div class="content-wrapper">
@@ -614,6 +674,17 @@ async function loadSidebarData() {
     console.error('Failed to load calendar:', e);
     document.getElementById('calendarList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading calendar</div>';
   }
+
+  try {
+    const response = await fetch('/api/plan-my-day');
+    if (response.ok) {
+      const data = await response.json();
+      renderPlan(data);
+    }
+  } catch (e) {
+    console.error('Failed to load plan:', e);
+    document.getElementById('planContent').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading plan</div>';
+  }
 }
 
 function renderAssignments() {
@@ -689,6 +760,137 @@ function renderCalendar() {
       <div class="sidebar-item-meta">${formatEventTime(e.start_iso)}</div>
     </div>
   `).join('');
+}
+
+function renderPlan(planData) {
+  const container = document.getElementById('planContent');
+  const notificationDot = document.getElementById('planNeedsUpdate');
+
+  if (planData.needs_update) {
+    notificationDot.style.display = 'inline-block';
+  } else {
+    notificationDot.style.display = 'none';
+  }
+
+  if (!planData.items || planData.items.length === 0) {
+    container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No plan for today. Click "Generate" to create one.</div>';
+    return;
+  }
+
+  const itemsHtml = planData.items.map((item, idx) => {
+    const icon = item.item_type === 'assignment' ? '📝' :
+                 item.item_type === 'task' ? '✓' :
+                 item.item_type === 'calendar' ? '📅' : '⏱';
+
+    return `
+      <div class="plan-item" draggable="true" data-item-id="${item.id}" data-order="${idx}">
+        <div class="plan-item-time">${item.scheduled_start_time} – ${item.scheduled_end_time}</div>
+        <div class="plan-item-title">${icon} ${item.item_title}</div>
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = itemsHtml;
+
+  // Add drag/drop handlers
+  const items = container.querySelectorAll('.plan-item');
+  items.forEach(item => {
+    item.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'move';
+      e.currentTarget.classList.add('dragging');
+    });
+    item.addEventListener('dragend', (e) => {
+      e.currentTarget.classList.remove('dragging');
+    });
+    item.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    });
+    item.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const dragged = document.querySelector('.plan-item.dragging');
+      if (dragged && dragged !== e.currentTarget) {
+        const items = Array.from(container.querySelectorAll('.plan-item'));
+        const draggedIdx = items.indexOf(dragged);
+        const targetIdx = items.indexOf(e.currentTarget);
+
+        if (draggedIdx !== -1 && targetIdx !== -1) {
+          // Swap order
+          [items[draggedIdx], items[targetIdx]] = [items[targetIdx], items[draggedIdx]];
+
+          // Update in DOM
+          const reorderData = items.map((item, idx) => ({
+            id: parseInt(item.dataset.itemId),
+            order_index: idx
+          }));
+
+          try {
+            const response = await fetch('/api/plan-my-day/reorder', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ items: reorderData })
+            });
+            if (response.ok) {
+              // Re-render to show updated order
+              const planResp = await fetch('/api/plan-my-day');
+              if (planResp.ok) {
+                const updatedPlan = await planResp.json();
+                renderPlan(updatedPlan);
+              }
+            }
+          } catch (error) {
+            console.error('Failed to reorder plan:', error);
+          }
+        }
+      }
+    });
+  });
+}
+
+async function generatePlan() {
+  try {
+    const response = await fetch('/api/plan-my-day/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    if (response.ok) {
+      // Reload plan
+      const planResp = await fetch('/api/plan-my-day');
+      if (planResp.ok) {
+        const planData = await planResp.json();
+        renderPlan(planData);
+      }
+    } else {
+      const error = await response.json();
+      alert('Error generating plan: ' + (error.error || 'Unknown error'));
+    }
+  } catch (e) {
+    console.error('Failed to generate plan:', e);
+    alert('Failed to generate plan');
+  }
+}
+
+async function deletePlan() {
+  if (!confirm('Delete today\'s plan?')) return;
+
+  try {
+    const response = await fetch('/api/plan-my-day', {
+      method: 'DELETE'
+    });
+
+    if (response.ok) {
+      // Reload plan
+      const planResp = await fetch('/api/plan-my-day');
+      if (planResp.ok) {
+        const planData = await planResp.json();
+        renderPlan(planData);
+      }
+    }
+  } catch (e) {
+    console.error('Failed to delete plan:', e);
+  }
 }
 
 function formatDate(dateStr) {
