@@ -995,8 +995,6 @@ margin-bottom: 0;
 <div class="header-title">Finn</div>
 <div class="header-actions">
 <button class="menu-btn" id="sidebarToggle" onclick="toggleSidebar()">☰</button>
-<button class="gear-btn" onclick="openChatHistory()">💬</button>
-<button class="gear-btn" onclick="openSettings()">⚙</button>
 </div>
 </div>
 
@@ -1004,10 +1002,12 @@ margin-bottom: 0;
 
 <!-- Sidebar Column Toggle Buttons -->
 <div class="sidebar-toggle-panel">
+  <button class="sidebar-toggle-btn" onclick="openChatHistory()" title="Chat History">💬</button>
   <button class="sidebar-toggle-btn active" data-column="1" onclick="toggleSidebarColumn(1)" title="Tasks">✓</button>
   <button class="sidebar-toggle-btn" data-column="2" onclick="toggleSidebarColumn(2)" title="Calendar">📅</button>
   <button class="sidebar-toggle-btn" data-column="3" onclick="toggleSidebarColumn(3)" title="Plan">🎯</button>
   <button class="sidebar-toggle-btn" data-column="4" onclick="toggleSidebarColumn(4)" title="Assignments">📋</button>
+  <button class="sidebar-toggle-btn" onclick="openSettings()" title="Settings">⚙</button>
 </div>
 
 <!-- Settings Modal -->
