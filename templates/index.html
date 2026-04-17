@@ -536,6 +536,17 @@ border-bottom-color: var(--accent);
 box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+.sidebar-toggle-btn.small {
+flex: 0.6;
+font-size: 16px;
+padding: 4px;
+}
+
+.sidebar-toggle-btn.small:hover {
+background: var(--surface2);
+color: var(--text2);
+}
+
 /* Sidebar overlay for mobile/tablet */
 @media (max-width: 1279px) {
 .sidebar.open {
@@ -1002,12 +1013,14 @@ margin-bottom: 0;
 
 <!-- Sidebar Column Toggle Buttons -->
 <div class="sidebar-toggle-panel">
-  <button class="sidebar-toggle-btn" onclick="openChatHistory()" title="Chat History">💬</button>
+  <div style="display: flex; flex-direction: row; width: 60px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);">
+    <button class="sidebar-toggle-btn small" onclick="openChatHistory()" title="Chat History">💬</button>
+    <button class="sidebar-toggle-btn small" onclick="openSettings()" title="Settings">⚙</button>
+  </div>
   <button class="sidebar-toggle-btn active" data-column="1" onclick="toggleSidebarColumn(1)" title="Tasks">✓</button>
   <button class="sidebar-toggle-btn" data-column="2" onclick="toggleSidebarColumn(2)" title="Calendar">📅</button>
   <button class="sidebar-toggle-btn" data-column="3" onclick="toggleSidebarColumn(3)" title="Plan">🎯</button>
   <button class="sidebar-toggle-btn" data-column="4" onclick="toggleSidebarColumn(4)" title="Assignments">📋</button>
-  <button class="sidebar-toggle-btn" onclick="openSettings()" title="Settings">⚙</button>
 </div>
 
 <!-- Settings Modal -->
@@ -1441,7 +1454,6 @@ async function loadSidebarData() {
         if (!dataChanged(assignmentsCache, newData)) return;
         assignmentsCache = newData;
         renderAssignments();
-        clearTimeout(timeoutId);
       }
     },
     tasks: {
