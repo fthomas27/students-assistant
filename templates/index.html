@@ -458,6 +458,80 @@ display: block;
 }
 }
 
+/* Sidebar Toggle Buttons */
+.sidebar-toggle-panel {
+display: none;
+position: fixed;
+left: 0;
+top: var(--header-h);
+width: 60px;
+height: 240px;
+background: var(--bg);
+border-right: 1px solid var(--border);
+z-index: 45;
+flex-direction: column;
+gap: 0;
+padding: 0;
+}
+
+@media (max-width: 1279px) {
+.sidebar-toggle-panel {
+display: flex;
+}
+}
+
+.sidebar-toggle-btn {
+flex: 1;
+width: 60px;
+background: var(--surface);
+border: 1px solid var(--border);
+border-left: none;
+border-right: none;
+border-top: none;
+color: var(--text3);
+cursor: pointer;
+font-size: 24px;
+transition: all 0.2s;
+display: flex;
+align-items: center;
+justify-content: center;
+position: relative;
+}
+
+.sidebar-toggle-btn:last-child {
+border-bottom: none;
+}
+
+.sidebar-toggle-btn:hover {
+background: var(--surface2);
+color: var(--text2);
+}
+
+.sidebar-toggle-btn.active {
+background: var(--accent);
+color: white;
+border-right-color: var(--accent);
+border-bottom-color: var(--accent);
+box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Sidebar overlay for mobile/tablet */
+@media (max-width: 1279px) {
+.sidebar.open {
+display: flex;
+position: fixed;
+left: 60px;
+top: var(--header-h);
+width: 280px;
+max-height: calc(100% - var(--header-h));
+z-index: 41;
+flex-direction: column;
+background: var(--bg);
+border-right: 1px solid var(--border);
+overflow-y: auto;
+}
+}
+
 /* ── CHAT AREA ── */
 .chat-container {
 display: flex;
@@ -904,7 +978,15 @@ margin-bottom: 0;
 </div>
 </div>
 
-<div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebar()"></div>
+<div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebarColumn()"></div>
+
+<!-- Sidebar Column Toggle Buttons -->
+<div class="sidebar-toggle-panel">
+  <button class="sidebar-toggle-btn active" data-column="1" onclick="toggleSidebarColumn(1)" title="Tasks">✓</button>
+  <button class="sidebar-toggle-btn" data-column="2" onclick="toggleSidebarColumn(2)" title="Calendar">📅</button>
+  <button class="sidebar-toggle-btn" data-column="3" onclick="toggleSidebarColumn(3)" title="Plan">🎯</button>
+  <button class="sidebar-toggle-btn" data-column="4" onclick="toggleSidebarColumn(4)" title="Assignments">📋</button>
+</div>
 
 <!-- Settings Modal -->
 <div class="settings-modal-backdrop" id="settingsBackdrop" onclick="closeSettingsModal()"></div>
@@ -1049,18 +1131,40 @@ function isMobile() {
   return window.innerWidth < 640;
 }
 
-function toggleSidebar() {
-  if (isMobile()) {
-    document.getElementById('sidebarCol1').classList.toggle('open');
-    document.getElementById('sidebarBackdrop').classList.toggle('visible');
+function toggleSidebarColumn(colNumber) {
+  const sidebar = document.getElementById(`sidebarCol${colNumber}`);
+  const isOpen = sidebar.classList.contains('open');
+
+  // Close all sidebars
+  document.getElementById('sidebarCol1').classList.remove('open');
+  document.getElementById('sidebarCol2').classList.remove('open');
+  document.getElementById('sidebarCol3').classList.remove('open');
+  document.getElementById('sidebarCol4').classList.remove('open');
+
+  // Update button states
+  document.querySelectorAll('.sidebar-toggle-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+
+  // Open selected sidebar if it wasn't open
+  if (!isOpen) {
+    sidebar.classList.add('open');
+    document.querySelector(`[data-column="${colNumber}"]`).classList.add('active');
+    document.getElementById('sidebarBackdrop').classList.add('visible');
+  } else {
+    document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
 }
 
-function closeSidebar() {
-  if (isMobile()) {
-    document.getElementById('sidebarCol1').classList.remove('open');
-    document.getElementById('sidebarBackdrop').classList.remove('visible');
-  }
+function closeSidebarColumn() {
+  document.getElementById('sidebarCol1').classList.remove('open');
+  document.getElementById('sidebarCol2').classList.remove('open');
+  document.getElementById('sidebarCol3').classList.remove('open');
+  document.getElementById('sidebarCol4').classList.remove('open');
+  document.getElementById('sidebarBackdrop').classList.remove('visible');
+  document.querySelectorAll('.sidebar-toggle-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
 }
 
 function toggleSection(sectionId) {
