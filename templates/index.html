@@ -1489,19 +1489,21 @@ function viewTask(title, urgency, notes) {
     messagesDiv.innerHTML = '';
   }
 
-  const urgencyColor = {
-    'critical': '🔴',
-    'high': '🟠',
-    'medium': '🟡',
-    'low': '🟢'
+  const urgencyColors = {
+    'critical': { color: '#ff6b6b', label: 'Critical' },
+    'high': { color: '#ffa940', label: 'High' },
+    'medium': { color: '#ffd666', label: 'Medium' },
+    'low': { color: '#5cb85c', label: 'Low' }
   };
+
+  const urg = urgencyColors[urgency] || { color: '#999999', label: urgency };
 
   const bubble = document.createElement('div');
   bubble.className = 'message assistant';
   bubble.innerHTML = `
     <div class="message-bubble">
       <strong>✓ ${escapeHtml(title)}</strong><br/>
-      <strong>Priority:</strong> ${urgencyColor[urgency] || '⚪'} ${urgency.toUpperCase()}<br/>
+      <strong>Priority:</strong> <span style="display: inline-block; width: 12px; height: 12px; background: ${urg.color}; border-radius: 50%; margin-right: 6px; vertical-align: middle;"></span> ${urg.label}<br/>
       ${notes ? `<strong>Notes:</strong> ${escapeHtml(notes)}<br/>` : ''}
       <button onclick="editTask('${(title || '').replace(/'/g, "\\'")}', '${(urgency || '').replace(/'/g, "\\'")}', '${(notes || '').replace(/'/g, "\\'")}')" style="margin-top: 10px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600;">Edit Task</button>
     </div>
@@ -1546,10 +1548,10 @@ function editTask(title, urgency, notes) {
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Priority</label>
       <select id="editUrgency" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
-        <option value="critical" ${urgency === 'critical' ? 'selected' : ''}>🔴 Critical</option>
-        <option value="high" ${urgency === 'high' ? 'selected' : ''}>🟠 High</option>
-        <option value="medium" ${urgency === 'medium' ? 'selected' : ''}>🟡 Medium</option>
-        <option value="low" ${urgency === 'low' ? 'selected' : ''}>🟢 Low</option>
+        <option value="critical" ${urgency === 'critical' ? 'selected' : ''}>● Critical</option>
+        <option value="high" ${urgency === 'high' ? 'selected' : ''}>● High</option>
+        <option value="medium" ${urgency === 'medium' ? 'selected' : ''}>● Medium</option>
+        <option value="low" ${urgency === 'low' ? 'selected' : ''}>● Low</option>
       </select>
     </div>
     <div style="margin-bottom: 16px;">
