@@ -11,22 +11,22 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
---bg: #ffffff;
---surface: #f8f9fa;
---surface2: #f0f2f5;
---surface3: #e8eaed;
---border: rgba(0,0,0,0.1);
---border2: rgba(0,0,0,0.15);
---text: #1a1a1a;
---text2: #404040;
---text3: #666666;
---accent: #0052cc;
---accent2: #0052cc;
---blue: #0052cc;
---red: #d32f2f;
---amber: #ff9500;
---green: #2e7d32;
---purple: #7c3aed;
+--bg: #0f0f0f;
+--surface: #1a1a1a;
+--surface2: #262626;
+--surface3: #333333;
+--border: rgba(255,255,255,0.1);
+--border2: rgba(255,255,255,0.15);
+--text: #ffffff;
+--text2: #d0d0d0;
+--text3: #999999;
+--accent: #FF7F50;
+--accent2: #FF7F50;
+--blue: #FF7F50;
+--red: #ff6b6b;
+--amber: #ffa940;
+--green: #5cb85c;
+--purple: #b197fc;
 --header-h: 56px;
 --r: 16px;
 --r-sm: 10px;
@@ -48,7 +48,7 @@ letter-spacing: -0.003em;
 /* ── HEADER ── */
 .header {
 height: var(--header-h);
-background: rgba(255,255,255,0.98);
+background: rgba(15,15,15,0.98);
 backdrop-filter: blur(32px);
 border-bottom: 1px solid var(--border);
 display: flex;
@@ -194,8 +194,103 @@ text-transform: uppercase;
 letter-spacing: 0.1em;
 }
 
+.sidebar-stats {
+display: grid;
+grid-template-columns: 1fr 1fr 1fr;
+gap: 8px;
+padding: 12px;
+}
+
+.stat-card {
+display: flex;
+flex-direction: column;
+align-items: center;
+text-align: center;
+padding: 10px;
+background: var(--surface);
+border-radius: var(--r-sm);
+border: 1px solid var(--border);
+transition: all 0.2s;
+}
+
+.stat-card:hover {
+border-color: var(--accent);
+background: var(--surface2);
+}
+
+.stat-icon {
+font-size: 20px;
+margin-bottom: 6px;
+}
+
+.stat-label {
+font-size: 10px;
+color: var(--text3);
+text-transform: uppercase;
+font-weight: 600;
+letter-spacing: 0.05em;
+}
+
+.stat-count {
+font-size: 18px;
+font-weight: 700;
+color: var(--accent);
+margin-top: 4px;
+}
+
+.section-header {
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 10px 12px;
+cursor: pointer;
+transition: all 0.15s;
+border-radius: var(--r-sm);
+user-select: none;
+}
+
+.section-header:hover {
+background: var(--surface);
+}
+
+.section-toggle {
+display: inline-block;
+font-size: 11px;
+transition: transform 0.2s;
+color: var(--text3);
+width: 16px;
+text-align: center;
+}
+
+.section-toggle.collapsed {
+transform: rotate(-90deg);
+}
+
+.section-content {
+max-height: 500px;
+overflow: hidden;
+transition: max-height 0.3s ease-out;
+padding: 0 8px;
+}
+
+.section-content.collapsed {
+max-height: 0;
+padding: 0 8px;
+}
+
+.section-badge {
+background: var(--accent);
+color: white;
+font-size: 10px;
+font-weight: 700;
+padding: 2px 6px;
+border-radius: 10px;
+min-width: 20px;
+text-align: center;
+}
+
 .sidebar-section {
-padding: 12px 8px;
+padding: 0;
 border-bottom: 1px solid var(--border);
 }
 
@@ -212,14 +307,19 @@ padding: 8px 12px 6px;
 padding: 10px 12px;
 margin: 4px 0;
 border-radius: var(--r-sm);
+border-left: 3px solid transparent;
 cursor: pointer;
-transition: background 0.15s;
+transition: background 0.15s, border-color 0.15s;
 font-size: 13px;
 color: var(--text);
 line-height: 1.4;
+background: var(--surface);
 }
 
-.sidebar-item:hover { background: var(--surface); }
+.sidebar-item:hover {
+  background: var(--surface2);
+  border-left-color: var(--accent);
+}
 .sidebar-item:active { background: var(--surface2); }
 
 .sidebar-item-title {
@@ -403,10 +503,15 @@ padding: 10px 12px;
 font-family: inherit;
 font-size: 14px;
 color: var(--text);
+background: var(--surface);
 outline: none;
-transition: border-color 0.2s;
+transition: border-color 0.2s, background 0.2s;
 max-height: 100px;
 resize: none;
+}
+
+.chat-input::placeholder {
+  color: var(--text3);
 }
 
 .chat-input:focus {
@@ -429,7 +534,7 @@ transition: background 0.15s;
 }
 
 .send-btn:active {
-background: #003da8;
+background: #ff6a3a;
 }
 
 .send-btn:disabled {
@@ -522,6 +627,31 @@ color: var(--accent);
 .quick-action-btn:active {
 background: var(--surface3);
 }
+
+.complete-btn {
+width: 28px;
+height: 28px;
+border: none;
+background: transparent;
+color: var(--text3);
+border-radius: 50%;
+cursor: pointer;
+font-size: 14px;
+display: flex;
+align-items: center;
+justify-content: center;
+transition: all 0.15s;
+flex-shrink: 0;
+}
+
+.complete-btn:hover {
+background: var(--accent);
+color: white;
+}
+
+.complete-btn:active {
+background: #ff6a3a;
+}
 </style>
 </head>
 <body>
@@ -539,35 +669,96 @@ background: var(--surface3);
 <aside class="sidebar" id="sidebar">
 <div class="sidebar-header">Your Data</div>
 
+<div class="sidebar-stats">
+<div class="stat-card">
+<div class="stat-icon">📋</div>
+<div class="stat-info">
+<div class="stat-label">Assignments</div>
+<div class="stat-count" id="assignmentCount">0</div>
+</div>
+</div>
+<div class="stat-card">
+<div class="stat-icon">✓</div>
+<div class="stat-info">
+<div class="stat-label">Tasks</div>
+<div class="stat-count" id="taskCount">0</div>
+</div>
+</div>
+<div class="stat-card">
+<div class="stat-icon">📅</div>
+<div class="stat-info">
+<div class="stat-label">Events</div>
+<div class="stat-count" id="eventCount">0</div>
+</div>
+</div>
+</div>
+
 <div class="sidebar-section">
-<div class="sidebar-section-title">📋 Assignments</div>
+<div class="section-header" onclick="toggleSection('assignmentsSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="assignmentToggle">▼</span>
+<span>📋 Assignments</span>
+</div>
+<span class="section-badge" id="assignmentBadge">0</span>
+</div>
+<div id="assignmentsSection" class="section-content">
 <div id="assignmentsList"></div>
 </div>
+</div>
 
 <div class="sidebar-section">
-<div class="sidebar-section-title">✓ Tasks</div>
+<div class="section-header" onclick="toggleSection('tasksSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="taskToggle">▼</span>
+<span>✓ Tasks</span>
+</div>
+<span class="section-badge" id="taskBadge">0</span>
+</div>
+<div id="tasksSection" class="section-content">
 <div id="tasksList"></div>
 </div>
+</div>
 
 <div class="sidebar-section">
-<div class="sidebar-section-title">📦 Projects</div>
+<div class="section-header" onclick="toggleSection('projectsSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="projectToggle">▼</span>
+<span>📦 Projects</span>
+</div>
+<span class="section-badge" id="projectBadge">0</span>
+</div>
+<div id="projectsSection" class="section-content">
 <div id="projectsList"></div>
 </div>
+</div>
 
 <div class="sidebar-section">
-<div class="sidebar-section-title">📅 Calendar</div>
+<div class="section-header" onclick="toggleSection('calendarSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="calendarToggle">▼</span>
+<span>📅 Calendar</span>
+</div>
+<span class="section-badge" id="calendarBadge">0</span>
+</div>
+<div id="calendarSection" class="section-content">
 <div id="calendarList"></div>
 </div>
+</div>
 
 <div class="sidebar-section">
-<div class="sidebar-section-title">
-📋 Plan My Day
+<div class="section-header" onclick="toggleSection('planSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="planToggle">▼</span>
+<span>🎯 Plan My Day</span>
 <span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
 </div>
+</div>
+<div id="planSection" class="section-content">
 <div id="planContent"></div>
 <div style="display: flex; gap: 6px; margin-top: 8px;">
-<button onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Generate</button>
+<button onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--accent); background: var(--accent); border-radius: var(--r-sm); cursor: pointer; color: white; transition: background 0.15s; font-weight: 600;">Generate</button>
 <button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
+</div>
 </div>
 </div>
 </aside>
@@ -619,6 +810,30 @@ function closeSidebar() {
     document.getElementById('sidebar').classList.remove('open');
     document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
+}
+
+function toggleSection(sectionId) {
+  const section = document.getElementById(sectionId);
+  const sectionName = sectionId.replace('Section', '');
+  const toggle = document.getElementById(sectionName + 'Toggle');
+
+  section.classList.toggle('collapsed');
+  toggle.classList.toggle('collapsed');
+}
+
+function updateSidebarStats() {
+  document.getElementById('assignmentCount').textContent = assignmentsCache.length;
+  document.getElementById('assignmentBadge').textContent = assignmentsCache.length;
+
+  const incompleteTasks = tasksCache.filter(t => !t.completed).length;
+  document.getElementById('taskCount').textContent = incompleteTasks;
+  document.getElementById('taskBadge').textContent = incompleteTasks;
+
+  document.getElementById('eventCount').textContent = calendarCache.length;
+  document.getElementById('calendarBadge').textContent = calendarCache.length;
+
+  const projectCount = projectsCache.filter(p => p.status === 'active').length;
+  document.getElementById('projectBadge').textContent = projectCount;
 }
 
 function openSettings() {
@@ -701,12 +916,18 @@ function renderAssignments() {
   });
 
   container.innerHTML = sorted.slice(0, 8).map(a => `
-    <div class="sidebar-item">
-      <div class="sidebar-item-title">${a.title}</div>
-      <div class="sidebar-item-meta">${a.class_name || 'Assignment'}</div>
-      <div class="sidebar-item-due">Due: ${formatDate(a.due_iso)}</div>
+    <div class="sidebar-item assignment-item">
+      <div style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
+        <div style="flex: 1;">
+          <div class="sidebar-item-title">${a.title}</div>
+          <div class="sidebar-item-meta">${a.class_name || ''}</div>
+          <div class="sidebar-item-due">${formatDate(a.due_iso)}</div>
+        </div>
+        <button class="complete-btn" onclick="completeAssignment(event, '${a.title.replace(/'/g, "\\'")}', '${(a.class_name || '').replace(/'/g, "\\'")}', ${a.estimate_minutes || 30})" title="Mark as done">✓</button>
+      </div>
     </div>
   `).join('');
+  updateSidebarStats();
 }
 
 function renderTasks() {
@@ -730,6 +951,7 @@ function renderTasks() {
       </div>
     `;
   }).join('');
+  updateSidebarStats();
 }
 
 function renderProjects() {
@@ -745,6 +967,7 @@ function renderProjects() {
       <div class="sidebar-item-meta">Project</div>
     </div>
   `).join('');
+  updateSidebarStats();
 }
 
 function renderCalendar() {
@@ -760,6 +983,7 @@ function renderCalendar() {
       <div class="sidebar-item-meta">${formatEventTime(e.start_iso)}</div>
     </div>
   `).join('');
+  updateSidebarStats();
 }
 
 function renderPlan(planData) {
@@ -845,6 +1069,7 @@ function renderPlan(planData) {
       }
     });
   });
+  updateSidebarStats();
 }
 
 async function generatePlan() {
@@ -890,6 +1115,46 @@ async function deletePlan() {
     }
   } catch (e) {
     console.error('Failed to delete plan:', e);
+  }
+}
+
+async function completeAssignment(event, title, className, estimateMinutes) {
+  event.stopPropagation();
+  const btn = event.target;
+  btn.disabled = true;
+
+  try {
+    const response = await fetch('/api/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: title,
+        class_name: className,
+        estimate_minutes: estimateMinutes
+      })
+    });
+
+    if (response.ok) {
+      btn.style.opacity = '0.5';
+      btn.style.color = 'var(--accent)';
+      setTimeout(() => {
+        btn.closest('.assignment-item').style.opacity = '0.4';
+      }, 200);
+
+      // Reload assignments after a short delay
+      setTimeout(() => {
+        const resp = fetch('/api/assignments');
+        if (resp.ok) {
+          resp.json().then(data => {
+            assignmentsCache = data.assignments || [];
+            renderAssignments();
+          });
+        }
+      }, 500);
+    }
+  } catch (e) {
+    console.error('Failed to complete assignment:', e);
+    btn.disabled = false;
   }
 }
 
