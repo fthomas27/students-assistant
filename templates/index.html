@@ -576,6 +576,7 @@ async function loadSidebarData() {
     }
   } catch (e) {
     console.error('Failed to load assignments:', e);
+    document.getElementById('assignmentsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading assignments</div>';
   }
 
   try {
@@ -587,6 +588,7 @@ async function loadSidebarData() {
     }
   } catch (e) {
     console.error('Failed to load tasks:', e);
+    document.getElementById('tasksList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading tasks</div>';
   }
 
   try {
@@ -598,6 +600,7 @@ async function loadSidebarData() {
     }
   } catch (e) {
     console.error('Failed to load projects:', e);
+    document.getElementById('projectsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading projects</div>';
   }
 
   try {
@@ -609,6 +612,7 @@ async function loadSidebarData() {
     }
   } catch (e) {
     console.error('Failed to load calendar:', e);
+    document.getElementById('calendarList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Error loading calendar</div>';
   }
 }
 
@@ -711,6 +715,8 @@ function formatEventTime(startStr) {
 }
 
 const chatInput = document.getElementById('chatInput');
+const sendBtn = document.getElementById('sendBtn');
+
 chatInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -721,7 +727,10 @@ chatInput.addEventListener('keydown', e => {
 chatInput.addEventListener('input', () => {
   chatInput.style.height = 'auto';
   chatInput.style.height = Math.min(chatInput.scrollHeight, 100) + 'px';
+  sendBtn.disabled = !chatInput.value.trim();
 });
+
+sendBtn.disabled = true;
 
 async function sendMessage() {
   const message = chatInput.value.trim();
