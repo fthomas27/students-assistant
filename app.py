@@ -57,7 +57,7 @@ _briefing_lock = threading.Lock()
 
 @app.before_request
 def require_auth():
-    if request.path in ('/login', '/logout'):
+    if request.path in ('/login', '/logout', '/admin'):
         return None
     if not session.get("authenticated"):
         if request.path.startswith('/api/'):
