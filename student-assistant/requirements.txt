@@ -1,9 +1,0 @@
-flask
-icalendar
-recurring-ical-events
-anthropic
-apscheduler
-requests
-pytz
-psycopg2-binary
-gunicorn
