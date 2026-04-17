@@ -2204,7 +2204,10 @@ function suggestMessage(text) {
 
 window.addEventListener('resize', () => {
   if (window.innerWidth >= 640) {
-    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarCol1').classList.remove('open');
+    document.getElementById('sidebarCol2').classList.remove('open');
+    document.getElementById('sidebarCol3').classList.remove('open');
+    document.getElementById('sidebarCol4').classList.remove('open');
     document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
 });
