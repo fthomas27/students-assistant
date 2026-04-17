@@ -250,6 +250,17 @@ color: var(--text);
     <button class="logout-btn" onclick="logout()">Logout</button>
   </div>
 
+  <div class="card" style="margin-bottom: 24px; background: rgba(255,127,80,0.1); border: 1px solid rgba(255,127,80,0.3);">
+    <div class="card-title">🔐 System Lockdown</div>
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <div>
+        <div class="stat-value" id="lockdown-status" style="font-size: 18px; margin-bottom: 8px;">Normal</div>
+        <div class="stat-label" id="lockdown-info">System is operating normally</div>
+      </div>
+      <button id="lockdown-toggle-btn" class="submit-btn" style="background: var(--green); width: 120px;" onclick="toggleLockdown()">Enable</button>
+    </div>
+  </div>
+
   <div class="grid">
     <div class="card">
       <div class="card-title">🔐 Recent Login Attempts</div>
@@ -439,13 +450,64 @@ function loadClaudeUsage() {
     .catch(e => { console.error(e); });
 }
 
+function loadLockdownStatus() {
+  fetch('/api/lockdown-status', { credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(data => {
+      var isLocked = data.is_locked_down;
+      var statusEl = document.getElementById('lockdown-status');
+      var infoEl = document.getElementById('lockdown-info');
+      var btnEl = document.getElementById('lockdown-toggle-btn');
+
+      if (isLocked) {
+        statusEl.textContent = 'Locked Down';
+        statusEl.style.color = 'var(--red)';
+        infoEl.textContent = '🔒 System requires security code for access';
+        btnEl.textContent = 'Disable';
+        btnEl.style.background = 'var(--red)';
+      } else {
+        statusEl.textContent = 'Normal';
+        statusEl.style.color = 'var(--green)';
+        infoEl.textContent = 'System is operating normally';
+        btnEl.textContent = 'Enable';
+        btnEl.style.background = 'var(--green)';
+      }
+    })
+    .catch(e => { console.error(e); });
+}
+
+function toggleLockdown() {
+  if (!confirm('Are you sure you want to toggle the system lockdown?\n\nThis will affect all users.')) {
+    return;
+  }
+
+  fetch('/api/admin/lockdown', {
+    method: 'POST',
+    credentials: 'same-origin'
+  }).then(r => r.json())
+    .then(data => {
+      if (data.is_locked_down !== undefined) {
+        loadLockdownStatus();
+        var msg = data.is_locked_down
+          ? '✓ Lockdown activated. Users must provide security code.'
+          : '✓ Lockdown deactivated. Normal authentication resumed.';
+        alert(msg);
+      } else {
+        alert('Error: ' + (data.error || 'Unknown error'));
+      }
+    })
+    .catch(e => { console.error(e); alert('Error toggling lockdown'); });
+}
+
 loadLoginAttempts();
 loadSuspiciousActivity();
 loadClaudeUsage();
+loadLockdownStatus();
 
 setInterval(loadLoginAttempts, 30000);
 setInterval(loadSuspiciousActivity, 30000);
 setInterval(loadClaudeUsage, 60000);
+setInterval(loadLockdownStatus, 10000);
 </script>
 
 </body>

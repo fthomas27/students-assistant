@@ -376,6 +376,15 @@ CREATE TABLE IF NOT EXISTS login_lockouts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )""")
 
+    cur.execute("""
+CREATE TABLE IF NOT EXISTS lockdown_state (
+    id INT PRIMARY KEY DEFAULT 1,
+    is_locked_down BOOLEAN NOT NULL DEFAULT FALSE,
+    activated_at TIMESTAMPTZ,
+    activated_by TEXT,
+    CHECK (id = 1)
+)""")
+
     defaults = {
         "name": "Finn",
         "morning_briefing_time": "07:00",
@@ -393,6 +402,7 @@ ON CONFLICT (key) DO NOTHING""", (k, v))
     cur.execute("INSERT INTO briefing_cache (id, content) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
     cur.execute("INSERT INTO debrief_cache (id, content) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
     cur.execute("INSERT INTO workout_state (id, last_focus_index) VALUES (1, -1) ON CONFLICT (id) DO NOTHING")
+    cur.execute("INSERT INTO lockdown_state (id, is_locked_down) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING")
 
     # Create indexes for frequently queried columns
     cur.execute("CREATE INDEX IF NOT EXISTS idx_completions_assignment_title ON completions(assignment_title)")
@@ -1139,6 +1149,47 @@ def get_lockout_info(ip_addr):
         log.warning(f"Error getting lockout info: {e}")
     return 0
 
+def is_app_locked_down():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT is_locked_down FROM lockdown_state WHERE id = 1")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row and row["is_locked_down"]
+    except Exception as e:
+        log.warning(f"Error checking lockdown state: {e}")
+    return False
+
+def activate_lockdown(ip_addr):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+UPDATE lockdown_state SET is_locked_down = TRUE, activated_at = NOW(), activated_by = %s
+WHERE id = 1""", (ip_addr,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        log.exception(f"Error activating lockdown: {e}")
+    return False
+
+def deactivate_lockdown():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("UPDATE lockdown_state SET is_locked_down = FALSE WHERE id = 1")
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        log.exception(f"Error deactivating lockdown: {e}")
+    return False
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @app.route("/login", methods=["GET", "POST"])
@@ -1159,24 +1210,59 @@ def login():
         }), 429
 
     data = request.get_json(force=True) or {}
-    if data.get("password") == APP_PASSWORD:
-        record_login_attempt(ip_addr, True)
-        session.permanent = True
-        session["authenticated"] = True
-        session.cookie_httponly = True
-        session.cookie_secure = True
-        session.cookie_samesite = 'Strict'
-        return jsonify({"status": "ok"})
+    password = data.get("password")
+    security_code = data.get("security_code")
+    is_locked_down = is_app_locked_down()
 
-    lockout_info = record_login_attempt(ip_addr, False)
-    if lockout_info["locked"]:
-        return jsonify({
-            "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
-            "lockout": True,
-            "minutes_remaining": lockout_info["minutes_remaining"]
-        }), 429
+    if password and not security_code:
+        if password == APP_PASSWORD:
+            if is_locked_down:
+                return jsonify({
+                    "is_locked_down": True,
+                    "message": "System in lockdown. Please provide security code."
+                }), 202
 
-    return jsonify({"error": "Wrong password"}), 401
+            record_login_attempt(ip_addr, True)
+            session.permanent = True
+            session["authenticated"] = True
+            session.cookie_httponly = True
+            session.cookie_secure = True
+            session.cookie_samesite = 'Strict'
+            return jsonify({"status": "ok"})
+        else:
+            lockout_info = record_login_attempt(ip_addr, False)
+            if lockout_info["locked"]:
+                return jsonify({
+                    "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
+                    "lockout": True,
+                    "minutes_remaining": lockout_info["minutes_remaining"]
+                }), 429
+            return jsonify({"error": "Wrong password"}), 401
+
+    if password and security_code:
+        if is_locked_down:
+            security_code_env = os.environ.get("SECURITY_CODE", "")
+            if password == APP_PASSWORD and security_code == security_code_env:
+                record_login_attempt(ip_addr, True)
+                session.permanent = True
+                session["authenticated"] = True
+                session.cookie_httponly = True
+                session.cookie_secure = True
+                session.cookie_samesite = 'Strict'
+                return jsonify({"status": "ok"})
+            else:
+                lockout_info = record_login_attempt(ip_addr, False)
+                if lockout_info["locked"]:
+                    return jsonify({
+                        "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
+                        "lockout": True,
+                        "minutes_remaining": lockout_info["minutes_remaining"]
+                    }), 429
+                return jsonify({"error": "Wrong password or security code"}), 401
+        else:
+            return jsonify({"error": "Security code not required"}), 400
+
+    return jsonify({"error": "Missing password"}), 400
 
 
 @app.route("/logout")
@@ -1202,23 +1288,57 @@ def admin():
             "lockout": True
         }), 429
 
-    if data.get("password") == ADMIN_PASSWORD:
-        record_login_attempt(ip_addr, True)
-        session.permanent = True
-        session["admin_authenticated"] = True
-        session.cookie_httponly = True
-        session.cookie_secure = True
-        session.cookie_samesite = 'Strict'
-        return jsonify({"status": "ok"})
+    password = data.get("password")
+    security_code = data.get("security_code")
+    is_locked_down = is_app_locked_down()
 
-    lockout_info = record_login_attempt(ip_addr, False)
-    if lockout_info["locked"]:
-        return jsonify({
-            "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
-            "lockout": True
-        }), 429
+    if password and not security_code:
+        if password == ADMIN_PASSWORD:
+            if is_locked_down:
+                return jsonify({
+                    "is_locked_down": True,
+                    "message": "System in lockdown. Please provide security code."
+                }), 202
 
-    return jsonify({"error": "Wrong admin password"}), 401
+            record_login_attempt(ip_addr, True)
+            session.permanent = True
+            session["admin_authenticated"] = True
+            session.cookie_httponly = True
+            session.cookie_secure = True
+            session.cookie_samesite = 'Strict'
+            return jsonify({"status": "ok"})
+        else:
+            lockout_info = record_login_attempt(ip_addr, False)
+            if lockout_info["locked"]:
+                return jsonify({
+                    "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
+                    "lockout": True
+                }), 429
+            return jsonify({"error": "Wrong admin password"}), 401
+
+    if password and security_code:
+        if is_locked_down:
+            security_code_env = os.environ.get("SECURITY_CODE", "")
+            if password == ADMIN_PASSWORD and security_code == security_code_env:
+                record_login_attempt(ip_addr, True)
+                session.permanent = True
+                session["admin_authenticated"] = True
+                session.cookie_httponly = True
+                session.cookie_secure = True
+                session.cookie_samesite = 'Strict'
+                return jsonify({"status": "ok"})
+            else:
+                lockout_info = record_login_attempt(ip_addr, False)
+                if lockout_info["locked"]:
+                    return jsonify({
+                        "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
+                        "lockout": True
+                    }), 429
+                return jsonify({"error": "Wrong admin password or security code"}), 401
+        else:
+            return jsonify({"error": "Security code not required"}), 400
+
+    return jsonify({"error": "Missing admin password"}), 400
 
 
 @app.route("/api/admin/login-attempts")
@@ -1328,6 +1448,37 @@ def api_admin_claude_usage():
     except Exception as e:
         log.exception("Error fetching Claude usage")
         return jsonify({"error": str(e), "tokens_used": 0, "tokens_limit": 1000000}), 500
+
+
+@app.route("/api/lockdown-status")
+def api_lockdown_status():
+    is_locked = is_app_locked_down()
+    return jsonify({"is_locked_down": is_locked})
+
+
+@app.route("/api/admin/lockdown", methods=["POST"])
+def api_admin_lockdown():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        ip_addr = get_client_ip()
+        current_state = is_app_locked_down()
+
+        if current_state:
+            deactivate_lockdown()
+            new_state = False
+        else:
+            activate_lockdown(ip_addr)
+            new_state = True
+
+        return jsonify({
+            "is_locked_down": new_state,
+            "message": "Lockdown activated" if new_state else "Lockdown deactivated"
+        })
+    except Exception as e:
+        log.exception("Error toggling lockdown")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/csrf-token")

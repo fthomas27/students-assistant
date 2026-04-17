@@ -24,6 +24,7 @@
 --accent2: #FF9966;
 --red: #f05c5c;
 --green: #4caf82;
+--yellow: #ffc107;
 }
 
 body {
@@ -194,6 +195,18 @@ border-left: 3px solid var(--accent);
 border-left-color: var(--red);
 background: rgba(240, 92, 92, 0.05);
 }
+
+.system-status {
+background: rgba(255, 193, 7, 0.1);
+border: 1px solid rgba(255, 193, 7, 0.3);
+border-left: 3px solid var(--yellow);
+border-radius: 8px;
+padding: 12px;
+margin-bottom: 20px;
+font-size: 12px;
+color: var(--yellow);
+text-align: center;
+}
 </style>
 
 </head>
@@ -204,7 +217,9 @@ background: rgba(240, 92, 92, 0.05);
   <div class="login-title">Admin Access</div>
   <div class="login-sub">Restricted area</div>
 
-  <div class="field-label">Admin Password</div>
+  <div class="system-status" id="system-status" style="display:none;"></div>
+
+  <div class="field-label" id="field-label">Admin Password</div>
   <div class="pw-wrap">
     <input
       class="field-input"
@@ -228,9 +243,13 @@ var input = document.getElementById('pw-input');
 var btn = document.getElementById('submit-btn');
 var errMsg = document.getElementById('error-msg');
 var securityInfo = document.getElementById('security-info');
+var fieldLabel = document.getElementById('field-label');
+var systemStatus = document.getElementById('system-status');
 var visible = false;
 var isLocked = false;
 var lockoutTimer = null;
+var currentPassword = '';
+var awaitingSecurityCode = false;
 
 input.addEventListener('keydown', function(e) {
   if (e.key === 'Enter' && !isLocked) submitLogin();
@@ -275,9 +294,9 @@ function startLockoutCountdown(minutesRemaining) {
 function submitLogin() {
   if (isLocked) return;
 
-  var pw = input.value;
-  if (!pw) {
-    errMsg.textContent = 'Password required';
+  var inputValue = input.value;
+  if (!inputValue) {
+    errMsg.textContent = awaitingSecurityCode ? 'Security code required' : 'Password required';
     return;
   }
 
@@ -287,10 +306,14 @@ function submitLogin() {
   securityInfo.style.display = 'none';
   input.classList.remove('error');
 
+  var payload = awaitingSecurityCode
+    ? { password: currentPassword, security_code: inputValue }
+    : { password: inputValue };
+
   fetch('/admin', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: pw }),
+    body: JSON.stringify(payload),
     credentials: 'same-origin'
   }).then(function(r) {
     return r.json().then(function(data) {
@@ -301,18 +324,35 @@ function submitLogin() {
       btn.textContent = '✓ Authenticated';
       showSecurityInfo('✓ Access granted', false);
       setTimeout(function() { window.location.href = '/admin'; }, 300);
+    } else if (response.status === 202) {
+      currentPassword = inputValue;
+      awaitingSecurityCode = true;
+      fieldLabel.textContent = 'Security Code';
+      input.type = 'text';
+      input.value = '';
+      input.placeholder = '••••••••••••';
+      input.setAttribute('autocomplete', 'off');
+      btn.disabled = false;
+      btn.textContent = 'Sign In';
+      systemStatus.textContent = '🔒 System in Lockdown Mode';
+      systemStatus.style.display = 'block';
+      input.focus();
     } else if (response.status === 429) {
+      awaitingSecurityCode = false;
       var minutesRemaining = response.data.minutes_remaining || 15;
       startLockoutCountdown(minutesRemaining);
       errMsg.textContent = response.data.error || 'Account locked. Too many attempts.';
     } else {
       input.value = '';
       input.classList.add('error');
-      errMsg.textContent = response.data.error || 'Wrong password';
+      errMsg.textContent = response.data.error || (awaitingSecurityCode ? 'Wrong security code' : 'Wrong password');
       btn.disabled = false;
       btn.textContent = 'Sign In';
       input.focus();
-      showSecurityInfo('⚠ Incorrect password. Multiple attempts may lock your access.', true);
+      var warningMsg = awaitingSecurityCode
+        ? '⚠ Incorrect security code. Multiple attempts may lock your access.'
+        : '⚠ Incorrect password. Multiple attempts may lock your access.';
+      showSecurityInfo(warningMsg, true);
     }
   }).catch(function(error) {
     console.error('Admin login error:', error);
