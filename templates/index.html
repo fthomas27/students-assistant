@@ -1097,10 +1097,49 @@ function confirmLogout() {
   if (confirmed) window.location.href = '/logout';
 }
 
+function getErrorMessage(error) {
+  if (error.name === 'AbortError') {
+    return 'Request timeout - server not responding';
+  }
+  if (error instanceof TypeError) {
+    return 'Unable to connect to server';
+  }
+  if (error.message.includes('HTTP')) {
+    const match = error.message.match(/HTTP (\d+)/);
+    const status = match ? match[1] : 'unknown';
+    if (status === '401' || status === '403') {
+      return `Authentication error (${status})`;
+    }
+    if (status >= '500') {
+      return `Server error (HTTP ${status})`;
+    }
+    return `Error: HTTP ${status}`;
+  }
+  return 'Network error';
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
+}
+
 async function loadSidebarData() {
   // Load assignments
   try {
-    const response = await fetch('/api/assignments');
+    document.getElementById('assignmentsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+    const response = await fetchWithTimeout('/api/assignments');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -1109,13 +1148,14 @@ async function loadSidebarData() {
     renderAssignments();
   } catch (e) {
     console.error('Failed to load assignments:', e);
-    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    const errorMsg = getErrorMessage(e);
     document.getElementById('assignmentsList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
   // Load tasks
   try {
-    const response = await fetch('/api/tasks');
+    document.getElementById('tasksList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+    const response = await fetchWithTimeout('/api/tasks');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -1124,13 +1164,14 @@ async function loadSidebarData() {
     renderTasks();
   } catch (e) {
     console.error('Failed to load tasks:', e);
-    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    const errorMsg = getErrorMessage(e);
     document.getElementById('tasksList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
   // Load projects
   try {
-    const response = await fetch('/api/projects');
+    document.getElementById('projectsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+    const response = await fetchWithTimeout('/api/projects');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -1139,13 +1180,14 @@ async function loadSidebarData() {
     renderProjects();
   } catch (e) {
     console.error('Failed to load projects:', e);
-    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    const errorMsg = getErrorMessage(e);
     document.getElementById('projectsList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
   // Load calendar
   try {
-    const response = await fetch('/api/calendar');
+    document.getElementById('calendarList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+    const response = await fetchWithTimeout('/api/calendar');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -1154,13 +1196,13 @@ async function loadSidebarData() {
     renderCalendar();
   } catch (e) {
     console.error('Failed to load calendar:', e);
-    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    const errorMsg = getErrorMessage(e);
     document.getElementById('calendarList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
   // Load plan
   try {
-    const response = await fetch('/api/plan-my-day');
+    const response = await fetchWithTimeout('/api/plan-my-day');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -1168,7 +1210,7 @@ async function loadSidebarData() {
     renderPlan(data);
   } catch (e) {
     console.error('Failed to load plan:', e);
-    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    const errorMsg = getErrorMessage(e);
     document.getElementById('planContent').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 }
