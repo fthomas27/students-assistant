@@ -59,6 +59,10 @@ _briefing_lock = threading.Lock()
 def require_auth():
     if request.path in ('/login', '/logout', '/admin'):
         return None
+    if request.path in ('/api/lockdown-status',):
+        return None
+    if request.path.startswith('/api/admin/'):
+        return None
     if not session.get("authenticated"):
         if request.path.startswith('/api/'):
             return jsonify({"error": "Not authenticated"}), 401
