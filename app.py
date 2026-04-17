@@ -32,19 +32,8 @@ app.config.update(
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "finn2025")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin-change-me")
 
-_api_usage_cache = {"tokens_used": 0, "tokens_limit": 1000000, "last_updated": datetime.now(TZ)}
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
-
-
-@app.before_request
-def require_auth():
-    if request.path in ('/login', '/logout'):
-        return None
-    if not session.get("authenticated"):
-        if request.path.startswith('/api/'):
-            return jsonify({"error": "Not authenticated"}), 401
-        return redirect("/login")
 
 # Default timezone - will be overridden by config if available
 _TZ_DEFAULT = ZoneInfo("America/Denver")
@@ -61,7 +50,19 @@ def get_tz():
 # For backward compatibility, initialize with default
 TZ = _TZ_DEFAULT
 
+_api_usage_cache = {"tokens_used": 0, "tokens_limit": 1000000, "last_updated": None}
+
 _briefing_lock = threading.Lock()
+
+
+@app.before_request
+def require_auth():
+    if request.path in ('/login', '/logout'):
+        return None
+    if not session.get("authenticated"):
+        if request.path.startswith('/api/'):
+            return jsonify({"error": "Not authenticated"}), 401
+        return redirect("/login")
 _timer_lock = threading.Lock()
 _workout_lock = threading.Lock()
 _plan_lock = threading.Lock()
