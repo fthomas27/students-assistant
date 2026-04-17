@@ -243,8 +243,9 @@ letter-spacing: 0.1em;
 .sidebar-stats {
 display: grid;
 grid-template-columns: 1fr 1fr;
-gap: 8px;
-padding: 12px;
+gap: 6px;
+padding: 8px;
+margin: 0;
 }
 
 .stat-card {
@@ -252,11 +253,12 @@ display: flex;
 flex-direction: column;
 align-items: center;
 text-align: center;
-padding: 10px;
+padding: 12px 8px;
 background: var(--surface);
 border-radius: var(--r-sm);
 border: 1px solid var(--border);
 transition: all 0.2s;
+min-width: 0;
 }
 
 .stat-card:hover {
@@ -455,6 +457,80 @@ z-index: 40;
 @media (max-width: 639px) {
 .sidebar-backdrop.visible {
 display: block;
+}
+}
+
+/* Sidebar Toggle Buttons */
+.sidebar-toggle-panel {
+display: none;
+position: fixed;
+left: 0;
+top: var(--header-h);
+width: 60px;
+height: 240px;
+background: var(--bg);
+border-right: 1px solid var(--border);
+z-index: 45;
+flex-direction: column;
+gap: 0;
+padding: 0;
+}
+
+@media (max-width: 1279px) {
+.sidebar-toggle-panel {
+display: flex;
+}
+}
+
+.sidebar-toggle-btn {
+flex: 1;
+width: 60px;
+background: var(--surface);
+border: 1px solid var(--border);
+border-left: none;
+border-right: none;
+border-top: none;
+color: var(--text3);
+cursor: pointer;
+font-size: 24px;
+transition: all 0.2s;
+display: flex;
+align-items: center;
+justify-content: center;
+position: relative;
+}
+
+.sidebar-toggle-btn:last-child {
+border-bottom: none;
+}
+
+.sidebar-toggle-btn:hover {
+background: var(--surface2);
+color: var(--text2);
+}
+
+.sidebar-toggle-btn.active {
+background: var(--accent);
+color: white;
+border-right-color: var(--accent);
+border-bottom-color: var(--accent);
+box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Sidebar overlay for mobile/tablet */
+@media (max-width: 1279px) {
+.sidebar.open {
+display: flex;
+position: fixed;
+left: 60px;
+top: var(--header-h);
+width: 280px;
+max-height: calc(100% - var(--header-h));
+z-index: 41;
+flex-direction: column;
+background: var(--bg);
+border-right: 1px solid var(--border);
+overflow-y: auto;
 }
 }
 
@@ -904,7 +980,15 @@ margin-bottom: 0;
 </div>
 </div>
 
-<div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebar()"></div>
+<div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebarColumn()"></div>
+
+<!-- Sidebar Column Toggle Buttons -->
+<div class="sidebar-toggle-panel">
+  <button class="sidebar-toggle-btn active" data-column="1" onclick="toggleSidebarColumn(1)" title="Tasks">✓</button>
+  <button class="sidebar-toggle-btn" data-column="2" onclick="toggleSidebarColumn(2)" title="Calendar">📅</button>
+  <button class="sidebar-toggle-btn" data-column="3" onclick="toggleSidebarColumn(3)" title="Plan">🎯</button>
+  <button class="sidebar-toggle-btn" data-column="4" onclick="toggleSidebarColumn(4)" title="Assignments">📋</button>
+</div>
 
 <!-- Settings Modal -->
 <div class="settings-modal-backdrop" id="settingsBackdrop" onclick="closeSettingsModal()"></div>
@@ -957,7 +1041,7 @@ margin-bottom: 0;
 
 <!-- LEFT COLUMN 2: Calendar & Events -->
 <aside class="sidebar sidebar-col-2" id="sidebarCol2">
-<div class="sidebar-header">📅 Calendar</div>
+<div class="sidebar-header">📅 Personal & Sports</div>
 
 <div class="sidebar-stats">
 <div class="stat-card">
@@ -1049,18 +1133,40 @@ function isMobile() {
   return window.innerWidth < 640;
 }
 
-function toggleSidebar() {
-  if (isMobile()) {
-    document.getElementById('sidebarCol1').classList.toggle('open');
-    document.getElementById('sidebarBackdrop').classList.toggle('visible');
+function toggleSidebarColumn(colNumber) {
+  const sidebar = document.getElementById(`sidebarCol${colNumber}`);
+  const isOpen = sidebar.classList.contains('open');
+
+  // Close all sidebars
+  document.getElementById('sidebarCol1').classList.remove('open');
+  document.getElementById('sidebarCol2').classList.remove('open');
+  document.getElementById('sidebarCol3').classList.remove('open');
+  document.getElementById('sidebarCol4').classList.remove('open');
+
+  // Update button states
+  document.querySelectorAll('.sidebar-toggle-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+
+  // Open selected sidebar if it wasn't open
+  if (!isOpen) {
+    sidebar.classList.add('open');
+    document.querySelector(`[data-column="${colNumber}"]`).classList.add('active');
+    document.getElementById('sidebarBackdrop').classList.add('visible');
+  } else {
+    document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
 }
 
-function closeSidebar() {
-  if (isMobile()) {
-    document.getElementById('sidebarCol1').classList.remove('open');
-    document.getElementById('sidebarBackdrop').classList.remove('visible');
-  }
+function closeSidebarColumn() {
+  document.getElementById('sidebarCol1').classList.remove('open');
+  document.getElementById('sidebarCol2').classList.remove('open');
+  document.getElementById('sidebarCol3').classList.remove('open');
+  document.getElementById('sidebarCol4').classList.remove('open');
+  document.getElementById('sidebarBackdrop').classList.remove('visible');
+  document.querySelectorAll('.sidebar-toggle-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
 }
 
 function toggleSection(sectionId) {
@@ -1162,27 +1268,49 @@ async function loadSidebarData() {
     assignments: {
       url: '/api/assignments',
       containerId: 'assignmentsList',
-      processor: (data) => { assignmentsCache = data.assignments || []; renderAssignments(); }
+      processor: (data) => {
+        const newData = data.assignments || [];
+        if (!dataChanged(assignmentsCache, newData)) return;
+        assignmentsCache = newData;
+        renderAssignments();
+      }
     },
     tasks: {
       url: '/api/tasks',
       containerId: 'tasksList',
-      processor: (data) => { tasksCache = data.tasks || []; renderTasks(); }
+      processor: (data) => {
+        const newData = data.tasks || [];
+        if (!dataChanged(tasksCache, newData)) return;
+        tasksCache = newData;
+        renderTasks();
+      }
     },
     projects: {
       url: '/api/projects',
       containerId: 'projectsList',
-      processor: (data) => { projectsCache = data.projects || []; renderProjects(); }
+      processor: (data) => {
+        const newData = data.projects || [];
+        if (!dataChanged(projectsCache, newData)) return;
+        projectsCache = newData;
+        renderProjects();
+      }
     },
     calendar: {
       url: '/api/calendar',
       containerId: 'calendarList',
-      processor: (data) => { calendarCache = data.events || []; renderCalendar(); }
+      processor: (data) => {
+        const newData = data.events || [];
+        if (!dataChanged(calendarCache, newData)) return;
+        calendarCache = newData;
+        renderCalendar();
+      }
     },
     plan: {
       url: '/api/plan-my-day',
       containerId: 'planContent',
-      processor: (data) => { renderPlan(data); }
+      processor: (data) => {
+        renderPlan(data);
+      }
     }
   };
 
@@ -1200,6 +1328,20 @@ async function loadSidebarData() {
   }
 }
 
+function dataChanged(oldData, newData) {
+  if (!oldData || !newData) return true;
+  if (oldData.length !== newData.length) return true;
+
+  // Quick stringified comparison for detecting changes
+  try {
+    const oldStr = JSON.stringify(oldData);
+    const newStr = JSON.stringify(newData);
+    return oldStr !== newStr;
+  } catch (e) {
+    return true;
+  }
+}
+
 function renderAssignments() {
   const container = document.getElementById('assignmentsList');
   if (!assignmentsCache || assignmentsCache.length === 0) {
@@ -1214,7 +1356,7 @@ function renderAssignments() {
   });
 
   container.innerHTML = sorted.slice(0, 8).map(a => `
-    <div class="sidebar-item assignment-item">
+    <div class="sidebar-item assignment-item" style="cursor: pointer;" onclick="viewAssignment('${(a.title || '').replace(/'/g, "\\'")}', '${(a.class_name || '').replace(/'/g, "\\'")}', '${(a.due_iso || '').replace(/'/g, "\\'")}', ${a.estimate_minutes || 30})">
       <div style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
         <div style="flex: 1;">
           <div class="sidebar-item-title">${a.title}</div>
@@ -1243,7 +1385,7 @@ function renderTasks() {
   container.innerHTML = sorted.slice(0, 8).map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
     return `
-      <div class="sidebar-item ${urgencyClass}">
+      <div class="sidebar-item ${urgencyClass}" style="cursor: pointer;" onclick="viewTask('${(t.title || '').replace(/'/g, "\\'")}', '${(t.urgency || '').replace(/'/g, "\\'")}', '${(t.notes || '').replace(/'/g, "\\'")}')">
         <div class="sidebar-item-title">${t.title}</div>
         <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
       </div>
@@ -1281,6 +1423,52 @@ function viewProject(title, description) {
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
+function viewAssignment(title, className, dueDate, estimateMinutes) {
+  const messagesDiv = document.getElementById('chatMessages');
+  if (messagesDiv.querySelector('.empty-state')) {
+    messagesDiv.innerHTML = '';
+  }
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message assistant';
+  bubble.innerHTML = `
+    <div class="message-bubble">
+      <strong>📝 ${escapeHtml(title)}</strong><br/>
+      <strong>Class:</strong> ${escapeHtml(className || 'N/A')}<br/>
+      <strong>Due:</strong> ${escapeHtml(dueDate || 'No due date')}<br/>
+      <strong>Estimated Time:</strong> ${estimateMinutes} minutes
+    </div>
+  `;
+  messagesDiv.appendChild(bubble);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function viewTask(title, urgency, notes) {
+  const messagesDiv = document.getElementById('chatMessages');
+  if (messagesDiv.querySelector('.empty-state')) {
+    messagesDiv.innerHTML = '';
+  }
+
+  const urgencyColor = {
+    'critical': '🔴',
+    'high': '🟠',
+    'medium': '🟡',
+    'low': '🟢'
+  };
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message assistant';
+  bubble.innerHTML = `
+    <div class="message-bubble">
+      <strong>✓ ${escapeHtml(title)}</strong><br/>
+      <strong>Priority:</strong> ${urgencyColor[urgency] || '⚪'} ${urgency.toUpperCase()}<br/>
+      ${notes ? `<strong>Notes:</strong> ${escapeHtml(notes)}` : 'No notes'}
+    </div>
+  `;
+  messagesDiv.appendChild(bubble);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
 function renderCalendar() {
   const container = document.getElementById('calendarList');
   if (!calendarCache || calendarCache.length === 0) {
@@ -1288,7 +1476,18 @@ function renderCalendar() {
     return;
   }
 
-  container.innerHTML = calendarCache.slice(0, 6).map(e => `
+  // Filter out Canvas calendar, show only Personal and Sports
+  const filtered = calendarCache.filter(e => {
+    const isCanvas = e.source === 'canvas' || e.calendar_type === 'canvas' || (e.calendar && e.calendar.includes('Canvas'));
+    return !isCanvas;
+  });
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No personal or sports events</div>';
+    return;
+  }
+
+  container.innerHTML = filtered.slice(0, 6).map(e => `
     <div class="sidebar-item">
       <div class="sidebar-item-title">${e.title || 'Event'}</div>
       <div class="sidebar-item-meta">${formatEventTime(e.start_iso)}</div>
