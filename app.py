@@ -30,6 +30,9 @@ app.config.update(
 )
 
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "finn2025")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin-change-me")
+
+_api_usage_cache = {"tokens_used": 0, "tokens_limit": 1000000, "last_updated": datetime.now(TZ)}
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
@@ -1180,6 +1183,151 @@ def login():
 def logout():
     session.clear()
     return redirect("/login")
+
+
+@app.route("/admin", methods=["GET", "POST"])
+def admin():
+    if request.method == "GET":
+        if session.get("admin_authenticated"):
+            return render_template("admin.html")
+        return render_template("admin_login.html")
+
+    ip_addr = get_client_ip()
+    data = request.get_json(force=True) or {}
+
+    if is_ip_locked(ip_addr):
+        remaining_mins = get_lockout_info(ip_addr)
+        return jsonify({
+            "error": f"Too many failed attempts. Try again in {remaining_mins} minute(s).",
+            "lockout": True
+        }), 429
+
+    if data.get("password") == ADMIN_PASSWORD:
+        record_login_attempt(ip_addr, True)
+        session.permanent = True
+        session["admin_authenticated"] = True
+        session.cookie_httponly = True
+        session.cookie_secure = True
+        session.cookie_samesite = 'Strict'
+        return jsonify({"status": "ok"})
+
+    lockout_info = record_login_attempt(ip_addr, False)
+    if lockout_info["locked"]:
+        return jsonify({
+            "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
+            "lockout": True
+        }), 429
+
+    return jsonify({"error": "Wrong admin password"}), 401
+
+
+@app.route("/api/admin/login-attempts")
+def api_admin_login_attempts():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+SELECT ip_address, success, attempted_at, user_agent
+FROM login_attempts ORDER BY attempted_at DESC LIMIT 200""")
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+
+        for r in rows:
+            r["attempted_at"] = r["attempted_at"].isoformat() if r["attempted_at"] else None
+
+        return jsonify({"attempts": rows})
+    except Exception as e:
+        log.exception("Error fetching login attempts")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/suspicious-activity")
+def api_admin_suspicious_activity():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        cur.execute("""
+SELECT ip_address, COUNT(*) as failure_count, MAX(attempted_at) as last_attempt
+FROM login_attempts WHERE success = FALSE AND attempted_at > NOW() - INTERVAL '24 hours'
+GROUP BY ip_address ORDER BY failure_count DESC""")
+        suspicious_ips = [dict(r) for r in cur.fetchall()]
+
+        cur.execute("""
+SELECT ip_address, locked_until, failure_count, created_at
+FROM login_lockouts ORDER BY created_at DESC LIMIT 50""")
+        lockouts = [dict(r) for r in cur.fetchall()]
+
+        cur.close()
+        conn.close()
+
+        for ip in suspicious_ips:
+            ip["last_attempt"] = ip["last_attempt"].isoformat() if ip["last_attempt"] else None
+
+        for lo in lockouts:
+            lo["locked_until"] = lo["locked_until"].isoformat() if lo["locked_until"] else None
+            lo["created_at"] = lo["created_at"].isoformat() if lo["created_at"] else None
+
+        return jsonify({
+            "suspicious_ips": suspicious_ips,
+            "active_lockouts": lockouts
+        })
+    except Exception as e:
+        log.exception("Error fetching suspicious activity")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/claude-usage")
+def api_admin_claude_usage():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return jsonify({
+                "tokens_used": 0,
+                "tokens_limit": 1000000,
+                "percent_used": 0,
+                "status": "No API key configured"
+            })
+
+        client = anthropic.Anthropic(api_key=api_key)
+
+        try:
+            resp = client.messages.create(
+                model="claude-opus-4-7",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "test"}]
+            )
+        except Exception:
+            pass
+
+        global _api_usage_cache
+        _api_usage_cache["last_updated"] = datetime.now(TZ)
+
+        tokens_used = _api_usage_cache.get("tokens_used", 0)
+        tokens_limit = _api_usage_cache.get("tokens_limit", 1000000)
+        percent_used = round((tokens_used / tokens_limit * 100), 2) if tokens_limit > 0 else 0
+
+        return jsonify({
+            "tokens_used": tokens_used,
+            "tokens_limit": tokens_limit,
+            "tokens_remaining": tokens_limit - tokens_used,
+            "percent_used": percent_used,
+            "percent_remaining": 100 - percent_used,
+            "last_updated": _api_usage_cache["last_updated"].isoformat()
+        })
+    except Exception as e:
+        log.exception("Error fetching Claude usage")
+        return jsonify({"error": str(e), "tokens_used": 0, "tokens_limit": 1000000}), 500
 
 
 @app.route("/api/csrf-token")
