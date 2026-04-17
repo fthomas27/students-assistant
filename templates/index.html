@@ -1047,8 +1047,6 @@ function isMobile() {
 function toggleSidebar() {
   if (isMobile()) {
     document.getElementById('sidebarCol1').classList.toggle('open');
-    document.getElementById('sidebarCol2').classList.toggle('open');
-    document.getElementById('sidebarCol3').classList.toggle('open');
     document.getElementById('sidebarBackdrop').classList.toggle('visible');
   }
 }
@@ -1056,8 +1054,6 @@ function toggleSidebar() {
 function closeSidebar() {
   if (isMobile()) {
     document.getElementById('sidebarCol1').classList.remove('open');
-    document.getElementById('sidebarCol2').classList.remove('open');
-    document.getElementById('sidebarCol3').classList.remove('open');
     document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
 }
@@ -1072,18 +1068,23 @@ function toggleSection(sectionId) {
 }
 
 function updateSidebarStats() {
-  document.getElementById('assignmentCount').textContent = assignmentsCache.length;
-  document.getElementById('assignmentBadge').textContent = assignmentsCache.length;
+  const safeUpdate = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+
+  safeUpdate('assignmentCount', assignmentsCache.length);
+  safeUpdate('assignmentBadge', assignmentsCache.length);
 
   const incompleteTasks = tasksCache.filter(t => !t.completed).length;
-  document.getElementById('taskCount').textContent = incompleteTasks;
-  document.getElementById('taskBadge').textContent = incompleteTasks;
+  safeUpdate('taskCount', incompleteTasks);
+  safeUpdate('taskBadge', incompleteTasks);
 
-  document.getElementById('eventCount').textContent = calendarCache.length;
-  document.getElementById('calendarBadge').textContent = calendarCache.length;
+  safeUpdate('eventCount', calendarCache.length);
+  safeUpdate('calendarBadge', calendarCache.length);
 
   const projectCount = projectsCache.filter(p => p.status === 'active').length;
-  document.getElementById('projectBadge').textContent = projectCount;
+  safeUpdate('projectBadge', projectCount);
 }
 
 function openSettings() {
@@ -1112,13 +1113,13 @@ function getErrorMessage(error) {
   if (error instanceof TypeError) {
     return 'Unable to connect to server';
   }
-  if (error.message.includes('HTTP')) {
-    const match = error.message.match(/HTTP (\d+)/);
-    const status = match ? match[1] : 'unknown';
-    if (status === '401' || status === '403') {
+  const match = error.message.match(/HTTP (\d+)/);
+  if (match) {
+    const status = parseInt(match[1], 10);
+    if (status === 401 || status === 403) {
       return `Authentication error (${status})`;
     }
-    if (status >= '500') {
+    if (status >= 500) {
       return `Server error (HTTP ${status})`;
     }
     return `Error: HTTP ${status}`;
@@ -1144,81 +1145,64 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
 }
 
 async function loadSidebarData() {
-  // Load assignments
-  try {
-    document.getElementById('assignmentsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
-    const response = await fetchWithTimeout('/api/assignments');
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const data = await response.json();
-    assignmentsCache = data.assignments || [];
+  // Show loading states
+  document.getElementById('assignmentsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+  document.getElementById('tasksList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+  document.getElementById('projectsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+  document.getElementById('calendarList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+
+  // Fetch all data in parallel
+  const requests = [
+    fetchWithTimeout('/api/assignments').then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
+    fetchWithTimeout('/api/tasks').then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
+    fetchWithTimeout('/api/projects').then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
+    fetchWithTimeout('/api/calendar').then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
+    fetchWithTimeout('/api/plan-my-day').then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+  ];
+
+  const results = await Promise.allSettled(requests);
+
+  // Process assignments
+  if (results[0].status === 'fulfilled') {
+    assignmentsCache = results[0].value.assignments || [];
     renderAssignments();
-  } catch (e) {
-    console.error('Failed to load assignments:', e);
-    const errorMsg = getErrorMessage(e);
+  } else {
+    const errorMsg = getErrorMessage(results[0].reason);
     document.getElementById('assignmentsList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
-  // Load tasks
-  try {
-    document.getElementById('tasksList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
-    const response = await fetchWithTimeout('/api/tasks');
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const data = await response.json();
-    tasksCache = data.tasks || [];
+  // Process tasks
+  if (results[1].status === 'fulfilled') {
+    tasksCache = results[1].value.tasks || [];
     renderTasks();
-  } catch (e) {
-    console.error('Failed to load tasks:', e);
-    const errorMsg = getErrorMessage(e);
+  } else {
+    const errorMsg = getErrorMessage(results[1].reason);
     document.getElementById('tasksList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
-  // Load projects
-  try {
-    document.getElementById('projectsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
-    const response = await fetchWithTimeout('/api/projects');
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const data = await response.json();
-    projectsCache = data.projects || [];
+  // Process projects
+  if (results[2].status === 'fulfilled') {
+    projectsCache = results[2].value.projects || [];
     renderProjects();
-  } catch (e) {
-    console.error('Failed to load projects:', e);
-    const errorMsg = getErrorMessage(e);
+  } else {
+    const errorMsg = getErrorMessage(results[2].reason);
     document.getElementById('projectsList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
-  // Load calendar
-  try {
-    document.getElementById('calendarList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
-    const response = await fetchWithTimeout('/api/calendar');
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const data = await response.json();
-    calendarCache = data.events || [];
+  // Process calendar
+  if (results[3].status === 'fulfilled') {
+    calendarCache = results[3].value.events || [];
     renderCalendar();
-  } catch (e) {
-    console.error('Failed to load calendar:', e);
-    const errorMsg = getErrorMessage(e);
+  } else {
+    const errorMsg = getErrorMessage(results[3].reason);
     document.getElementById('calendarList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
-  // Load plan
-  try {
-    const response = await fetchWithTimeout('/api/plan-my-day');
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const data = await response.json();
-    renderPlan(data);
-  } catch (e) {
-    console.error('Failed to load plan:', e);
-    const errorMsg = getErrorMessage(e);
+  // Process plan
+  if (results[4].status === 'fulfilled') {
+    renderPlan(results[4].value);
+  } else {
+    const errorMsg = getErrorMessage(results[4].reason);
     document.getElementById('planContent').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 }
