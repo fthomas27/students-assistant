@@ -25,6 +25,7 @@ cd /home/user/students-assistant
 export DATABASE_URL="postgresql://root:root@localhost/student_assistant"
 export FLASK_ENV=production
 export FLASK_APP=app.py
+export SECURITY_CODE="${SECURITY_CODE:-}"
 
 # Kill any existing instances
 pkill -f "python app.py" || true

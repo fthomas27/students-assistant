@@ -4,7 +4,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Finn -- Sign In</title>
+<title>Admin Panel -- Sign In</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -40,7 +40,6 @@ position: relative;
 overflow: hidden;
 }
 
-/* subtle background texture */
 body::before {
 content: '';
 position: fixed;
@@ -197,14 +196,6 @@ border-left-color: var(--red);
 background: rgba(240, 92, 92, 0.05);
 }
 
-.session-note {
-font-size: 11px;
-color: var(--text3);
-text-align: center;
-margin-top: 22px;
-letter-spacing: 0.02em;
-}
-
 .system-status {
 background: rgba(255, 193, 7, 0.1);
 border: 1px solid rgba(255, 193, 7, 0.3);
@@ -222,13 +213,13 @@ text-align: center;
 <body>
 
 <div class="login-card">
-  <div class="logo-ring">✦</div>
-  <div class="login-title">Welcome back</div>
-  <div class="login-sub">Your personal dashboard</div>
+  <div class="logo-ring">🔐</div>
+  <div class="login-title">Admin Access</div>
+  <div class="login-sub">Restricted area</div>
 
   <div class="system-status" id="system-status" style="display:none;"></div>
 
-  <div class="field-label" id="field-label">Password</div>
+  <div class="field-label" id="field-label">Admin Password</div>
   <div class="pw-wrap">
     <input
       class="field-input"
@@ -241,11 +232,10 @@ text-align: center;
     <button class="toggle-pw" type="button" onclick="toggleVisibility()" id="toggle-btn">👁</button>
   </div>
 
-<button class="submit-btn" id="submit-btn" onclick="submitLogin()">Unlock</button>
+<button class="submit-btn" id="submit-btn" onclick="submitLogin()">Sign In</button>
 
   <div class="error-msg" id="error-msg"></div>
   <div class="security-info" id="security-info" style="display:none;"></div>
-  <div class="session-note">Secure session • 30 days</div>
 </div>
 
 <script>
@@ -290,7 +280,7 @@ function startLockoutCountdown(minutesRemaining) {
       clearInterval(lockoutTimer);
       isLocked = false;
       btn.disabled = false;
-      btn.textContent = 'Unlock';
+      btn.textContent = 'Sign In';
       input.classList.remove('error');
       errMsg.textContent = '';
       securityInfo.style.display = 'none';
@@ -320,7 +310,7 @@ function submitLogin() {
     ? { password: currentPassword, security_code: inputValue }
     : { password: inputValue };
 
-  fetch('/login', {
+  fetch('/admin', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -332,8 +322,8 @@ function submitLogin() {
   }).then(function(response) {
     if (response.status === 200) {
       btn.textContent = '✓ Authenticated';
-      showSecurityInfo('✓ Secure connection established', false);
-      setTimeout(function() { window.location.href = '/'; }, 300);
+      showSecurityInfo('✓ Access granted', false);
+      setTimeout(function() { window.location.href = '/admin'; }, 300);
     } else if (response.status === 202) {
       currentPassword = inputValue;
       awaitingSecurityCode = true;
@@ -343,7 +333,7 @@ function submitLogin() {
       input.placeholder = '••••••••••••';
       input.setAttribute('autocomplete', 'off');
       btn.disabled = false;
-      btn.textContent = 'Unlock';
+      btn.textContent = 'Sign In';
       systemStatus.textContent = '🔒 System in Lockdown Mode';
       systemStatus.style.display = 'block';
       input.focus();
@@ -355,20 +345,20 @@ function submitLogin() {
     } else {
       input.value = '';
       input.classList.add('error');
-      errMsg.textContent = response.data.error || (awaitingSecurityCode ? 'Invalid security code' : 'Invalid password');
+      errMsg.textContent = response.data.error || (awaitingSecurityCode ? 'Wrong security code' : 'Wrong password');
       btn.disabled = false;
-      btn.textContent = 'Unlock';
+      btn.textContent = 'Sign In';
       input.focus();
       var warningMsg = awaitingSecurityCode
-        ? '⚠ Incorrect security code. Multiple attempts may lock your account.'
-        : '⚠ Incorrect password. Multiple attempts may lock your account.';
+        ? '⚠ Incorrect security code. Multiple attempts may lock your access.'
+        : '⚠ Incorrect password. Multiple attempts may lock your access.';
       showSecurityInfo(warningMsg, true);
     }
   }).catch(function(error) {
-    console.error('Login error:', error);
+    console.error('Admin login error:', error);
     errMsg.textContent = 'Connection error. Please try again.';
     btn.disabled = false;
-    btn.textContent = 'Unlock';
+    btn.textContent = 'Sign In';
   });
 }
 
