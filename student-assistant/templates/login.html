@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Finn -- Sign In</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+--bg: #0a0a0f;
+--surface: #111118;
+--surface2: #18181f;
+--border: rgba(255,255,255,0.07);
+--border2: rgba(255,255,255,0.12);
+--text: #f0f0f5;
+--text2: #8888a0;
+--text3: #555568;
+--accent: #7c6af7;
+--accent2: #a89cf8;
+--red: #f05c5c;
+--green: #4caf82;
+}
+
+body {
+font-family: 'DM Sans', sans-serif;
+background: var(--bg);
+color: var(--text);
+height: 100dvh;
+display: flex;
+align-items: center;
+justify-content: center;
+padding: 24px;
+position: relative;
+overflow: hidden;
+}
+
+/* subtle background texture */
+body::before {
+content: '';
+position: fixed;
+inset: 0;
+background:
+radial-gradient(ellipse 60% 50% at 20% 20%, rgba(124,106,247,0.06) 0%, transparent 70%),
+radial-gradient(ellipse 50% 40% at 80% 80%, rgba(124,106,247,0.04) 0%, transparent 70%);
+pointer-events: none;
+}
+
+.login-card {
+width: 100%;
+max-width: 360px;
+background: var(--surface);
+border: 1px solid var(--border2);
+border-radius: 24px;
+padding: 40px 32px 36px;
+position: relative;
+animation: fadeUp 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+@keyframes fadeUp {
+from { opacity: 0; transform: translateY(20px); }
+to { opacity: 1; transform: translateY(0); }
+}
+
+.logo-ring {
+width: 56px; height: 56px;
+border-radius: 50%;
+background: linear-gradient(135deg, rgba(124,106,247,0.25), rgba(124,106,247,0.08));
+border: 1px solid rgba(124,106,247,0.3);
+display: flex; align-items: center; justify-content: center;
+font-size: 24px;
+margin: 0 auto 20px;
+}
+
+.login-title {
+font-family: 'DM Serif Display', serif;
+font-size: 28px;
+text-align: center;
+margin-bottom: 6px;
+line-height: 1.1;
+}
+
+.login-sub {
+font-size: 13px;
+color: var(--text3);
+text-align: center;
+margin-bottom: 28px;
+letter-spacing: 0.02em;
+}
+
+.field-label {
+font-size: 11px;
+font-weight: 600;
+color: var(--text3);
+text-transform: uppercase;
+letter-spacing: 0.08em;
+margin-bottom: 8px;
+}
+
+.pw-wrap {
+position: relative;
+margin-bottom: 20px;
+}
+
+.field-input {
+width: 100%;
+background: var(--surface2);
+border: 1px solid var(--border2);
+border-radius: 12px;
+padding: 14px 46px 14px 16px;
+font-size: 17px;
+font-family: 'DM Sans', sans-serif;
+color: var(--text);
+outline: none;
+transition: border-color 0.2s, box-shadow 0.2s;
+letter-spacing: 0.12em;
+}
+
+.field-input:focus {
+border-color: var(--accent);
+box-shadow: 0 0 0 3px rgba(124,106,247,0.12);
+}
+
+.field-input.error {
+border-color: var(--red);
+box-shadow: 0 0 0 3px rgba(240,92,92,0.1);
+animation: shake 0.35s ease;
+}
+
+@keyframes shake {
+0%, 100% { transform: translateX(0); }
+20% { transform: translateX(-6px); }
+60% { transform: translateX(6px); }
+80% { transform: translateX(-3px); }
+}
+
+.toggle-pw {
+position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+background: none; border: none; color: var(--text3); cursor: pointer;
+font-size: 18px; padding: 4px; -webkit-tap-highlight-color: transparent;
+transition: color 0.15s;
+}
+.toggle-pw:active { color: var(--text2); }
+
+.submit-btn {
+width: 100%;
+background: var(--accent);
+color: #fff;
+border: none;
+border-radius: 12px;
+padding: 15px;
+font-size: 16px;
+font-weight: 600;
+font-family: 'DM Sans', sans-serif;
+cursor: pointer;
+transition: opacity 0.15s, transform 0.1s;
+-webkit-tap-highlight-color: transparent;
+position: relative;
+overflow: hidden;
+}
+.submit-btn:active { opacity: 0.85; transform: scale(0.98); }
+.submit-btn:disabled { opacity: 0.5; cursor: default; }
+
+.error-msg {
+font-size: 13px;
+color: var(--red);
+text-align: center;
+margin-top: 14px;
+height: 18px;
+transition: opacity 0.2s;
+}
+
+.session-note {
+font-size: 11px;
+color: var(--text3);
+text-align: center;
+margin-top: 22px;
+letter-spacing: 0.02em;
+}
+</style>
+
+</head>
+<body>
+
+<div class="login-card">
+  <div class="logo-ring">✦</div>
+  <div class="login-title">Welcome back</div>
+  <div class="login-sub">Your personal dashboard</div>
+
+  <div class="field-label">Password</div>
+  <div class="pw-wrap">
+    <input
+      class="field-input"
+      id="pw-input"
+      type="password"
+      placeholder="••••••••••••"
+      autocomplete="current-password"
+      autofocus
+    >
+    <button class="toggle-pw" type="button" onclick="toggleVisibility()" id="toggle-btn">👁</button>
+  </div>
+
+<button class="submit-btn" id="submit-btn" onclick="submitLogin()">Unlock</button>
+
+  <div class="error-msg" id="error-msg"></div>
+  <div class="session-note">Session lasts 30 days</div>
+</div>
+
+<script>
+var input = document.getElementById('pw-input');
+var btn = document.getElementById('submit-btn');
+var errMsg = document.getElementById('error-msg');
+var visible = false;
+
+input.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') submitLogin();
+});
+
+function toggleVisibility() {
+  visible = !visible;
+  input.type = visible ? 'text' : 'password';
+  document.getElementById('toggle-btn').textContent = visible ? '🙈' : '👁';
+}
+
+function submitLogin() {
+  var pw = input.value;
+  if (!pw) return;
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  errMsg.textContent = '';
+  input.classList.remove('error');
+
+  fetch('/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: pw })
+  }).then(function(r) {
+    if (r.ok) {
+      btn.textContent = '✓ Opening...';
+      setTimeout(function() { window.location.href = '/'; }, 300);
+    } else {
+      input.value = '';
+      input.classList.add('error');
+      errMsg.textContent = 'Wrong password. Try again.';
+      btn.disabled = false;
+      btn.textContent = 'Unlock';
+      input.focus();
+    }
+  }).catch(function() {
+    errMsg.textContent = 'Connection error.';
+    btn.disabled = false;
+    btn.textContent = 'Unlock';
+  });
+}
+</script>
+
+</body>
+</html>
