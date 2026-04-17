@@ -50,7 +50,7 @@ def get_tz():
 # For backward compatibility, initialize with default
 TZ = _TZ_DEFAULT
 
-_api_usage_cache = {"tokens_used": 0, "tokens_limit": 1000000, "last_updated": datetime.now(TZ)}
+_api_usage_cache = {"tokens_used": 0, "tokens_limit": 1000000, "last_updated": None}
 
 _briefing_lock = threading.Lock()
 
