@@ -1276,11 +1276,26 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
 
 async function loadSidebarData() {
   // Show loading states
-  document.getElementById('assignmentsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
-  document.getElementById('tasksList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
-  document.getElementById('projectsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
-  document.getElementById('calendarList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
-  document.getElementById('planContent').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+  const elements = {
+    assignmentsList: document.getElementById('assignmentsList'),
+    tasksList: document.getElementById('tasksList'),
+    projectsList: document.getElementById('projectsList'),
+    calendarList: document.getElementById('calendarList'),
+    planContent: document.getElementById('planContent')
+  };
+
+  Object.values(elements).forEach(el => {
+    el.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+  });
+
+  // Timeout safety: if still loading after 8 seconds, show error
+  const timeoutId = setTimeout(() => {
+    Object.entries(elements).forEach(([key, el]) => {
+      if (el.innerHTML.includes('Loading...')) {
+        el.innerHTML = '<div class="sidebar-item" style="color: var(--red);">Connection timeout - please refresh</div>';
+      }
+    });
+  }, 8000);
 
   // Handle each API request individually for progressive rendering
   const dataHandlers = {
@@ -1292,6 +1307,7 @@ async function loadSidebarData() {
         if (!dataChanged(assignmentsCache, newData)) return;
         assignmentsCache = newData;
         renderAssignments();
+        clearTimeout(timeoutId);
       }
     },
     tasks: {
@@ -1302,6 +1318,7 @@ async function loadSidebarData() {
         if (!dataChanged(tasksCache, newData)) return;
         tasksCache = newData;
         renderTasks();
+        clearTimeout(timeoutId);
       }
     },
     projects: {
@@ -1312,6 +1329,7 @@ async function loadSidebarData() {
         if (!dataChanged(projectsCache, newData)) return;
         projectsCache = newData;
         renderProjects();
+        clearTimeout(timeoutId);
       }
     },
     calendar: {
@@ -1322,6 +1340,7 @@ async function loadSidebarData() {
         if (!dataChanged(calendarCache, newData)) return;
         calendarCache = newData;
         renderCalendar();
+        clearTimeout(timeoutId);
       }
     },
     plan: {
@@ -1329,6 +1348,7 @@ async function loadSidebarData() {
       containerId: 'planContent',
       processor: (data) => {
         renderPlan(data);
+        clearTimeout(timeoutId);
       }
     }
   };
@@ -1342,7 +1362,8 @@ async function loadSidebarData() {
       })
       .catch(e => {
         const errorMsg = getErrorMessage(e);
-        document.getElementById(handler.containerId).innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
+        document.getElementById(handler.containerId).innerHTML = `<div class="sidebar-item" style="color: var(--red);">${errorMsg}</div>`;
+        clearTimeout(timeoutId);
       });
   }
 }
@@ -1468,22 +1489,104 @@ function viewTask(title, urgency, notes) {
     messagesDiv.innerHTML = '';
   }
 
-  const urgencyColor = {
-    'critical': '🔴',
-    'high': '🟠',
-    'medium': '🟡',
-    'low': '🟢'
+  const urgencyColors = {
+    'critical': { color: '#ff6b6b', label: 'Critical' },
+    'high': { color: '#ffa940', label: 'High' },
+    'medium': { color: '#ffd666', label: 'Medium' },
+    'low': { color: '#5cb85c', label: 'Low' }
   };
+
+  const urg = urgencyColors[urgency] || { color: '#999999', label: urgency };
 
   const bubble = document.createElement('div');
   bubble.className = 'message assistant';
   bubble.innerHTML = `
     <div class="message-bubble">
       <strong>✓ ${escapeHtml(title)}</strong><br/>
-      <strong>Priority:</strong> ${urgencyColor[urgency] || '⚪'} ${urgency.toUpperCase()}<br/>
-      ${notes ? `<strong>Notes:</strong> ${escapeHtml(notes)}` : 'No notes'}
+      <strong>Priority:</strong> <span style="display: inline-block; width: 12px; height: 12px; background: ${urg.color}; border-radius: 50%; margin-right: 6px; vertical-align: middle;"></span> ${urg.label}<br/>
+      ${notes ? `<strong>Notes:</strong> ${escapeHtml(notes)}<br/>` : ''}
+      <button onclick="editTask('${(title || '').replace(/'/g, "\\'")}', '${(urgency || '').replace(/'/g, "\\'")}', '${(notes || '').replace(/'/g, "\\'")}')" style="margin-top: 10px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600;">Edit Task</button>
     </div>
   `;
+  messagesDiv.appendChild(bubble);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function editTask(title, urgency, notes) {
+  // Create edit modal
+  const modal = document.createElement('div');
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  `;
+
+  const form = document.createElement('div');
+  form.style.cssText = `
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    padding: 24px;
+    width: 90%;
+    max-width: 400px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  `;
+
+  form.innerHTML = `
+    <h3 style="margin: 0 0 16px 0; color: var(--text);">Edit Task</h3>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Title</label>
+      <input id="editTitle" type="text" value="${escapeHtml(title)}" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+    </div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Priority</label>
+      <select id="editUrgency" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+        <option value="critical" ${urgency === 'critical' ? 'selected' : ''}>● Critical</option>
+        <option value="high" ${urgency === 'high' ? 'selected' : ''}>● High</option>
+        <option value="medium" ${urgency === 'medium' ? 'selected' : ''}>● Medium</option>
+        <option value="low" ${urgency === 'low' ? 'selected' : ''}>● Low</option>
+      </select>
+    </div>
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Notes</label>
+      <textarea id="editNotes" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 80px; font-family: inherit;">${escapeHtml(notes)}</textarea>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button onclick="this.closest('div').parentElement.parentElement.remove()" style="flex: 1; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); cursor: pointer; font-weight: 600;">Cancel</button>
+      <button onclick="saveTaskEdit('${(title || '').replace(/'/g, "\\'")}', document.getElementById('editTitle').value, document.getElementById('editUrgency').value, document.getElementById('editNotes').value)" style="flex: 1; padding: 8px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Save</button>
+    </div>
+  `;
+
+  modal.appendChild(form);
+  document.body.appendChild(modal);
+  document.getElementById('editTitle').focus();
+}
+
+function saveTaskEdit(oldTitle, newTitle, urgency, notes) {
+  // Close modal
+  document.querySelector('[style*="position: fixed"][style*="z-index: 100"]').remove();
+
+  // Find and update the task in cache
+  const taskIndex = tasksCache.findIndex(t => t.title === oldTitle);
+  if (taskIndex !== -1) {
+    tasksCache[taskIndex].title = newTitle;
+    tasksCache[taskIndex].urgency = urgency;
+    tasksCache[taskIndex].notes = notes;
+    renderTasks();
+  }
+
+  // Show confirmation
+  const messagesDiv = document.getElementById('chatMessages');
+  const bubble = document.createElement('div');
+  bubble.className = 'message assistant';
+  bubble.innerHTML = `<div class="message-bubble">✓ Task updated successfully!</div>`;
   messagesDiv.appendChild(bubble);
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
