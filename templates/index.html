@@ -137,40 +137,33 @@ display: none;
 flex-direction: column;
 }
 
-.sidebar.left-panel {
+.sidebar-col-1,
+.sidebar-col-2,
+.sidebar-col-3 {
 border-right: 1px solid var(--border);
-border-left: none;
 }
 
-.sidebar.right-panel {
-border-left: 1px solid var(--border);
-border-right: none;
-}
-
-/* Desktop: 1280px and up - 3 column layout */
-@media (min-width: 1280px) {
+/* Mobile first (default): up to 639px - single column */
 .main-container {
-grid-template-columns: 320px 1fr 280px;
+grid-template-columns: 1fr;
 }
 .sidebar {
-display: flex;
-grid-row: 2;
+display: none;
 }
-.sidebar.left-panel {
-grid-column: 1;
-width: 320px;
-}
-.sidebar.right-panel {
-grid-column: 3;
-width: 280px;
+.sidebar-col-1,
+.sidebar-col-2,
+.sidebar-col-3 {
+display: none;
 }
 .content-wrapper {
-grid-column: 2;
+grid-column: 1;
 grid-row: 2;
 }
+.menu-btn {
+display: flex;
 }
 
-/* Tablet/Kindle: 640px to 1279px - single column with hamburger menu */
+/* Tablet: 640px to 1279px - single column with hamburger menu */
 @media (min-width: 640px) and (max-width: 1279px) {
 .main-container {
 grid-template-columns: 1fr;
@@ -178,28 +171,65 @@ grid-template-columns: 1fr;
 .sidebar {
 display: none;
 }
+.sidebar-col-1,
+.sidebar-col-2,
+.sidebar-col-3 {
+display: none;
+}
 .content-wrapper {
 grid-column: 1;
 grid-row: 2;
 }
-/* Show hamburger menu for tablet */
 .menu-btn {
 display: flex;
 }
 }
 
+/* Desktop: 1280px and up - 4 column layout (3 sidebars + chat) */
+@media (min-width: 1280px) {
+.main-container {
+grid-template-columns: 280px 280px 280px 1fr;
+}
+.sidebar {
+display: flex;
+grid-row: 2;
+width: 280px;
+}
+.sidebar-col-1 {
+grid-column: 1;
+}
+.sidebar-col-2 {
+grid-column: 2;
+}
+.sidebar-col-3 {
+grid-column: 3;
+}
+.content-wrapper {
+grid-column: 4;
+grid-row: 2;
+}
+.menu-btn {
+display: none;
+}
+}
+
 /* Mobile/Overlay sidebar: up to 639px */
 @media (max-width: 639px) {
+.sidebar {
+display: none;
+}
 .sidebar.open {
 display: flex;
 position: fixed;
 left: 0;
-top: 0;
-width: 280px;
-height: 100%;
+top: var(--header-h);
+width: 100%;
+max-width: 280px;
+max-height: calc(100% - var(--header-h));
 z-index: 50;
 flex-direction: column;
 box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+overflow-y: auto;
 }
 }
 
@@ -215,7 +245,7 @@ letter-spacing: 0.1em;
 
 .sidebar-stats {
 display: grid;
-grid-template-columns: 1fr 1fr 1fr;
+grid-template-columns: 1fr 1fr;
 gap: 8px;
 padding: 12px;
 }
@@ -909,57 +939,27 @@ margin-bottom: 0;
   </div>
 </div>
 
-<!-- LEFT PANEL: Projects, Tasks, Plan My Day -->
-<aside class="sidebar left-panel" id="sidebarLeft">
-<div class="sidebar-header">Tasks & Plans</div>
+<!-- LEFT COLUMN 1: Tasks & Projects -->
+<aside class="sidebar sidebar-col-1" id="sidebarCol1">
+<div class="sidebar-header">✓ Tasks</div>
 
 <div class="sidebar-section">
-<div class="section-header" onclick="toggleSection('tasksSection')">
-<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
-<span class="section-toggle" id="taskToggle">▼</span>
-<span>✓ Tasks</span>
-</div>
-<span class="section-badge" id="taskBadge">0</span>
-</div>
 <div id="tasksSection" class="section-content">
 <div id="tasksList"></div>
 </div>
 </div>
 
+<div class="sidebar-header" style="margin-top: 16px;">📦 Projects</div>
 <div class="sidebar-section">
-<div class="section-header" onclick="toggleSection('projectsSection')">
-<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
-<span class="section-toggle" id="projectToggle">▼</span>
-<span>📦 Projects</span>
-</div>
-<span class="section-badge" id="projectBadge">0</span>
-</div>
 <div id="projectsSection" class="section-content">
 <div id="projectsList"></div>
 </div>
 </div>
-
-<div class="sidebar-section">
-<div class="section-header" onclick="toggleSection('planSection')">
-<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
-<span class="section-toggle" id="planToggle">▼</span>
-<span>🎯 Plan My Day</span>
-<span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
-</div>
-</div>
-<div id="planSection" class="section-content">
-<div id="planContent"></div>
-<div style="display: flex; gap: 6px; margin-top: 8px;">
-<button onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--accent); background: var(--accent); border-radius: var(--r-sm); cursor: pointer; color: white; transition: background 0.15s; font-weight: 600;">Generate</button>
-<button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
-</div>
-</div>
-</div>
 </aside>
 
-<!-- RIGHT PANEL: Calendar, Assignments, Events -->
-<aside class="sidebar right-panel" id="sidebarRight">
-<div class="sidebar-header">Calendar & Events</div>
+<!-- LEFT COLUMN 2: Calendar & Events & Assignments -->
+<aside class="sidebar sidebar-col-2" id="sidebarCol2">
+<div class="sidebar-header">📅 Calendar</div>
 
 <div class="sidebar-stats">
 <div class="stat-card">
@@ -979,30 +979,34 @@ margin-bottom: 0;
 </div>
 
 <div class="sidebar-section">
-<div class="section-header" onclick="toggleSection('assignmentsSection')">
-<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
-<span class="section-toggle" id="assignmentToggle">▼</span>
-<span>📋 Assignments</span>
-</div>
-<span class="section-badge" id="assignmentBadge">0</span>
-</div>
-<div id="assignmentsSection" class="section-content">
-<div id="assignmentsList"></div>
-</div>
-</div>
-
-<div class="sidebar-section">
-<div class="section-header" onclick="toggleSection('calendarSection')">
-<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
-<span class="section-toggle" id="calendarToggle">▼</span>
-<span>📅 Calendar</span>
-</div>
-<span class="section-badge" id="calendarBadge">0</span>
-</div>
 <div id="calendarSection" class="section-content">
 <div id="calendarList"></div>
 </div>
 </div>
+
+<div class="sidebar-header" style="margin-top: 16px;">📋 Assignments</div>
+<div class="sidebar-section">
+<div id="assignmentsSection" class="section-content">
+<div id="assignmentsList"></div>
+</div>
+</div>
+</aside>
+
+<!-- LEFT COLUMN 3: Plan My Day -->
+<aside class="sidebar sidebar-col-3" id="sidebarCol3">
+<div class="sidebar-header">🎯 Plan My Day</div>
+
+<div class="sidebar-section">
+<div id="planSection" class="section-content">
+<div id="planContent"></div>
+<div style="display: flex; gap: 6px; margin-top: 8px;">
+<button onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--accent); background: var(--accent); border-radius: var(--r-sm); cursor: pointer; color: white; transition: background 0.15s; font-weight: 600;">Generate</button>
+<button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
+</div>
+</div>
+</div>
+
+<span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
 </aside>
 
 <div class="content-wrapper">
@@ -1042,14 +1046,18 @@ function isMobile() {
 
 function toggleSidebar() {
   if (isMobile()) {
-    document.getElementById('sidebarLeft').classList.toggle('open');
+    document.getElementById('sidebarCol1').classList.toggle('open');
+    document.getElementById('sidebarCol2').classList.toggle('open');
+    document.getElementById('sidebarCol3').classList.toggle('open');
     document.getElementById('sidebarBackdrop').classList.toggle('visible');
   }
 }
 
 function closeSidebar() {
   if (isMobile()) {
-    document.getElementById('sidebarLeft').classList.remove('open');
+    document.getElementById('sidebarCol1').classList.remove('open');
+    document.getElementById('sidebarCol2').classList.remove('open');
+    document.getElementById('sidebarCol3').classList.remove('open');
     document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
 }
@@ -1097,10 +1105,49 @@ function confirmLogout() {
   if (confirmed) window.location.href = '/logout';
 }
 
+function getErrorMessage(error) {
+  if (error.name === 'AbortError') {
+    return 'Request timeout - server not responding';
+  }
+  if (error instanceof TypeError) {
+    return 'Unable to connect to server';
+  }
+  if (error.message.includes('HTTP')) {
+    const match = error.message.match(/HTTP (\d+)/);
+    const status = match ? match[1] : 'unknown';
+    if (status === '401' || status === '403') {
+      return `Authentication error (${status})`;
+    }
+    if (status >= '500') {
+      return `Server error (HTTP ${status})`;
+    }
+    return `Error: HTTP ${status}`;
+  }
+  return 'Network error';
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
+}
+
 async function loadSidebarData() {
   // Load assignments
   try {
-    const response = await fetch('/api/assignments');
+    document.getElementById('assignmentsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+    const response = await fetchWithTimeout('/api/assignments');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -1109,13 +1156,14 @@ async function loadSidebarData() {
     renderAssignments();
   } catch (e) {
     console.error('Failed to load assignments:', e);
-    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    const errorMsg = getErrorMessage(e);
     document.getElementById('assignmentsList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
   // Load tasks
   try {
-    const response = await fetch('/api/tasks');
+    document.getElementById('tasksList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+    const response = await fetchWithTimeout('/api/tasks');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -1124,13 +1172,14 @@ async function loadSidebarData() {
     renderTasks();
   } catch (e) {
     console.error('Failed to load tasks:', e);
-    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    const errorMsg = getErrorMessage(e);
     document.getElementById('tasksList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
   // Load projects
   try {
-    const response = await fetch('/api/projects');
+    document.getElementById('projectsList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+    const response = await fetchWithTimeout('/api/projects');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -1139,13 +1188,14 @@ async function loadSidebarData() {
     renderProjects();
   } catch (e) {
     console.error('Failed to load projects:', e);
-    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    const errorMsg = getErrorMessage(e);
     document.getElementById('projectsList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
   // Load calendar
   try {
-    const response = await fetch('/api/calendar');
+    document.getElementById('calendarList').innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+    const response = await fetchWithTimeout('/api/calendar');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -1154,13 +1204,13 @@ async function loadSidebarData() {
     renderCalendar();
   } catch (e) {
     console.error('Failed to load calendar:', e);
-    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    const errorMsg = getErrorMessage(e);
     document.getElementById('calendarList').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 
   // Load plan
   try {
-    const response = await fetch('/api/plan-my-day');
+    const response = await fetchWithTimeout('/api/plan-my-day');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
@@ -1168,7 +1218,7 @@ async function loadSidebarData() {
     renderPlan(data);
   } catch (e) {
     console.error('Failed to load plan:', e);
-    const errorMsg = e.message.includes('HTTP') ? `Error: ${e.message}` : 'Network error';
+    const errorMsg = getErrorMessage(e);
     document.getElementById('planContent').innerHTML = `<div class="sidebar-item" style="color: var(--text3);">${errorMsg}</div>`;
   }
 }
