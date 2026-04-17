@@ -1457,7 +1457,7 @@ function renderTasks() {
   container.innerHTML = sorted.slice(0, 8).map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
     return `
-      <div class="sidebar-item ${urgencyClass}" style="cursor: pointer;" onclick="viewTask('${(t.title || '').replace(/'/g, "\\'")}', '${(t.urgency || '').replace(/'/g, "\\'")}', '${(t.notes || '').replace(/'/g, "\\'")}')">
+      <div class="sidebar-item ${urgencyClass}" style="cursor: pointer;" onclick="viewTask(${t.id})">
         <div class="sidebar-item-title">${t.title}</div>
         <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
       </div>
@@ -1515,7 +1515,10 @@ function viewAssignment(title, className, dueDate, estimateMinutes) {
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
-function viewTask(title, urgency, notes) {
+function viewTask(taskId) {
+  const task = tasksCache.find(t => t.id === taskId);
+  if (!task) return;
+
   const messagesDiv = document.getElementById('chatMessages');
   if (messagesDiv.querySelector('.empty-state')) {
     messagesDiv.innerHTML = '';
@@ -1528,25 +1531,28 @@ function viewTask(title, urgency, notes) {
     'low': { color: '#5cb85c', label: 'Low' }
   };
 
-  const urg = urgencyColors[urgency] || { color: '#999999', label: urgency };
+  const urg = urgencyColors[task.urgency] || { color: '#999999', label: task.urgency };
 
   const bubble = document.createElement('div');
   bubble.className = 'message assistant';
   bubble.innerHTML = `
     <div class="message-bubble">
-      <strong>✓ ${escapeHtml(title)}</strong><br/>
+      <strong>✓ ${escapeHtml(task.title)}</strong><br/>
       <strong>Priority:</strong> <span style="display: inline-block; width: 12px; height: 12px; background: ${urg.color}; border-radius: 50%; margin-right: 6px; vertical-align: middle;"></span> ${urg.label}<br/>
-      ${notes ? `<strong>Notes:</strong> ${escapeHtml(notes)}<br/>` : ''}
-      <button onclick="editTask('${(title || '').replace(/'/g, "\\'")}', '${(urgency || '').replace(/'/g, "\\'")}', '${(notes || '').replace(/'/g, "\\'")}')" style="margin-top: 10px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600;">Edit Task</button>
+      ${task.notes ? `<strong>Notes:</strong> ${escapeHtml(task.notes)}<br/>` : ''}
+      <button onclick="editTask(${taskId})" style="margin-top: 10px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600;">Edit Task</button>
     </div>
   `;
   messagesDiv.appendChild(bubble);
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
-function editTask(title, urgency, notes) {
-  // Create edit modal
+function editTask(taskId) {
+  const task = tasksCache.find(t => t.id === taskId);
+  if (!task) return;
+
   const modal = document.createElement('div');
+  modal.id = 'editTaskModal';
   modal.style.cssText = `
     position: fixed;
     top: 0;
@@ -1575,24 +1581,24 @@ function editTask(title, urgency, notes) {
     <h3 style="margin: 0 0 16px 0; color: var(--text);">Edit Task</h3>
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Title</label>
-      <input id="editTitle" type="text" value="${escapeHtml(title)}" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+      <input id="editTitle" type="text" value="${escapeHtml(task.title)}" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
     </div>
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Priority</label>
       <select id="editUrgency" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
-        <option value="critical" ${urgency === 'critical' ? 'selected' : ''}>● Critical</option>
-        <option value="high" ${urgency === 'high' ? 'selected' : ''}>● High</option>
-        <option value="medium" ${urgency === 'medium' ? 'selected' : ''}>● Medium</option>
-        <option value="low" ${urgency === 'low' ? 'selected' : ''}>● Low</option>
+        <option value="critical" ${task.urgency === 'critical' ? 'selected' : ''}>● Critical</option>
+        <option value="high" ${task.urgency === 'high' ? 'selected' : ''}>● High</option>
+        <option value="medium" ${task.urgency === 'medium' ? 'selected' : ''}>● Medium</option>
+        <option value="low" ${task.urgency === 'low' ? 'selected' : ''}>● Low</option>
       </select>
     </div>
     <div style="margin-bottom: 16px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Notes</label>
-      <textarea id="editNotes" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 80px; font-family: inherit;">${escapeHtml(notes)}</textarea>
+      <textarea id="editNotes" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 80px; font-family: inherit;">${escapeHtml(task.notes)}</textarea>
     </div>
     <div style="display: flex; gap: 8px;">
-      <button onclick="this.closest('div').parentElement.parentElement.remove()" style="flex: 1; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); cursor: pointer; font-weight: 600;">Cancel</button>
-      <button onclick="saveTaskEdit('${(title || '').replace(/'/g, "\\'")}', document.getElementById('editTitle').value, document.getElementById('editUrgency').value, document.getElementById('editNotes').value)" style="flex: 1; padding: 8px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Save</button>
+      <button onclick="closeEditModal()" style="flex: 1; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); cursor: pointer; font-weight: 600;">Cancel</button>
+      <button onclick="saveTaskEdit(${taskId})" style="flex: 1; padding: 8px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Save</button>
     </div>
   `;
 
@@ -1601,26 +1607,56 @@ function editTask(title, urgency, notes) {
   document.getElementById('editTitle').focus();
 }
 
-function saveTaskEdit(oldTitle, newTitle, urgency, notes) {
-  // Close modal
-  document.querySelector('[style*="position: fixed"][style*="z-index: 100"]').remove();
+function closeEditModal() {
+  const modal = document.getElementById('editTaskModal');
+  if (modal) modal.remove();
+}
 
-  // Find and update the task in cache
-  const taskIndex = tasksCache.findIndex(t => t.title === oldTitle);
-  if (taskIndex !== -1) {
-    tasksCache[taskIndex].title = newTitle;
-    tasksCache[taskIndex].urgency = urgency;
-    tasksCache[taskIndex].notes = notes;
-    renderTasks();
+async function saveTaskEdit(taskId) {
+  const newTitle = document.getElementById('editTitle').value.trim();
+  const newUrgency = document.getElementById('editUrgency').value;
+  const newNotes = document.getElementById('editNotes').value.trim();
+
+  if (!newTitle) {
+    alert('Title cannot be empty');
+    return;
   }
 
-  // Show confirmation
-  const messagesDiv = document.getElementById('chatMessages');
-  const bubble = document.createElement('div');
-  bubble.className = 'message assistant';
-  bubble.innerHTML = `<div class="message-bubble">✓ Task updated successfully!</div>`;
-  messagesDiv.appendChild(bubble);
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  try {
+    const response = await fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: newTitle,
+        urgency: newUrgency,
+        notes: newNotes
+      })
+    });
+
+    if (response.ok) {
+      const task = tasksCache.find(t => t.id === taskId);
+      if (task) {
+        task.title = newTitle;
+        task.urgency = newUrgency;
+        task.notes = newNotes;
+        renderTasks();
+      }
+
+      closeEditModal();
+
+      const messagesDiv = document.getElementById('chatMessages');
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      bubble.innerHTML = `<div class="message-bubble">✓ Task updated successfully!</div>`;
+      messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    } else {
+      alert('Failed to save task');
+    }
+  } catch (e) {
+    console.error('Error saving task:', e);
+    alert('Error saving task');
+  }
 }
 
 function renderCalendar() {
