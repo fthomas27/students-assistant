@@ -194,8 +194,103 @@ text-transform: uppercase;
 letter-spacing: 0.1em;
 }
 
+.sidebar-stats {
+display: grid;
+grid-template-columns: 1fr 1fr 1fr;
+gap: 8px;
+padding: 12px;
+}
+
+.stat-card {
+display: flex;
+flex-direction: column;
+align-items: center;
+text-align: center;
+padding: 10px;
+background: var(--surface);
+border-radius: var(--r-sm);
+border: 1px solid var(--border);
+transition: all 0.2s;
+}
+
+.stat-card:hover {
+border-color: var(--accent);
+background: var(--surface2);
+}
+
+.stat-icon {
+font-size: 20px;
+margin-bottom: 6px;
+}
+
+.stat-label {
+font-size: 10px;
+color: var(--text3);
+text-transform: uppercase;
+font-weight: 600;
+letter-spacing: 0.05em;
+}
+
+.stat-count {
+font-size: 18px;
+font-weight: 700;
+color: var(--accent);
+margin-top: 4px;
+}
+
+.section-header {
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 10px 12px;
+cursor: pointer;
+transition: all 0.15s;
+border-radius: var(--r-sm);
+user-select: none;
+}
+
+.section-header:hover {
+background: var(--surface);
+}
+
+.section-toggle {
+display: inline-block;
+font-size: 11px;
+transition: transform 0.2s;
+color: var(--text3);
+width: 16px;
+text-align: center;
+}
+
+.section-toggle.collapsed {
+transform: rotate(-90deg);
+}
+
+.section-content {
+max-height: 500px;
+overflow: hidden;
+transition: max-height 0.3s ease-out;
+padding: 0 8px;
+}
+
+.section-content.collapsed {
+max-height: 0;
+padding: 0 8px;
+}
+
+.section-badge {
+background: var(--accent);
+color: white;
+font-size: 10px;
+font-weight: 700;
+padding: 2px 6px;
+border-radius: 10px;
+min-width: 20px;
+text-align: center;
+}
+
 .sidebar-section {
-padding: 12px 8px;
+padding: 0;
 border-bottom: 1px solid var(--border);
 }
 
@@ -574,35 +669,96 @@ background: #ff6a3a;
 <aside class="sidebar" id="sidebar">
 <div class="sidebar-header">Your Data</div>
 
+<div class="sidebar-stats">
+<div class="stat-card">
+<div class="stat-icon">📋</div>
+<div class="stat-info">
+<div class="stat-label">Assignments</div>
+<div class="stat-count" id="assignmentCount">0</div>
+</div>
+</div>
+<div class="stat-card">
+<div class="stat-icon">✓</div>
+<div class="stat-info">
+<div class="stat-label">Tasks</div>
+<div class="stat-count" id="taskCount">0</div>
+</div>
+</div>
+<div class="stat-card">
+<div class="stat-icon">📅</div>
+<div class="stat-info">
+<div class="stat-label">Events</div>
+<div class="stat-count" id="eventCount">0</div>
+</div>
+</div>
+</div>
+
 <div class="sidebar-section">
-<div class="sidebar-section-title">📋 Assignments</div>
+<div class="section-header" onclick="toggleSection('assignmentsSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="assignmentToggle">▼</span>
+<span>📋 Assignments</span>
+</div>
+<span class="section-badge" id="assignmentBadge">0</span>
+</div>
+<div id="assignmentsSection" class="section-content">
 <div id="assignmentsList"></div>
 </div>
+</div>
 
 <div class="sidebar-section">
-<div class="sidebar-section-title">✓ Tasks</div>
+<div class="section-header" onclick="toggleSection('tasksSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="taskToggle">▼</span>
+<span>✓ Tasks</span>
+</div>
+<span class="section-badge" id="taskBadge">0</span>
+</div>
+<div id="tasksSection" class="section-content">
 <div id="tasksList"></div>
 </div>
+</div>
 
 <div class="sidebar-section">
-<div class="sidebar-section-title">📦 Projects</div>
+<div class="section-header" onclick="toggleSection('projectsSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="projectToggle">▼</span>
+<span>📦 Projects</span>
+</div>
+<span class="section-badge" id="projectBadge">0</span>
+</div>
+<div id="projectsSection" class="section-content">
 <div id="projectsList"></div>
 </div>
+</div>
 
 <div class="sidebar-section">
-<div class="sidebar-section-title">📅 Calendar</div>
+<div class="section-header" onclick="toggleSection('calendarSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="calendarToggle">▼</span>
+<span>📅 Calendar</span>
+</div>
+<span class="section-badge" id="calendarBadge">0</span>
+</div>
+<div id="calendarSection" class="section-content">
 <div id="calendarList"></div>
 </div>
+</div>
 
 <div class="sidebar-section">
-<div class="sidebar-section-title">
-📋 Plan My Day
+<div class="section-header" onclick="toggleSection('planSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="planToggle">▼</span>
+<span>🎯 Plan My Day</span>
 <span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
 </div>
+</div>
+<div id="planSection" class="section-content">
 <div id="planContent"></div>
 <div style="display: flex; gap: 6px; margin-top: 8px;">
-<button onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Generate</button>
+<button onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--accent); background: var(--accent); border-radius: var(--r-sm); cursor: pointer; color: white; transition: background 0.15s; font-weight: 600;">Generate</button>
 <button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
+</div>
 </div>
 </div>
 </aside>
@@ -654,6 +810,30 @@ function closeSidebar() {
     document.getElementById('sidebar').classList.remove('open');
     document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
+}
+
+function toggleSection(sectionId) {
+  const section = document.getElementById(sectionId);
+  const sectionName = sectionId.replace('Section', '');
+  const toggle = document.getElementById(sectionName + 'Toggle');
+
+  section.classList.toggle('collapsed');
+  toggle.classList.toggle('collapsed');
+}
+
+function updateSidebarStats() {
+  document.getElementById('assignmentCount').textContent = assignmentsCache.length;
+  document.getElementById('assignmentBadge').textContent = assignmentsCache.length;
+
+  const incompleteTasks = tasksCache.filter(t => !t.completed).length;
+  document.getElementById('taskCount').textContent = incompleteTasks;
+  document.getElementById('taskBadge').textContent = incompleteTasks;
+
+  document.getElementById('eventCount').textContent = calendarCache.length;
+  document.getElementById('calendarBadge').textContent = calendarCache.length;
+
+  const projectCount = projectsCache.filter(p => p.status === 'active').length;
+  document.getElementById('projectBadge').textContent = projectCount;
 }
 
 function openSettings() {
@@ -747,6 +927,7 @@ function renderAssignments() {
       </div>
     </div>
   `).join('');
+  updateSidebarStats();
 }
 
 function renderTasks() {
@@ -770,6 +951,7 @@ function renderTasks() {
       </div>
     `;
   }).join('');
+  updateSidebarStats();
 }
 
 function renderProjects() {
@@ -785,6 +967,7 @@ function renderProjects() {
       <div class="sidebar-item-meta">Project</div>
     </div>
   `).join('');
+  updateSidebarStats();
 }
 
 function renderCalendar() {
@@ -800,6 +983,7 @@ function renderCalendar() {
       <div class="sidebar-item-meta">${formatEventTime(e.start_iso)}</div>
     </div>
   `).join('');
+  updateSidebarStats();
 }
 
 function renderPlan(planData) {
@@ -885,6 +1069,7 @@ function renderPlan(planData) {
       }
     });
   });
+  updateSidebarStats();
 }
 
 async function generatePlan() {
