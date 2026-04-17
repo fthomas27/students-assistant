@@ -995,6 +995,7 @@ margin-bottom: 0;
 <div class="header-title">Finn</div>
 <div class="header-actions">
 <button class="menu-btn" id="sidebarToggle" onclick="toggleSidebar()">☰</button>
+<button class="gear-btn" onclick="openChatHistory()">💬</button>
 <button class="gear-btn" onclick="openSettings()">⚙</button>
 </div>
 </div>
@@ -1048,6 +1049,25 @@ margin-bottom: 0;
           <button class="logout-btn" onclick="confirmLogout()" style="flex: 1;">Log Out</button>
           <button onclick="saveSettings()" style="flex: 1; padding: 10px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Save</button>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Chat History Modal -->
+<div class="settings-modal-backdrop" id="chatHistoryBackdrop" onclick="closeChatHistory()"></div>
+<div class="settings-modal" id="chatHistoryModal">
+  <div class="settings-modal-content">
+    <div class="settings-modal-header">
+      <h2>Chat History</h2>
+      <button class="settings-modal-close" onclick="closeChatHistory()">✕</button>
+    </div>
+    <div class="settings-modal-body">
+      <div id="chatHistoryList" style="max-height: 400px; overflow-y: auto;">
+        <div style="color: var(--text3);">Loading chat history...</div>
+      </div>
+      <div style="margin-top: 16px; display: flex; gap: 8px;">
+        <button onclick="startNewChat()" style="flex: 1; padding: 10px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">+ New Chat</button>
       </div>
     </div>
   </div>
@@ -1266,6 +1286,88 @@ function saveSettings() {
 function confirmLogout() {
   const confirmed = confirm('Are you sure you want to log out?');
   if (confirmed) window.location.href = '/logout';
+}
+
+function openChatHistory() {
+  document.getElementById('chatHistoryModal').classList.add('visible');
+  document.getElementById('chatHistoryBackdrop').classList.add('visible');
+  loadChatHistory();
+}
+
+function closeChatHistory() {
+  document.getElementById('chatHistoryModal').classList.remove('visible');
+  document.getElementById('chatHistoryBackdrop').classList.remove('visible');
+}
+
+function loadChatHistory() {
+  const histories = JSON.parse(localStorage.getItem('chatHistories') || '[]');
+  const list = document.getElementById('chatHistoryList');
+
+  if (histories.length === 0) {
+    list.innerHTML = '<div style="color: var(--text3);">No chat history yet. Start a new chat!</div>';
+    return;
+  }
+
+  list.innerHTML = histories.map((h, i) => `
+    <div style="padding: 12px; background: var(--surface2); border-radius: var(--r-sm); margin-bottom: 8px; cursor: pointer;" onclick="loadChat(${i})">
+      <div style="color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(h.title || 'Chat ' + (i + 1))}</div>
+      <div style="color: var(--text3); font-size: 12px; margin-top: 4px;">${new Date(h.timestamp).toLocaleDateString()} - ${h.messageCount} messages</div>
+    </div>
+  `).join('');
+}
+
+function loadChat(index) {
+  const histories = JSON.parse(localStorage.getItem('chatHistories') || '[]');
+  const chat = histories[index];
+  if (chat) {
+    conversationHistory = chat.messages || [];
+    renderChatMessages();
+    closeChatHistory();
+  }
+}
+
+function startNewChat() {
+  if (conversationHistory.length > 0) {
+    saveCurrentChat();
+  }
+  conversationHistory = [];
+  document.getElementById('chatMessages').innerHTML = '<div class="empty-state">Start a new chat...</div>';
+  closeChatHistory();
+}
+
+function saveCurrentChat() {
+  if (conversationHistory.length === 0) return;
+
+  const histories = JSON.parse(localStorage.getItem('chatHistories') || '[]');
+  const title = conversationHistory[0]?.content?.substring(0, 50) || 'Chat';
+
+  histories.unshift({
+    timestamp: new Date().toISOString(),
+    title: title,
+    messages: conversationHistory,
+    messageCount: conversationHistory.length
+  });
+
+  // Keep only last 20 chats
+  if (histories.length > 20) {
+    histories.pop();
+  }
+
+  localStorage.setItem('chatHistories', JSON.stringify(histories));
+}
+
+function renderChatMessages() {
+  const messagesDiv = document.getElementById('chatMessages');
+  messagesDiv.innerHTML = '';
+
+  conversationHistory.forEach(msg => {
+    const bubble = document.createElement('div');
+    bubble.className = `message ${msg.role}`;
+    bubble.innerHTML = `<div class="message-bubble">${formatMessage(msg.content)}</div>`;
+    messagesDiv.appendChild(bubble);
+  });
+
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
 function getErrorMessage(error) {
@@ -2059,6 +2161,9 @@ You have access to the user's assignments, tasks, projects, and calendar. Use th
     loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(assistantMessage)}</div>`;
     conversationHistory.push({ role: 'assistant', content: assistantMessage });
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+    // Save chat to history
+    saveCurrentChat();
   } catch (e) {
     loadingBubble.innerHTML = `<div class="message-bubble" style="color: var(--red);">Failed to connect. Try again.</div>`;
     console.error('Chat error:', e);
@@ -2094,6 +2199,13 @@ window.addEventListener('resize', () => {
 
 loadSidebarData();
 setInterval(loadSidebarData, 30000);
+
+// Restore last chat if available
+const lastChat = JSON.parse(localStorage.getItem('chatHistories') || '[]')[0];
+if (lastChat && lastChat.messages && lastChat.messages.length > 0) {
+  conversationHistory = lastChat.messages;
+  renderChatMessages();
+}
 </script>
 
 </body>
