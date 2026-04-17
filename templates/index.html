@@ -1397,17 +1397,19 @@ async function generatePlan() {
       if (planResp.ok) {
         const planData = await planResp.json();
         renderPlan(planData);
-
-        // Display plan in chat
         displayPlanInChat(planData);
       }
     } else {
-      const error = await response.json();
-      alert('Error generating plan: ' + (error.error || 'Unknown error'));
+      try {
+        const error = await response.json();
+        alert('Error generating plan: ' + (error.error || `HTTP ${response.status}`));
+      } catch (e) {
+        alert(`Error generating plan: HTTP ${response.status}`);
+      }
     }
   } catch (e) {
     console.error('Failed to generate plan:', e);
-    alert('Failed to generate plan');
+    alert('Failed to generate plan: ' + e.message);
   }
 }
 
@@ -1420,15 +1422,17 @@ async function deletePlan() {
     });
 
     if (response.ok) {
-      // Reload plan
       const planResp = await fetch('/api/plan-my-day');
       if (planResp.ok) {
         const planData = await planResp.json();
         renderPlan(planData);
       }
+    } else {
+      alert(`Error deleting plan: HTTP ${response.status}`);
     }
   } catch (e) {
     console.error('Failed to delete plan:', e);
+    alert('Failed to delete plan: ' + e.message);
   }
 }
 
