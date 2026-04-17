@@ -137,15 +137,30 @@ display: none;
 flex-direction: column;
 }
 
+.sidebar.left-panel {
+border-right: 1px solid var(--border);
+border-left: none;
+}
+
+.sidebar.right-panel {
+border-left: 1px solid var(--border);
+border-right: none;
+}
+
 @media (min-width: 1024px) {
 .main-container {
-grid-template-columns: 280px 1fr;
+grid-template-columns: 280px 1fr 280px;
 }
 .sidebar {
 display: flex;
-grid-column: 1;
 grid-row: 2;
 width: 280px;
+}
+.sidebar.left-panel {
+grid-column: 1;
+}
+.sidebar.right-panel {
+grid-column: 3;
 }
 .content-wrapper {
 grid-column: 2;
@@ -155,16 +170,13 @@ grid-row: 2;
 
 @media (min-width: 640px) and (max-width: 1023px) {
 .main-container {
-grid-template-columns: 320px 1fr;
+grid-template-columns: 1fr;
 }
 .sidebar {
-display: flex;
-grid-column: 1;
-grid-row: 2;
-width: 320px;
+display: none;
 }
 .content-wrapper {
-grid-column: 2;
+grid-column: 1;
 grid-row: 2;
 }
 }
@@ -666,45 +678,9 @@ background: #ff6a3a;
 
 <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebar()"></div>
 
-<aside class="sidebar" id="sidebar">
-<div class="sidebar-header">Your Data</div>
-
-<div class="sidebar-stats">
-<div class="stat-card">
-<div class="stat-icon">📋</div>
-<div class="stat-info">
-<div class="stat-label">Assignments</div>
-<div class="stat-count" id="assignmentCount">0</div>
-</div>
-</div>
-<div class="stat-card">
-<div class="stat-icon">✓</div>
-<div class="stat-info">
-<div class="stat-label">Tasks</div>
-<div class="stat-count" id="taskCount">0</div>
-</div>
-</div>
-<div class="stat-card">
-<div class="stat-icon">📅</div>
-<div class="stat-info">
-<div class="stat-label">Events</div>
-<div class="stat-count" id="eventCount">0</div>
-</div>
-</div>
-</div>
-
-<div class="sidebar-section">
-<div class="section-header" onclick="toggleSection('assignmentsSection')">
-<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
-<span class="section-toggle" id="assignmentToggle">▼</span>
-<span>📋 Assignments</span>
-</div>
-<span class="section-badge" id="assignmentBadge">0</span>
-</div>
-<div id="assignmentsSection" class="section-content">
-<div id="assignmentsList"></div>
-</div>
-</div>
+<!-- LEFT PANEL: Projects, Tasks, Plan My Day -->
+<aside class="sidebar left-panel" id="sidebarLeft">
+<div class="sidebar-header">Tasks & Plans</div>
 
 <div class="sidebar-section">
 <div class="section-header" onclick="toggleSection('tasksSection')">
@@ -733,19 +709,6 @@ background: #ff6a3a;
 </div>
 
 <div class="sidebar-section">
-<div class="section-header" onclick="toggleSection('calendarSection')">
-<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
-<span class="section-toggle" id="calendarToggle">▼</span>
-<span>📅 Calendar</span>
-</div>
-<span class="section-badge" id="calendarBadge">0</span>
-</div>
-<div id="calendarSection" class="section-content">
-<div id="calendarList"></div>
-</div>
-</div>
-
-<div class="sidebar-section">
 <div class="section-header" onclick="toggleSection('planSection')">
 <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
 <span class="section-toggle" id="planToggle">▼</span>
@@ -759,6 +722,54 @@ background: #ff6a3a;
 <button onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--accent); background: var(--accent); border-radius: var(--r-sm); cursor: pointer; color: white; transition: background 0.15s; font-weight: 600;">Generate</button>
 <button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
 </div>
+</div>
+</div>
+</aside>
+
+<!-- RIGHT PANEL: Calendar, Assignments, Events -->
+<aside class="sidebar right-panel" id="sidebarRight">
+<div class="sidebar-header">Calendar & Events</div>
+
+<div class="sidebar-stats">
+<div class="stat-card">
+<div class="stat-icon">📋</div>
+<div class="stat-info">
+<div class="stat-label">Assignments</div>
+<div class="stat-count" id="assignmentCount">0</div>
+</div>
+</div>
+<div class="stat-card">
+<div class="stat-icon">📅</div>
+<div class="stat-info">
+<div class="stat-label">Events</div>
+<div class="stat-count" id="eventCount">0</div>
+</div>
+</div>
+</div>
+
+<div class="sidebar-section">
+<div class="section-header" onclick="toggleSection('assignmentsSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="assignmentToggle">▼</span>
+<span>📋 Assignments</span>
+</div>
+<span class="section-badge" id="assignmentBadge">0</span>
+</div>
+<div id="assignmentsSection" class="section-content">
+<div id="assignmentsList"></div>
+</div>
+</div>
+
+<div class="sidebar-section">
+<div class="section-header" onclick="toggleSection('calendarSection')">
+<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+<span class="section-toggle" id="calendarToggle">▼</span>
+<span>📅 Calendar</span>
+</div>
+<span class="section-badge" id="calendarBadge">0</span>
+</div>
+<div id="calendarSection" class="section-content">
+<div id="calendarList"></div>
 </div>
 </div>
 </aside>
@@ -800,14 +811,14 @@ function isMobile() {
 
 function toggleSidebar() {
   if (isMobile()) {
-    document.getElementById('sidebar').classList.toggle('open');
+    document.getElementById('sidebarLeft').classList.toggle('open');
     document.getElementById('sidebarBackdrop').classList.toggle('visible');
   }
 }
 
 function closeSidebar() {
   if (isMobile()) {
-    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarLeft').classList.remove('open');
     document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
 }
