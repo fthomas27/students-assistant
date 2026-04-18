@@ -76,6 +76,28 @@ gap: 8px;
 align-items: center;
 }
 
+.clock-display {
+font-family: 'DM Sans', sans-serif;
+font-size: 13px;
+color: var(--text2);
+text-align: right;
+min-width: 120px;
+font-weight: 500;
+letter-spacing: 0.5px;
+}
+
+.clock-time {
+font-size: 14px;
+color: var(--text);
+font-weight: 600;
+}
+
+.clock-date {
+font-size: 11px;
+color: var(--text3);
+margin-top: 2px;
+}
+
 .gear-btn {
 width: 36px;
 height: 36px;
@@ -1408,8 +1430,12 @@ margin-bottom: 0;
 <body>
 
 <div class="header">
-<div class="header-title">Finn</div>
+<div class="header-title">Jarvis</div>
 <div class="header-actions">
+<div class="clock-display">
+  <div class="clock-time" id="clockTime">12:00 PM</div>
+  <div class="clock-date" id="clockDate">Monday</div>
+</div>
 <button class="menu-btn" id="sidebarToggle" onclick="toggleSidebar()">☰</button>
 </div>
 </div>
@@ -2626,7 +2652,7 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: conversationHistory,
-        system: `You are Finn, a personalized AI assistant for ${customName}. Your role is to help manage assignments, tasks, projects, and schedule efficiently.
+        system: `You are Jarvis, a personalized AI assistant for ${customName}. Your role is to help manage assignments, tasks, projects, and schedule efficiently.
 
 Guidelines:
 - Be concise and actionable - get to the point quickly
@@ -2640,6 +2666,23 @@ Guidelines:
 - Help with planning, prioritization, and motivation
 - Address ${customName} by their preferred name when appropriate
 
+TASK CREATION CAPABILITY:
+When user asks to create, add, make, or schedule a task:
+1. Understand what needs to be done
+2. Ask about urgency (high=ASAP, medium=this week, low=flexible) and due date if not mentioned
+3. Check assignments and calendar context to suggest due dates if relevant
+4. Once you have enough info, output the task in this format:
+   [TASK_ACTION: {"title": "EXACT_TITLE", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "notes": ""}]
+5. Keep the response natural - the [TASK_ACTION: ...] block will be processed automatically
+
+IMPORTANT TASK RULES:
+- title: Required, descriptive, max 300 characters
+- urgency: Choose one: high (due within 24h), medium (due within 1 week), low (flexible)
+- due_date: Use YYYY-MM-DD format only. Ask user if unclear. Can be null if no deadline.
+- notes: Optional detail (max 2000 chars) - explain why task matters if helpful
+- Only output ONE [TASK_ACTION] block per response
+- Do NOT create [TASK_ACTION] unless user explicitly asks for a task
+
 You have access to the user's assignments, tasks, projects, and calendar. Use this context to give personalized, relevant advice.`
       })
     });
@@ -2647,8 +2690,27 @@ You have access to the user's assignments, tasks, projects, and calendar. Use th
     const data = await response.json();
     const assistantMessage = data.content || 'Sorry, I encountered an error.';
 
-    loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(assistantMessage)}</div>`;
-    conversationHistory.push({ role: 'assistant', content: assistantMessage });
+    // Check for task creation action in response
+    const taskActionMatch = assistantMessage.match(/\[TASK_ACTION:\s*({.*?})\]/s);
+    let displayMessage = assistantMessage;
+
+    if (taskActionMatch) {
+      try {
+        const taskData = JSON.parse(taskActionMatch[1]);
+
+        // Remove [TASK_ACTION: ...] from display message
+        displayMessage = assistantMessage.replace(/\[TASK_ACTION:\s*{.*?}\]/s, '').trim();
+
+        // Create the task
+        await createTaskFromChat(taskData, loadingBubble);
+      } catch (e) {
+        console.error('Failed to parse or create task:', e);
+        // Still display message even if task creation fails
+      }
+    }
+
+    loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(displayMessage)}</div>`;
+    conversationHistory.push({ role: 'assistant', content: displayMessage });
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
     // Save chat to history
@@ -2671,6 +2733,151 @@ function formatMessage(text) {
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/__(.*?)__/g, '<strong>$1</strong>');
   return html;
+}
+
+async function createTaskFromChat(taskData, loadingBubble) {
+  try {
+    // Validate required fields
+    if (!taskData.title || typeof taskData.title !== 'string') {
+      console.error('Task title is required');
+      return;
+    }
+
+    const response = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: taskData.title.trim(),
+        urgency: taskData.urgency || 'low',
+        due_date: taskData.due_date || null,
+        notes: taskData.notes || ''
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('Task creation failed:', error);
+      return;
+    }
+
+    const result = await response.json();
+    console.log('Task created successfully:', result);
+
+    // Add confirmation message to chat
+    const messagesDiv = document.getElementById('chatMessages');
+    const confirmBubble = document.createElement('div');
+    confirmBubble.className = 'message assistant';
+    const dueDateStr = taskData.due_date ? ` due ${taskData.due_date}` : '';
+    confirmBubble.innerHTML = `<div class="message-bubble">✓ Task <strong>"${escapeHtml(taskData.title)}"</strong> created!${dueDateStr}</div>`;
+    messagesDiv.appendChild(confirmBubble);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+    // Refresh tasks sidebar
+    await loadSidebarData();
+
+    // Add to conversation history for continuity
+    conversationHistory.push({
+      role: 'assistant',
+      content: `✓ Task "${taskData.title}" created successfully!`
+    });
+  } catch (e) {
+    console.error('Task creation error:', e);
+    // Silently fail - don't disrupt chat flow
+  }
+}
+
+async function loadAndDisplaySuggestions() {
+  try {
+    const response = await fetch('/api/task-suggestions');
+    const data = await response.json();
+
+    if (data.suggestions && data.suggestions.length > 0) {
+      displayTaskSuggestions(data.suggestions);
+    }
+  } catch (e) {
+    console.error('Failed to load task suggestions:', e);
+  }
+}
+
+function displayTaskSuggestions(suggestions) {
+  const messagesDiv = document.getElementById('chatMessages');
+
+  suggestions.forEach((sugg, idx) => {
+    const bubble = document.createElement('div');
+    bubble.className = 'message assistant';
+    const suggestionId = `sugg-${Math.random().toString(36)}`;
+
+    const dueDateStr = sugg.due_date ? ` due ${sugg.due_date}` : '';
+    const urgencyEmoji = sugg.urgency === 'high' ? '🔴' : sugg.urgency === 'medium' ? '🟡' : '🟢';
+
+    bubble.innerHTML = `
+      <div class="message-bubble" style="background: var(--surface2); border-left: 3px solid var(--accent);">
+        <div style="margin-bottom: 8px;">
+          <strong>Suggestion:</strong> ${escapeHtml(sugg.reason)}<br>
+          <em>${escapeHtml(sugg.title)}</em> ${urgencyEmoji} ${dueDateStr}
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button onclick="acceptTaskSuggestion(${JSON.stringify(sugg).replace(/"/g, '&quot;')}, '${suggestionId}')"
+                  style="background: var(--green); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
+            ✓ Create Task
+          </button>
+          <button onclick="rejectTaskSuggestion('${suggestionId}')"
+                  style="background: var(--text3); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">
+            ✕ Skip
+          </button>
+        </div>
+      </div>
+    `;
+    bubble.id = `suggestion-${suggestionId}`;
+    messagesDiv.appendChild(bubble);
+  });
+
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+async function acceptTaskSuggestion(taskData, suggestionId) {
+  try {
+    // Create the task
+    const response = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: taskData.title.trim(),
+        urgency: taskData.urgency || 'low',
+        due_date: taskData.due_date || null,
+        notes: taskData.reason ? `From suggestion: ${taskData.reason}` : ''
+      })
+    });
+
+    if (!response.ok) {
+      console.error('Failed to create task from suggestion');
+      return;
+    }
+
+    // Remove suggestion bubble
+    const bubble = document.getElementById(`suggestion-${suggestionId}`);
+    if (bubble) {
+      bubble.style.opacity = '0';
+      bubble.style.transition = 'opacity 0.3s';
+      setTimeout(() => bubble.remove(), 300);
+    }
+
+    // Refresh tasks sidebar
+    await loadSidebarData();
+
+    console.log('Task created from suggestion:', taskData.title);
+  } catch (e) {
+    console.error('Error accepting suggestion:', e);
+  }
+}
+
+function rejectTaskSuggestion(suggestionId) {
+  const bubble = document.getElementById(`suggestion-${suggestionId}`);
+  if (bubble) {
+    bubble.style.opacity = '0';
+    bubble.style.transition = 'opacity 0.3s';
+    setTimeout(() => bubble.remove(), 300);
+  }
 }
 
 function suggestMessage(text) {
@@ -2913,11 +3120,45 @@ window.addEventListener('resize', () => {
   }
 });
 
+// Update clock display
+function updateClock() {
+  const now = new Date();
+  const timeElement = document.getElementById('clockTime');
+  const dateElement = document.getElementById('clockDate');
+
+  if (timeElement && dateElement) {
+    // Format time as HH:MM AM/PM
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+    const displayMinutes = minutes < 10 ? '0' + minutes : minutes;
+    timeElement.textContent = `${displayHours}:${displayMinutes} ${ampm}`;
+
+    // Format date as Day, Month Date
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const dayName = days[now.getDay()];
+    const monthName = months[now.getMonth()];
+    const date = now.getDate();
+    dateElement.textContent = `${dayName}, ${monthName} ${date}`;
+  }
+}
+
+// Initialize clock and update every minute
+updateClock();
+setInterval(updateClock, 60000);
+
 loadSidebarData();
 // Reload sidebar data every 60 seconds with better error handling
 setInterval(() => {
   loadSidebarData().catch(e => console.error('Sidebar reload failed:', e));
 }, 60000);
+
+// Load and display task suggestions after a brief delay (non-blocking)
+setTimeout(() => {
+  loadAndDisplaySuggestions().catch(e => console.error('Failed to load suggestions:', e));
+}, 2000);
 
 // Restore last chat if available
 const lastChat = JSON.parse(localStorage.getItem('chatHistories') || '[]')[0];

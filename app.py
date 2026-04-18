@@ -423,7 +423,7 @@ CREATE TABLE IF NOT EXISTS blocked_ips (
         pass
 
     defaults = {
-        "name": "Finn",
+        "name": "Jarvis",
         "morning_briefing_time": "07:00",
         "timer_cutoff_multiplier": "2.0",
         "anthropic_api_key": "",
@@ -777,7 +777,7 @@ def generate_briefing(force=False):
             log.warning("Morning briefing: ANTHROPIC_API_KEY not set")
             return
         cfg = get_config()
-        name = cfg.get("name", "Finn")
+        name = cfg.get("name", "Jarvis")
         if not force:
             conn = get_db()
             cur = conn.cursor()
@@ -989,7 +989,7 @@ def generate_evening_debrief():
             log.warning("Evening debrief: ANTHROPIC_API_KEY not set")
             return
         cfg = get_config()
-        name = cfg.get("name", "Finn")
+        name = cfg.get("name", "Jarvis")
         conn = get_db()
         cur = conn.cursor()
         today_start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2056,7 +2056,7 @@ def api_workout_generate():
         history_text = _workout_history_block(cur)
 
         now_local = datetime.now(TZ)
-        name = get_config().get("name", "Finn")
+        name = get_config().get("name", "Jarvis")
         if location == "home":
             equip = (
                 "HOME GYM: dumbbells only up to 35 lb each, plus bodyweight. "
@@ -2257,7 +2257,7 @@ def api_workout_regenerate():
 
     # Generate new workout with same focus but different exercises
     now_local = datetime.now(TZ)
-    name = get_config().get("name", "Finn")
+    name = get_config().get("name", "Jarvis")
 
     if location == "home":
         equip = (
@@ -2884,6 +2884,141 @@ def api_recurring_tasks_delete(task_id):
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/task-suggestions", methods=["GET"])
+def api_task_suggestions():
+    """Generate AI-powered task suggestions based on pending assignments and calendar events."""
+    start = time.time()
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"suggestions": []}), 200
+
+    try:
+        # Fetch pending assignments
+        assignments = []
+        try:
+            cal = fetch_ical(CANVAS_ICAL_URL)
+            if cal:
+                assignments = parse_canvas_assignments(cal)
+                # Filter out completed assignments
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                completed_titles = set(r["assignment_title"] for r in cur.fetchall())
+                assignments = [a for a in assignments if a["title"] not in completed_titles]
+                cur.close()
+                conn.close()
+        except Exception as e:
+            log.warning(f"Could not fetch assignments for suggestions: {e}")
+
+        # Fetch calendar events
+        calendar_events = []
+        try:
+            cal = fetch_ical(PERSONAL_ICAL_URL)
+            if cal:
+                calendar_events = parse_calendar_events(cal, days_ahead=7)
+        except Exception as e:
+            log.warning(f"Could not fetch calendar events for suggestions: {e}")
+
+        # Get existing tasks to avoid duplicates
+        existing_task_titles = set()
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT title FROM tasks WHERE completed = FALSE")
+            existing_task_titles = set(r["title"] for r in cur.fetchall())
+            cur.close()
+            conn.close()
+        except Exception as e:
+            log.warning(f"Could not fetch existing tasks: {e}")
+
+        # Build context for Claude
+        asgn_text = "; ".join(
+            f"{a['title']} ({a['class_name']}, due {a['due_display']})"
+            for a in assignments[:10]
+        ) or "None"
+
+        event_text = "; ".join(
+            f"{e['title']} on {e['date']}"
+            for e in calendar_events[:10]
+        ) or "None"
+
+        existing_text = "; ".join(list(existing_task_titles)[:10]) or "None"
+
+        # Prompt Claude to suggest tasks
+        prompt = f"""Analyze these pending items and suggest 1-3 NEW tasks to create.
+
+FILTERS - Only suggest if:
+- Assignment/event is not yet completed
+- Not already in the task list
+- Due within 14 days
+
+Pending assignments: {asgn_text}
+Upcoming calendar events: {event_text}
+Existing tasks: {existing_text}
+
+Return ONLY valid JSON array (no markdown, no explanation):
+[{{"title": "...", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "reason": "..."}}]"""
+
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        content = message.content[0].text.strip()
+
+        # Parse JSON response
+        try:
+            # Extract JSON array from response (handle potential markdown code blocks)
+            json_match = content
+            if "```" in content:
+                json_match = content.split("```")[1].strip()
+                if json_match.startswith("json"):
+                    json_match = json_match[4:].strip()
+
+            suggestions = json.loads(json_match)
+
+            # Validate suggestions
+            valid_suggestions = []
+            for sugg in suggestions:
+                if isinstance(sugg, dict) and "title" in sugg:
+                    # Validate urgency
+                    urgency = sugg.get("urgency", "medium")
+                    if urgency not in ("high", "medium", "low"):
+                        urgency = "medium"
+
+                    # Validate due_date format
+                    due_date = sugg.get("due_date")
+                    if due_date:
+                        try:
+                            datetime.strptime(due_date, "%Y-%m-%d")
+                        except ValueError:
+                            due_date = None
+
+                    # Skip if already in existing tasks
+                    if sugg["title"] in existing_task_titles:
+                        continue
+
+                    valid_suggestions.append({
+                        "title": str(sugg["title"])[:300],
+                        "urgency": urgency,
+                        "due_date": due_date,
+                        "reason": str(sugg.get("reason", ""))[:200]
+                    })
+
+            log.info(f"/api/task-suggestions: returned {len(valid_suggestions)} suggestions in {time.time()-start:.2f}s")
+            return jsonify({"suggestions": valid_suggestions[:3]})  # Limit to 3 suggestions
+
+        except json.JSONDecodeError as e:
+            log.warning(f"Failed to parse suggestions JSON: {content[:100]} - {e}")
+            return jsonify({"suggestions": []}), 200
+
+    except Exception as e:
+        log.exception(f"/api/task-suggestions failed after {time.time()-start:.2f}s: {e}")
+        return jsonify({"suggestions": []}), 200  # Graceful failure - don't error
+
+
 def _get_next_monthly_occurrence(position, day_of_week, start_after=None):
     """
     Calculate next occurrence of a monthly pattern like "first Monday" or "last Friday".
@@ -3279,7 +3414,7 @@ def api_project_tasks_delete(project_id, task_id):
 def api_config_get():
     cfg = get_config()
     return jsonify({
-        "name": cfg.get("name", "Finn"),
+        "name": cfg.get("name", "Jarvis"),
         "morning_briefing_time": cfg.get("morning_briefing_time", "07:00"),
         "timer_cutoff_multiplier": cfg.get("timer_cutoff_multiplier", "2.0"),
         "has_api_key": bool(cfg.get("anthropic_api_key", "")),
@@ -3336,7 +3471,7 @@ def api_chat():
                 system_prompt += (
                     " Today is a %s day at Park City High School. "
                     "School runs 7:%02d AM – %d:%02d %s. "
-                    "Finn is NOT available during school hours. "
+                    "Jarvis is NOT available during school hours. "
                     "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
                     "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM. "
                     "If asked what color day any date is, look it up from the calendar system."
