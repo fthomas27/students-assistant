@@ -403,8 +403,9 @@ function loadLoginAttempts() {
         var row = document.createElement('tr');
         var statusClass = attempt.success ? 'status-success' : 'status-failed';
         var statusText = attempt.success ? 'Success' : 'Failed';
-        row.innerHTML = '<td class="ip-address"></td><td class="status-cell"></td><td class="timestamp"></td><td class="user-agent"></td><td><button class="edit-btn" style="padding: 6px 12px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Name IP</button></td>';
+        row.innerHTML = '<td class="ip-address"></td><td class="ip-name-cell" style="cursor: pointer;"></td><td class="status-cell"></td><td class="timestamp"></td><td class="user-agent"></td><td><button class="edit-btn" style="padding: 6px 12px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Name IP</button></td>';
         row.querySelector('.ip-address').textContent = attempt.ip_address;
+        row.querySelector('.ip-name-cell').textContent = attempt.ip_name || '-';
         var statusSpan = document.createElement('span');
         statusSpan.className = 'status-badge ' + statusClass;
         statusSpan.textContent = statusText;
@@ -414,7 +415,9 @@ function loadLoginAttempts() {
         row.querySelector('.user-agent').style.fontSize = '12px';
         row.querySelector('.user-agent').style.color = 'var(--text3)';
         var ip = attempt.ip_address;
-        row.querySelector('.edit-btn').addEventListener('click', function() { editIPName(ip, ''); });
+        var currentName = attempt.ip_name || '';
+        row.querySelector('.ip-name-cell').addEventListener('click', function() { editIPName(ip, currentName); });
+        row.querySelector('.edit-btn').addEventListener('click', function() { editIPName(ip, currentName); });
         tbody.appendChild(row);
       });
 
