@@ -1567,8 +1567,10 @@ def api_admin_login_attempts():
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-SELECT ip_address, success, attempted_at, user_agent
-FROM login_attempts ORDER BY attempted_at DESC LIMIT 200""")
+SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, COALESCE(bi.ip_name, '') as ip_name
+FROM login_attempts la
+LEFT JOIN blocked_ips bi ON la.ip_address = bi.ip_address
+ORDER BY la.attempted_at DESC LIMIT 200""")
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
