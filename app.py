@@ -29,8 +29,8 @@ app.config.update(
     PREFERRED_URL_SCHEME='https'
 )
 
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "finn2025")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin-change-me")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "finn2025").strip()
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin-change-me").strip()
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -1222,7 +1222,7 @@ def login():
     is_locked_down = is_app_locked_down()
 
     if password and not security_code:
-        if password == APP_PASSWORD:
+        if password.strip() == APP_PASSWORD:
             if is_locked_down:
                 return jsonify({
                     "is_locked_down": True,
@@ -1315,10 +1315,10 @@ def admin():
         import hashlib
         pwd_hash = hashlib.sha256(password.encode()).hexdigest()[:8]
         admin_hash = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()[:8]
-        log.info(f"Login attempt: password_hash={pwd_hash}, admin_hash={admin_hash}, match={password == ADMIN_PASSWORD}")
+        log.info(f"Login attempt: password_hash={pwd_hash}, admin_hash={admin_hash}, match={password.strip() == ADMIN_PASSWORD}")
 
         # Check if admin password
-        if password == ADMIN_PASSWORD:
+        if password.strip() == ADMIN_PASSWORD:
             if is_locked_down:
                 return jsonify({
                     "is_locked_down": True,
@@ -1332,7 +1332,7 @@ def admin():
             return jsonify({"status": "ok", "redirect": "/admin"})
 
         # Check if app password
-        if password == APP_PASSWORD:
+        if password.strip() == APP_PASSWORD:
             if is_locked_down:
                 return jsonify({
                     "is_locked_down": True,
