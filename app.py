@@ -3295,45 +3295,54 @@ def api_projects_update(project_id):
     data = request.get_json(force=True) or {}
     conn = get_db()
     cur = conn.cursor()
+
+    # Validate status if provided
     if "status" in data:
         st = str(data["status"]).strip().lower()
         if st not in ("active", "paused", "done"):
             cur.close()
             conn.close()
             return jsonify({"error": "status must be active, paused, or done"}), 400
-        cur.execute("UPDATE projects SET status=%s WHERE id=%s", (st, project_id))
-    fields = ["title", "description", "lead", "members",
-              "checkin_interval_days", "completion_pct"]
-    for f in fields:
-        if f not in data:
-            continue
-        val = data[f]
-        if f == "checkin_interval_days":
+
+    # Build single UPDATE statement with all fields
+    updates = {}
+    fields_map = {
+        "title": ("title", lambda v: str(v)[:300]),
+        "description": ("description", lambda v: str(v)[:2000]),
+        "lead": ("lead", lambda v: str(v)[:200]),
+        "members": ("members", lambda v: str(v)[:500]),
+        "status": ("status", lambda v: str(v).strip().lower()),
+        "checkin_interval_days": ("checkin_interval_days", lambda v: max(1, min(90, int(v) if isinstance(v, (int, float)) else 7))),
+        "completion_pct": ("completion_pct", lambda v: max(0, min(100, int(v) if isinstance(v, (int, float)) else 0)))
+    }
+
+    for key, (db_field, transform) in fields_map.items():
+        if key in data:
             try:
-                val = max(1, min(90, int(val)))
+                updates[db_field] = transform(data[key])
             except (TypeError, ValueError):
-                val = 7
-        elif f == "completion_pct":
-            try:
-                val = max(0, min(100, int(val)))
-            except (TypeError, ValueError):
-                val = 0
-        elif f == "description":
-            val = str(val)[:2000]
-        elif f == "title":
-            val = str(val)[:300]
-        elif f == "lead":
-            val = str(val)[:200]
-        elif f == "members":
-            val = str(val)[:500]
-        else:
-            val = str(val)[:500]
-        cur.execute(
-            pgsql.SQL("UPDATE projects SET {}=%s WHERE id=%s").format(pgsql.Identifier(f)),
-            (val, project_id)
-        )
+                if key == "checkin_interval_days":
+                    updates[db_field] = 7
+                elif key == "completion_pct":
+                    updates[db_field] = 0
+
+    # Add checkin_now if requested
     if data.get("checkin_now"):
-        cur.execute("UPDATE projects SET last_checkin=NOW() WHERE id=%s", (project_id,))
+        updates["last_checkin"] = pgsql.SQL("NOW()")
+
+    # Execute single UPDATE if there are changes
+    if updates:
+        set_clause = pgsql.SQL(", ").join(
+            pgsql.SQL("{} = %s").format(pgsql.Identifier(k)) if not isinstance(v, pgsql.SQL)
+            else pgsql.SQL("{} = {}").format(pgsql.Identifier(k), v)
+            for k, v in updates.items()
+        )
+        values = [v for v in updates.values() if not isinstance(v, pgsql.SQL)]
+        cur.execute(
+            pgsql.SQL("UPDATE projects SET {} WHERE id = %s").format(set_clause),
+            values + [project_id]
+        )
+
     conn.commit()
     cur.close()
     conn.close()
@@ -3441,16 +3450,32 @@ def api_project_tasks_update(project_id, task_id):
     data = request.get_json(force=True) or {}
     conn = get_db()
     cur = conn.cursor()
-    allowed = {"title": str, "notes": str, "assignee": str, "status": str, "due_date": None}
-    for field, cast in allowed.items():
-        if field in data:
-            val = str(data[field])[:300] if cast else (data[field] or None)
-            cur.execute(
-                pgsql.SQL("UPDATE project_tasks SET {} = %s WHERE id = %s AND project_id = %s").format(
-                    pgsql.Identifier(field)
-                ),
-                (val, task_id, project_id)
-            )
+
+    # Build single UPDATE with all provided fields
+    updates = {}
+    if "title" in data:
+        updates["title"] = str(data["title"])[:300]
+    if "notes" in data:
+        updates["notes"] = str(data["notes"])[:2000]
+    if "assignee" in data:
+        updates["assignee"] = str(data["assignee"])[:300]
+    if "status" in data:
+        updates["status"] = str(data["status"])[:100]
+    if "due_date" in data:
+        updates["due_date"] = data["due_date"] or None
+
+    # Execute single UPDATE if there are changes
+    if updates:
+        set_clause = pgsql.SQL(", ").join(
+            pgsql.SQL("{} = %s").format(pgsql.Identifier(k))
+            for k in updates.keys()
+        )
+        values = list(updates.values()) + [task_id, project_id]
+        cur.execute(
+            pgsql.SQL("UPDATE project_tasks SET {} WHERE id = %s AND project_id = %s").format(set_clause),
+            values
+        )
+
     conn.commit()
     cur.close()
     conn.close()
