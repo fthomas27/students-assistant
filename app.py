@@ -3428,16 +3428,17 @@ def api_plan_my_day_generate():
             try:
                 cal = fetch_ical(CANVAS_ICAL_URL)
                 if cal:
-                    conn_inner = get_db()
-                    cur_inner = conn_inner.cursor()
-                    cur_inner.execute("SELECT assignment_title FROM completions")
-                    completed_titles = set(r["assignment_title"] for r in cur_inner.fetchall())
-                    cur_inner.execute("SELECT uid, minutes FROM assignment_estimates")
-                    custom_estimates = {r["uid"]: r["minutes"] for r in cur_inner.fetchall()}
-                    cur_inner.close()
-                    conn_inner.close()
+                    # Reuse existing cursor instead of opening new connection
+                    cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                    completed_titles = set(r["assignment_title"] for r in cur.fetchall())
+                    cur.execute("SELECT uid, minutes FROM assignment_estimates")
+                    custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
 
                     all_asgn = parse_canvas_assignments(cal)
+                    # Batch load class averages to avoid N+1 queries
+                    class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
+                    class_avg_cache = get_class_averages_batch(class_names)
+
                     for a in all_asgn:
                         if a["title"] in completed_titles:
                             continue
@@ -3451,7 +3452,7 @@ def api_plan_my_day_generate():
                                     if uid in custom_estimates:
                                         est_mins = custom_estimates[uid]
                                     else:
-                                        est_mins = estimate_assignment(a.get("title", ""), a.get("class_name", ""))
+                                        est_mins = estimate_assignment(a.get("title", ""), a.get("class_name", ""), class_avg_cache=class_avg_cache)
                                     assignments.append({
                                         "type": "assignment",
                                         "id": uid,
@@ -3491,26 +3492,23 @@ def api_plan_my_day_generate():
 
             # Get all active projects (fetch directly from database, not via HTTP)
             try:
-                conn_inner = get_db()
-                cur_inner = conn_inner.cursor()
-                cur_inner.execute("SELECT id, title FROM projects WHERE status = 'active' ORDER BY created_at DESC LIMIT 10")
-                for p in cur_inner.fetchall():
+                cur.execute("SELECT id, title FROM projects WHERE status = 'active' ORDER BY created_at DESC LIMIT 10")
+                for p in cur.fetchall():
                     projects.append({
                         "type": "project",
                         "id": str(p["id"]),
                         "title": p["title"],
                         "estimated_minutes": 45
                     })
-                cur_inner.close()
-                conn_inner.close()
             except Exception as e:
                 log.warning(f"Could not fetch projects for plan: {e}")
 
             # Get calendar events for today
+            personal_cal = None
             try:
-                cal = fetch_ical(PERSONAL_ICAL_URL)
-                if cal:
-                    for event in parse_calendar_events(cal, days_ahead=1):
+                personal_cal = fetch_ical(PERSONAL_ICAL_URL)
+                if personal_cal:
+                    for event in parse_calendar_events(personal_cal, days_ahead=1):
                         if event["date"] == today.isoformat() and not event.get("all_day"):
                             calendar_events.append({
                                 "type": "calendar",
@@ -3538,10 +3536,9 @@ def api_plan_my_day_generate():
                         "label": f"School ({dtype.title()} day)"
                     })
 
-                # Personal calendar events
-                cal = fetch_ical(PERSONAL_ICAL_URL)
-                if cal:
-                    for e in parse_calendar_events(cal, days_ahead=1):
+                # Reuse personal calendar events from above fetch
+                if personal_cal:
+                    for e in parse_calendar_events(personal_cal, days_ahead=1):
                         if e["date"] == today.isoformat() and not e.get("all_day"):
                             try:
                                 es = datetime.fromisoformat(e["start_iso"])
