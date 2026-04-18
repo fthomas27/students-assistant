@@ -1217,11 +1217,18 @@ def get_blocked_ips():
     return []
 
 def block_ip(ip_addr, reason="", ip_name=""):
-    """Add IP to blocklist."""
+    """Add IP to blocklist or update existing IP name."""
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("""
+        # If IP already exists and only ip_name is being updated, preserve the reason
+        if ip_name and not reason:
+            cur.execute("""
+INSERT INTO blocked_ips (ip_address, ip_name, blocked_by, reason)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (ip_address) DO UPDATE SET ip_name = %s""", (ip_addr, ip_name, "admin", reason, ip_name))
+        else:
+            cur.execute("""
 INSERT INTO blocked_ips (ip_address, ip_name, blocked_by, reason)
 VALUES (%s, %s, %s, %s)
 ON CONFLICT (ip_address) DO UPDATE SET ip_name = %s, reason = %s""", (ip_addr, ip_name, "admin", reason, ip_name, reason))
