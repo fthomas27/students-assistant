@@ -1112,8 +1112,8 @@ to { background: rgba(0,0,0,0); }
 }
 
 @keyframes modalSlideOutScale {
-from { opacity: 1; transform: scale(1) translateY(0); }
-to { opacity: 0; transform: scale(0.92) translateY(-20px); }
+from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+to { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
 }
 
 .settings-modal-content {
@@ -1766,7 +1766,6 @@ async function loadSidebarData() {
         if (!dataChanged(assignmentsCache, newData)) return;
         assignmentsCache = newData;
         renderAssignments();
-        clearTimeout(timeoutId);
       }
     },
     tasks: {
@@ -1777,7 +1776,6 @@ async function loadSidebarData() {
         if (!dataChanged(tasksCache, newData)) return;
         tasksCache = newData;
         renderTasks();
-        clearTimeout(timeoutId);
       }
     },
     projects: {
@@ -1788,7 +1786,6 @@ async function loadSidebarData() {
         if (!dataChanged(projectsCache, newData)) return;
         projectsCache = newData;
         renderProjects();
-        clearTimeout(timeoutId);
       }
     },
     calendar: {
@@ -1799,7 +1796,6 @@ async function loadSidebarData() {
         if (!dataChanged(calendarCache, newData)) return;
         calendarCache = newData;
         renderCalendar();
-        clearTimeout(timeoutId);
       }
     },
     plan: {
@@ -1807,7 +1803,6 @@ async function loadSidebarData() {
       containerId: 'planContent',
       processor: (data) => {
         renderPlan(data);
-        clearTimeout(timeoutId);
       }
     }
   };
@@ -1820,12 +1815,10 @@ async function loadSidebarData() {
         handler.processor(data);
       })
       .catch(e => {
-        const errorMsg = getErrorMessage(e);
         const container = document.getElementById(handler.containerId);
         if (container && container.innerHTML.includes('pulse')) {
           container.innerHTML = `<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 12px 0; font-size: 12px;">No data</div>`;
         }
-        clearTimeout(timeoutId);
       });
   }
 }
@@ -2537,11 +2530,21 @@ function suggestMessage(text) {
 
 // Calendar functionality
 let calendarCurrentDate = new Date();
+let calendarEventsByDate = {};
 
 function openCalendarModal() {
   document.getElementById('calendarModal').classList.add('visible');
   document.getElementById('calendarBackdrop').classList.add('visible');
-  renderCalendar();
+  renderCalendarModal();
+  // Show today's events on initial open
+  const today = new Date();
+  const todayEvents = calendarCache.filter(e => {
+    const eventDate = new Date(e.start_iso);
+    return eventDate.getDate() === today.getDate() &&
+           eventDate.getMonth() === today.getMonth() &&
+           eventDate.getFullYear() === today.getFullYear();
+  });
+  showCalendarEvents(today.getDate(), today.getMonth(), today.getFullYear(), todayEvents);
 }
 
 function closeCalendarModal() {
@@ -2559,15 +2562,27 @@ function closeCalendarModal() {
 
 function previousMonth() {
   calendarCurrentDate.setMonth(calendarCurrentDate.getMonth() - 1);
-  renderCalendar();
+  renderCalendarModal();
 }
 
 function nextMonth() {
   calendarCurrentDate.setMonth(calendarCurrentDate.getMonth() + 1);
-  renderCalendar();
+  renderCalendarModal();
 }
 
-function renderCalendar() {
+function buildEventsByDate() {
+  calendarEventsByDate = {};
+  calendarCache.forEach(e => {
+    const eventDate = new Date(e.start_iso);
+    const dateKey = `${eventDate.getFullYear()}-${eventDate.getMonth()}-${eventDate.getDate()}`;
+    if (!calendarEventsByDate[dateKey]) {
+      calendarEventsByDate[dateKey] = [];
+    }
+    calendarEventsByDate[dateKey].push(e);
+  });
+}
+
+function renderCalendarModal() {
   const year = calendarCurrentDate.getFullYear();
   const month = calendarCurrentDate.getMonth();
 
@@ -2602,17 +2617,14 @@ function renderCalendar() {
   const today = new Date();
   const isCurrentMonth = today.getFullYear() === year && today.getMonth() === month;
 
+  buildEventsByDate();
+
   for (let d = 1; d <= daysInMonth; d++) {
     const day = document.createElement('div');
     day.className = 'calendar-day';
 
-    const currentDate = new Date(year, month, d);
-    const eventsOnDay = calendarCache.filter(e => {
-      const eventDate = new Date(e.start_iso);
-      return eventDate.getDate() === d &&
-             eventDate.getMonth() === month &&
-             eventDate.getFullYear() === year;
-    });
+    const dateKey = `${year}-${month}-${d}`;
+    const eventsOnDay = calendarEventsByDate[dateKey] || [];
 
     if (isCurrentMonth && d === today.getDate()) {
       day.classList.add('today');
@@ -2637,15 +2649,6 @@ function renderCalendar() {
     day.textContent = i;
     grid.appendChild(day);
   }
-
-  // Show today's events by default
-  const todayEvents = calendarCache.filter(e => {
-    const eventDate = new Date(e.start_iso);
-    return eventDate.getDate() === today.getDate() &&
-           eventDate.getMonth() === today.getMonth() &&
-           eventDate.getFullYear() === today.getFullYear();
-  });
-  showCalendarEvents(today.getDate(), today.getMonth(), today.getFullYear(), todayEvents);
 }
 
 function showCalendarEvents(day, month, year, events) {
