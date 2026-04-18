@@ -1872,14 +1872,14 @@ async function loadSidebarData() {
     el.innerHTML = skeletonHTML + skeletonHTML;
   });
 
-  // Timeout safety: if still loading after 10 seconds, show error
+  // Timeout safety: if still loading after 15 seconds, show timeout message
   const timeoutId = setTimeout(() => {
     Object.entries(elements).forEach(([key, el]) => {
       if (el.innerHTML.includes('pulse')) {
-        el.innerHTML = '<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 20px 0;">No data available</div>';
+        el.innerHTML = '<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 20px 0; font-size: 12px;">Connection timeout</div>';
       }
     });
-  }, 10000);
+  }, 15000);
 
   // Handle each API request individually for progressive rendering
   const dataHandlers = {
@@ -1935,15 +1935,28 @@ async function loadSidebarData() {
 
   // Fetch each endpoint independently for progressive rendering
   for (const [key, handler] of Object.entries(dataHandlers)) {
-    fetchWithTimeout(handler.url, {}, 5000)
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+    fetchWithTimeout(handler.url, {}, 8000)
+      .then(r => {
+        if (!r.ok) {
+          console.error(`Error fetching ${handler.url}: HTTP ${r.status}`);
+          return Promise.reject(new Error(`HTTP ${r.status}`));
+        }
+        return r.json();
+      })
       .then(data => {
+        if (!data) throw new Error('Empty response');
         handler.processor(data);
       })
       .catch(e => {
+        console.warn(`Failed to load ${key}:`, e);
         const container = document.getElementById(handler.containerId);
         if (container && container.innerHTML.includes('pulse')) {
-          container.innerHTML = `<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 12px 0; font-size: 12px;">No data</div>`;
+          // Call the render function to show the default empty state
+          if (key === 'tasks') renderTasks();
+          else if (key === 'projects') renderProjects();
+          else if (key === 'assignments') renderAssignments();
+          else if (key === 'calendar') renderCalendar();
+          else if (key === 'plan') renderPlan({ items: [] });
         }
       });
   }
