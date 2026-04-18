@@ -1282,6 +1282,7 @@ def admin():
 
     ip_addr = get_client_ip()
     data = request.get_json(force=True) or {}
+    log.info(f"Admin login attempt from {ip_addr}, received data keys: {list(data.keys())}")
 
     if is_ip_locked(ip_addr):
         remaining_mins = get_lockout_info(ip_addr)
@@ -1294,7 +1295,10 @@ def admin():
     security_code = data.get("security_code")
     is_locked_down = is_app_locked_down()
 
+    log.info(f"Admin login: password={bool(password)}, security_code={bool(security_code)}, locked_down={is_locked_down}, ADMIN_PASSWORD={'***' if ADMIN_PASSWORD else 'NOT_SET'}")
+
     if password and not security_code:
+        log.info(f"Admin login attempt: checking password (len={len(password)}) against ADMIN_PASSWORD (len={len(ADMIN_PASSWORD)})")
         if password == ADMIN_PASSWORD:
             if is_locked_down:
                 return jsonify({
@@ -1452,6 +1456,15 @@ def api_admin_claude_usage():
 def api_lockdown_status():
     is_locked = is_app_locked_down()
     return jsonify({"is_locked_down": is_locked})
+
+
+@app.route("/api/test-admin-password")
+def api_test_admin_password():
+    """Debug endpoint - shows if ADMIN_PASSWORD is set"""
+    if ADMIN_PASSWORD == "admin-change-me":
+        return jsonify({"status": "USING_DEFAULT", "message": "ADMIN_PASSWORD not set in environment, using default"})
+    else:
+        return jsonify({"status": "SET_FROM_ENV", "length": len(ADMIN_PASSWORD), "message": "ADMIN_PASSWORD is set from environment variable"})
 
 
 @app.route("/api/admin/lockdown", methods=["POST"])
