@@ -353,6 +353,7 @@ color: var(--text);
     <div class="section-title">🚫 Blocked IP Addresses</div>
     <div style="display: flex; gap: 12px; margin-bottom: 20px;">
       <input type="text" id="block-ip-input" placeholder="IP address (e.g., 192.168.1.1)" style="flex: 1; padding: 12px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; color: var(--text);">
+      <input type="text" id="block-name-input" placeholder="Name (e.g., John's Phone)" style="flex: 1; padding: 12px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; color: var(--text);">
       <input type="text" id="block-reason-input" placeholder="Reason (optional)" style="flex: 1; padding: 12px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; color: var(--text);">
       <button onclick="blockIP()" style="padding: 12px 24px; background: var(--accent); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Block IP</button>
     </div>
@@ -362,13 +363,14 @@ color: var(--text);
         <thead>
           <tr>
             <th>IP Address</th>
+            <th>Name</th>
             <th>Reason</th>
             <th>Blocked At</th>
             <th>Action</th>
           </tr>
         </thead>
         <tbody id="blocked-ips-tbody">
-          <tr><td colspan="4" class="empty-state">No blocked IPs</td></tr>
+          <tr><td colspan="5" class="empty-state">No blocked IPs</td></tr>
         </tbody>
       </table>
     </div>
@@ -532,17 +534,20 @@ function loadBlockedIPs() {
       tbody.innerHTML = '';
 
       if (!data.blocked_ips || data.blocked_ips.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No blocked IPs</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No blocked IPs</td></tr>';
         return;
       }
 
       data.blocked_ips.forEach(item => {
         var row = document.createElement('tr');
-        row.innerHTML = '<td class="ip-address"></td><td class="reason-cell"></td><td class="timestamp"></td><td><button class="unblock-btn" style="padding: 6px 12px; background: var(--red); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Unblock</button></td>';
+        row.innerHTML = '<td class="ip-address"></td><td class="name-cell"></td><td class="reason-cell"></td><td class="timestamp"></td><td style="display: flex; gap: 6px;"><button class="edit-btn" style="padding: 6px 12px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Edit</button><button class="unblock-btn" style="padding: 6px 12px; background: var(--red); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Unblock</button></td>';
         row.querySelector('.ip-address').textContent = item.ip;
+        row.querySelector('.name-cell').textContent = item.name || '-';
         row.querySelector('.reason-cell').textContent = item.reason || '-';
         row.querySelector('.timestamp').textContent = formatDate(item.blocked_at);
         var ip = item.ip;
+        var currentName = item.name || '';
+        row.querySelector('.edit-btn').addEventListener('click', function() { editIPName(ip, currentName); });
         row.querySelector('.unblock-btn').addEventListener('click', function() { unblockIP(ip); });
         tbody.appendChild(row);
       });
@@ -552,8 +557,10 @@ function loadBlockedIPs() {
 
 function blockIP() {
   var ipInput = document.getElementById('block-ip-input');
+  var nameInput = document.getElementById('block-name-input');
   var reasonInput = document.getElementById('block-reason-input');
   var ip = ipInput.value.trim();
+  var name = nameInput.value.trim();
   var reason = reasonInput.value.trim();
 
   if (!ip) {
@@ -565,12 +572,13 @@ function blockIP() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    body: JSON.stringify({ ip_address: ip, reason: reason })
+    body: JSON.stringify({ ip_address: ip, ip_name: name, reason: reason })
   }).then(r => r.json())
     .then(data => {
       if (data.status === 'blocked') {
         alert('✓ IP ' + ip + ' has been blocked');
         ipInput.value = '';
+        nameInput.value = '';
         reasonInput.value = '';
         loadBlockedIPs();
       } else {
@@ -600,6 +608,29 @@ function unblockIP(ip) {
       }
     })
     .catch(e => { console.error(e); alert('Error unblocking IP'); });
+}
+
+function editIPName(ip, currentName) {
+  var newName = prompt('Enter name for IP ' + ip + ':', currentName);
+
+  if (newName === null) {
+    return;
+  }
+
+  fetch('/api/admin/block-ip', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ ip_address: ip, ip_name: newName.trim(), reason: '' })
+  }).then(r => r.json())
+    .then(data => {
+      if (data.status === 'blocked') {
+        loadBlockedIPs();
+      } else {
+        alert('Error: ' + (data.error || 'Failed to update IP name'));
+      }
+    })
+    .catch(e => { console.error(e); alert('Error updating IP name'); });
 }
 
 loadLoginAttempts();
