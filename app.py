@@ -422,6 +422,13 @@ CREATE TABLE IF NOT EXISTS blocked_ips (
     except:
         pass
 
+    cur.execute("""
+CREATE TABLE IF NOT EXISTS ip_names (
+    ip_address TEXT PRIMARY KEY,
+    ip_name TEXT NOT NULL,
+    tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)""")
+
     defaults = {
         "name": "Jarvis",
         "morning_briefing_time": "07:00",
@@ -1295,16 +1302,15 @@ def unblock_ip(ip_addr):
     return False
 
 def track_ip_name(ip_addr, ip_name=""):
-    """Track/name an IP for monitoring without blocking it."""
+    """Track/name an IP for monitoring without blocking it. Uses separate ip_names table."""
     try:
         conn = get_db()
         cur = conn.cursor()
-        # Insert or update only the ip_name, don't create a block entry if one doesn't exist
         cur.execute("""
-INSERT INTO blocked_ips (ip_address, ip_name, blocked_by, reason)
-VALUES (%s, %s, %s, %s)
+INSERT INTO ip_names (ip_address, ip_name)
+VALUES (%s, %s)
 ON CONFLICT (ip_address) DO UPDATE SET ip_name = %s""",
-                    (ip_addr, ip_name, "tracking", "", ip_name))
+                    (ip_addr, ip_name, ip_name))
         conn.commit()
         cur.close()
         conn.close()
@@ -1598,9 +1604,9 @@ def api_admin_login_attempts():
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, COALESCE(bi.ip_name, '') as ip_name
+SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, COALESCE(iname.ip_name, '') as ip_name
 FROM login_attempts la
-LEFT JOIN blocked_ips bi ON la.ip_address = bi.ip_address
+LEFT JOIN ip_names iname ON la.ip_address = iname.ip_address
 ORDER BY la.attempted_at DESC LIMIT 200""")
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
