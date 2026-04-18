@@ -333,7 +333,8 @@ function submitLogin() {
     if (response.status === 200) {
       btn.textContent = '✓ Authenticated';
       showSecurityInfo('✓ Secure connection established', false);
-      setTimeout(function() { window.location.href = '/'; }, 300);
+      var redirect = response.data.redirect || '/';
+      setTimeout(function() { window.location.href = redirect; }, 300);
     } else if (response.status === 202) {
       currentPassword = inputValue;
       awaitingSecurityCode = true;
