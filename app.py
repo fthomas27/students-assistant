@@ -3433,10 +3433,12 @@ def api_plan_my_day_generate():
 
             # Get calendar events for today
             personal_cal = None
+            personal_events = []
             try:
                 personal_cal = fetch_ical(PERSONAL_ICAL_URL)
                 if personal_cal:
-                    for event in parse_calendar_events(personal_cal, days_ahead=1):
+                    personal_events = parse_calendar_events(personal_cal, days_ahead=1)
+                    for event in personal_events:
                         if event["date"] == today.isoformat() and not event.get("all_day"):
                             calendar_events.append({
                                 "type": "calendar",
@@ -3465,8 +3467,7 @@ def api_plan_my_day_generate():
                     })
 
                 # Reuse personal calendar events from above fetch
-                if personal_cal:
-                    for e in parse_calendar_events(personal_cal, days_ahead=1):
+                for e in personal_events:
                         if e["date"] == today.isoformat() and not e.get("all_day"):
                             try:
                                 es = datetime.fromisoformat(e["start_iso"])
