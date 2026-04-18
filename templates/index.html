@@ -906,6 +906,26 @@ from { opacity: 0; transform: translate(-50%, -45%) scale(0.95); }
 to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 }
 
+@keyframes fadeInBackdrop {
+from { background: rgba(0,0,0,0); }
+to { background: rgba(0,0,0,0.5); }
+}
+
+@keyframes modalSlideInScale {
+from { opacity: 0; transform: scale(0.92) translateY(-20px); }
+to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes fadeOutBackdrop {
+from { background: rgba(0,0,0,0.5); }
+to { background: rgba(0,0,0,0); }
+}
+
+@keyframes modalSlideOutScale {
+from { opacity: 1; transform: scale(1) translateY(0); }
+to { opacity: 0; transform: scale(0.92) translateY(-20px); }
+}
+
 .settings-modal-content {
 display: flex;
 flex-direction: column;
@@ -1341,8 +1361,15 @@ function openSettings() {
 }
 
 function closeSettingsModal() {
-  document.getElementById('settingsModal').classList.remove('visible');
-  document.getElementById('settingsBackdrop').classList.remove('visible');
+  const modal = document.getElementById('settingsModal');
+  const backdrop = document.getElementById('settingsBackdrop');
+  modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
+  backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
+  backdrop.style.background = 'rgba(0,0,0,0)';
+  setTimeout(() => {
+    modal.classList.remove('visible');
+    backdrop.classList.remove('visible');
+  }, 300);
 }
 
 function saveSettings() {
@@ -1373,8 +1400,15 @@ function openChatHistory() {
 }
 
 function closeChatHistory() {
-  document.getElementById('chatHistoryModal').classList.remove('visible');
-  document.getElementById('chatHistoryBackdrop').classList.remove('visible');
+  const modal = document.getElementById('chatHistoryModal');
+  const backdrop = document.getElementById('chatHistoryBackdrop');
+  modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
+  backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
+  backdrop.style.background = 'rgba(0,0,0,0)';
+  setTimeout(() => {
+    modal.classList.remove('visible');
+    backdrop.classList.remove('visible');
+  }, 300);
 }
 
 function loadChatHistory() {
@@ -1487,7 +1521,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
 }
 
 async function loadSidebarData() {
-  // Show loading states
+  // Show loading states with smooth skeleton
   const elements = {
     assignmentsList: document.getElementById('assignmentsList'),
     tasksList: document.getElementById('tasksList'),
@@ -1497,7 +1531,7 @@ async function loadSidebarData() {
   };
 
   Object.values(elements).forEach(el => {
-    el.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">Loading...</div>';
+    el.innerHTML = '<div class="sidebar-item" style="color: var(--text3); animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;">⌛ Loading...</div>';
   });
 
   // Timeout safety: if still loading after 8 seconds, show error
@@ -1738,11 +1772,12 @@ function editTask(taskId) {
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0,0,0,0.5);
+    background: rgba(0,0,0,0);
     z-index: 100;
     display: flex;
     align-items: center;
     justify-content: center;
+    animation: fadeInBackdrop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
   `;
 
   const form = document.createElement('div');
@@ -1754,6 +1789,7 @@ function editTask(taskId) {
     width: 90%;
     max-width: 400px;
     box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    animation: modalSlideInScale 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
   `;
 
   form.innerHTML = `
@@ -1788,7 +1824,14 @@ function editTask(taskId) {
 
 function closeEditModal() {
   const modal = document.getElementById('editTaskModal');
-  if (modal) modal.remove();
+  if (modal) {
+    modal.style.animation = 'fadeOutBackdrop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
+    const form = modal.querySelector('div:first-child');
+    if (form) {
+      form.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
+    }
+    setTimeout(() => modal.remove(), 300);
+  }
 }
 
 async function saveTaskEdit(taskId) {
@@ -2114,13 +2157,19 @@ async function completeAssignment(event, title, className, estimateMinutes) {
     });
 
     if (response.ok) {
+      btn.style.transition = 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)';
       btn.style.opacity = '0.5';
       btn.style.color = 'var(--accent)';
-      setTimeout(() => {
-        btn.closest('.assignment-item').style.opacity = '0.4';
-      }, 200);
+      btn.style.transform = 'scale(0.8)';
 
-      // Reload assignments after a short delay
+      const itemEl = btn.closest('.assignment-item');
+      itemEl.style.transition = 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
+
+      setTimeout(() => {
+        itemEl.style.opacity = '0.3';
+        itemEl.style.transform = 'translateX(8px)';
+      }, 150);
+
       setTimeout(async () => {
         try {
           const resp = await fetch('/api/assignments');
@@ -2132,7 +2181,7 @@ async function completeAssignment(event, title, className, estimateMinutes) {
         } catch (e) {
           console.error('Failed to reload assignments:', e);
         }
-      }, 500);
+      }, 400);
     }
   } catch (e) {
     console.error('Failed to complete assignment:', e);
@@ -2174,8 +2223,10 @@ chatInput.addEventListener('keydown', e => {
 });
 
 chatInput.addEventListener('input', () => {
+  chatInput.style.transition = 'height 0.2s cubic-bezier(0.4, 0, 0.2, 1)';
   chatInput.style.height = 'auto';
-  chatInput.style.height = Math.min(chatInput.scrollHeight, 100) + 'px';
+  const newHeight = Math.min(chatInput.scrollHeight, 100);
+  chatInput.style.height = newHeight + 'px';
   sendBtn.disabled = !chatInput.value.trim();
 });
 
