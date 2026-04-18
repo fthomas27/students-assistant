@@ -54,6 +54,18 @@ TZ = _TZ_DEFAULT
 
 _api_usage_cache = {"tokens_used": 0, "tokens_limit": 1000000, "last_updated": None}
 
+def track_api_usage(response):
+    """Extract and track API usage from Claude API response."""
+    global _api_usage_cache
+    try:
+        if hasattr(response, 'usage'):
+            tokens = response.usage.input_tokens + response.usage.output_tokens
+            _api_usage_cache["tokens_used"] = _api_usage_cache.get("tokens_used", 0) + tokens
+            _api_usage_cache["last_updated"] = datetime.now(TZ)
+            log.debug(f"Tracked {tokens} tokens. Total: {_api_usage_cache['tokens_used']}")
+    except Exception as e:
+        log.warning(f"Error tracking API usage: {e}")
+
 _briefing_lock = threading.Lock()
 
 
@@ -943,6 +955,7 @@ LIMIT 3""")
                 max_tokens=900,
                 messages=[{"role": "user", "content": prompt}]
             )
+            track_api_usage(message)
             content = message.content[0].text if message.content else "Have a great day!"
         except Exception as e:
             log.error("Anthropic API error: %s", e)
@@ -1033,6 +1046,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
             client = anthropic.Anthropic(api_key=api_key)
             message = client.messages.create(model="claude-sonnet-4-6", max_tokens=600,
                                              messages=[{"role": "user", "content": prompt}])
+            track_api_usage(message)
             content = message.content[0].text if message.content else "Good evening!"
         except Exception as e:
             log.error("Evening debrief API error: %s", e)
@@ -2073,6 +2087,7 @@ def api_workout_generate():
                     "If history shows an injury concern or 'too hard', scale down proactively."
                 ),
             )
+            track_api_usage(message)
             content = message.content[0].text if message.content else ""
         except Exception as e:
             log.error("Workout generate API error: %s", e)
@@ -2160,6 +2175,7 @@ def api_workout_log_custom():
             max_tokens=1000,
             messages=[{"role": "user", "content": categorize_prompt}],
         )
+        track_api_usage(message)
         formatted_content = message.content[0].text if message.content else ""
     except Exception as e:
         log.error("Workout log custom API error: %s", e)
@@ -2274,6 +2290,7 @@ def api_workout_regenerate():
                 "If history shows an injury concern or 'too hard', scale down proactively."
             ),
         )
+        track_api_usage(message)
         content = message.content[0].text if message.content else ""
     except Exception as e:
         log.error("Workout regenerate API error: %s", e)
@@ -3398,6 +3415,7 @@ ORDER BY pn.created_at DESC LIMIT 6""")
         if system_prompt:
             kwargs["system"] = system_prompt
         message = client.messages.create(**kwargs)
+        track_api_usage(message)
         content = message.content[0].text if message.content else ""
         return jsonify({"content": content})
     except Exception:
@@ -3695,6 +3713,7 @@ Return ONLY valid JSON array, no markdown or extra text."""
                     max_tokens=2048,
                     messages=[{"role": "user", "content": schedule_prompt}]
                 )
+                track_api_usage(message)
                 response_text = message.content[0].text if message.content else "[]"
                 scheduled_items = json.loads(response_text)
             except Exception as e:
