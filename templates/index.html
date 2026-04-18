@@ -1795,6 +1795,7 @@ async function loadSidebarData() {
         const newData = data.events || [];
         if (!dataChanged(calendarCache, newData)) return;
         calendarCache = newData;
+        buildEventsByDate();
         renderCalendar();
       }
     },
@@ -2533,17 +2534,14 @@ let calendarCurrentDate = new Date();
 let calendarEventsByDate = {};
 
 function openCalendarModal() {
+  calendarCurrentDate = new Date(); // Reset to today for consistency
   document.getElementById('calendarModal').classList.add('visible');
   document.getElementById('calendarBackdrop').classList.add('visible');
   renderCalendarModal();
-  // Show today's events on initial open
+
   const today = new Date();
-  const todayEvents = calendarCache.filter(e => {
-    const eventDate = new Date(e.start_iso);
-    return eventDate.getDate() === today.getDate() &&
-           eventDate.getMonth() === today.getMonth() &&
-           eventDate.getFullYear() === today.getFullYear();
-  });
+  const dateKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
+  const todayEvents = calendarEventsByDate[dateKey] || [];
   showCalendarEvents(today.getDate(), today.getMonth(), today.getFullYear(), todayEvents);
 }
 
@@ -2616,8 +2614,6 @@ function renderCalendarModal() {
   // Current month days
   const today = new Date();
   const isCurrentMonth = today.getFullYear() === year && today.getMonth() === month;
-
-  buildEventsByDate();
 
   for (let d = 1; d <= daysInMonth; d++) {
     const day = document.createElement('div');
