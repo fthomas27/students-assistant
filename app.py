@@ -1604,10 +1604,14 @@ def index():
 
 @app.route("/api/assignments")
 def api_assignments():
+    start = time.time()
     try:
+        t1 = time.time()
         cal = fetch_ical(CANVAS_ICAL_URL)
+        log.info(f"/api/assignments: fetch_ical took {time.time()-t1:.2f}s")
         if cal is None:
             return jsonify({"assignments": [], "error": "Failed to fetch Canvas calendar."})
+        t2 = time.time()
         conn = get_db()
         cur = conn.cursor()
         cur.execute("SELECT assignment_title FROM completions")
@@ -1616,6 +1620,8 @@ def api_assignments():
         custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
         cur.close()
         conn.close()
+        log.info(f"/api/assignments: db query took {time.time()-t2:.2f}s")
+        t3 = time.time()
         assignments = parse_canvas_assignments(cal)
         result = []
         for a in assignments:
@@ -1629,10 +1635,12 @@ def api_assignments():
                 a["estimate_minutes"] = estimate_assignment(a["title"], a["class_name"])
                 a["estimate_custom"] = False
             result.append(a)
+        log.info(f"/api/assignments: estimate took {time.time()-t3:.2f}s for {len(result)} assignments")
         cfg = get_config()
+        log.info(f"/api/assignments: total took {time.time()-start:.2f}s")
         return jsonify({"assignments": result, "timezone": cfg.get("timezone", "America/Denver")})
-    except Exception:
-        log.exception("/api/assignments failed")
+    except Exception as e:
+        log.exception(f"/api/assignments failed after {time.time()-start:.2f}s: {e}")
         return jsonify({"assignments": [], "error": "Internal server error fetching assignments."}), 500
 
 
@@ -1659,16 +1667,21 @@ ON CONFLICT (uid) DO UPDATE SET minutes = EXCLUDED.minutes, updated_at = NOW()
 
 @app.route("/api/calendar")
 def api_calendar():
+    start = time.time()
     days = int(request.args.get("days", 30))
     events = []
     # Personal calendar
+    t1 = time.time()
     cal = fetch_ical(PERSONAL_ICAL_URL)
+    log.info(f"/api/calendar: fetch personal took {time.time()-t1:.2f}s")
     if cal:
         for e in parse_calendar_events(cal, days_ahead=days):
             e["source"] = "personal"
             events.append(e)
     # Canvas assignments as calendar events
+    t2 = time.time()
     cal2 = fetch_ical(CANVAS_ICAL_URL)
+    log.info(f"/api/calendar: fetch canvas took {time.time()-t2:.2f}s")
     if cal2:
         for a in parse_canvas_assignments(cal2):
             events.append({
@@ -1683,9 +1696,12 @@ def api_calendar():
                 "class_name": a["class_name"]
             })
     # Day-specific calendar (red or white day)
+    t3 = time.time()
     today = datetime.now(TZ).date()
     events.extend(fetch_day_calendar_events(today, days_ahead=days))
+    log.info(f"/api/calendar: fetch day calendar took {time.time()-t3:.2f}s")
     events.sort(key=lambda x: x["start_iso"])
+    log.info(f"/api/calendar: total took {time.time()-start:.2f}s with {len(events)} events")
     return jsonify({"events": events})
 
 
@@ -2494,17 +2510,19 @@ FROM completions ORDER BY day DESC LIMIT 30""")
 
 @app.route("/api/tasks", methods=["GET"])
 def api_tasks_get():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
+    start = time.time()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
 SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
        NULL as project_id, NULL as project_title
 FROM tasks ORDER BY completed ASC,
     CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
     created_at ASC""")
-    rows = [dict(r) for r in cur.fetchall()]
-    # Also include project tasks assigned to "Me"
-    cur.execute("""
+        rows = [dict(r) for r in cur.fetchall()]
+        # Also include project tasks assigned to "Me"
+        cur.execute("""
 SELECT pt.id, pt.title, pt.notes, 'medium' as urgency,
        (pt.status = 'done') as completed, NULL as completed_at, pt.due_date,
        pt.created_at, pt.project_id, p.title as project_title
@@ -2512,22 +2530,26 @@ FROM project_tasks pt
 JOIN projects p ON p.id = pt.project_id
 WHERE p.status = 'active' AND LOWER(pt.assignee) IN ('me', 'finn')
 ORDER BY pt.created_at ASC""")
-    proj_rows = [dict(r) for r in cur.fetchall()]
-    cur.close()
-    conn.close()
-    for r in rows:
-        if r["completed_at"]:
-            r["completed_at"] = r["completed_at"].isoformat()
-        if r["due_date"]:
-            r["due_date"] = str(r["due_date"])
-        r["created_at"] = r["created_at"].isoformat()
-        r["source"] = "task"
-    for r in proj_rows:
-        if r["due_date"]:
-            r["due_date"] = str(r["due_date"])
-        r["created_at"] = r["created_at"].isoformat()
-        r["source"] = "project_task"
-    return jsonify({"tasks": rows + proj_rows})
+        proj_rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+        for r in rows:
+            if r["completed_at"]:
+                r["completed_at"] = r["completed_at"].isoformat()
+            if r["due_date"]:
+                r["due_date"] = str(r["due_date"])
+            r["created_at"] = r["created_at"].isoformat()
+            r["source"] = "task"
+        for r in proj_rows:
+            if r["due_date"]:
+                r["due_date"] = str(r["due_date"])
+            r["created_at"] = r["created_at"].isoformat()
+            r["source"] = "project_task"
+        log.info(f"/api/tasks: returned {len(rows)} tasks + {len(proj_rows)} project tasks in {time.time()-start:.2f}s")
+        return jsonify({"tasks": rows + proj_rows})
+    except Exception as e:
+        log.exception(f"/api/tasks failed after {time.time()-start:.2f}s: {e}")
+        return jsonify({"tasks": []}), 500
 
 
 @app.route("/api/tasks", methods=["POST"])
@@ -2835,9 +2857,11 @@ VALUES (%s, %s, %s, %s)""",
 
 @app.route("/api/projects", methods=["GET"])
 def api_projects_get():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
+    start = time.time()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
 SELECT id, title, description, status, lead, members, last_checkin,
        checkin_interval_days, completion_pct, created_at,
        CASE WHEN last_checkin IS NULL OR
@@ -2846,14 +2870,18 @@ SELECT id, title, description, status, lead, members, last_checkin,
 FROM projects
 ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
          created_at DESC""")
-    rows = [dict(r) for r in cur.fetchall()]
-    cur.close()
-    conn.close()
-    for r in rows:
-        if r["last_checkin"]:
-            r["last_checkin"] = r["last_checkin"].isoformat()
-        r["created_at"] = r["created_at"].isoformat()
-    return jsonify({"projects": rows})
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+        for r in rows:
+            if r["last_checkin"]:
+                r["last_checkin"] = r["last_checkin"].isoformat()
+            r["created_at"] = r["created_at"].isoformat()
+        log.info(f"/api/projects: returned {len(rows)} projects in {time.time()-start:.2f}s")
+        return jsonify({"projects": rows})
+    except Exception as e:
+        log.exception(f"/api/projects failed after {time.time()-start:.2f}s: {e}")
+        return jsonify({"projects": []}), 500
 
 
 @app.route("/api/projects", methods=["POST"])
@@ -3225,6 +3253,7 @@ ORDER BY pn.created_at DESC LIMIT 6""")
 @app.route("/api/plan-my-day", methods=["GET"])
 def api_plan_my_day_get():
     """Get today's daily plan with all scheduled items."""
+    start = time.time()
     today = datetime.now(TZ).date()
     try:
         conn = get_db()
@@ -3234,6 +3263,7 @@ def api_plan_my_day_get():
         if not plan_row:
             cur.close()
             conn.close()
+            log.info(f"/api/plan-my-day: no plan found in {time.time()-start:.2f}s")
             return jsonify({"plan_id": None, "items": [], "needs_update": False})
 
         plan_id = plan_row["id"]
@@ -3264,9 +3294,10 @@ ORDER BY order_index ASC""", (plan_id,))
             item["scheduled_start_time"] = start_str
             item["scheduled_end_time"] = end_str
 
+        log.info(f"/api/plan-my-day: returned {len(items)} items in {time.time()-start:.2f}s")
         return jsonify({"plan_id": plan_id, "items": items, "needs_update": needs_update})
     except Exception as e:
-        log.exception("Error getting daily plan")
+        log.exception(f"/api/plan-my-day failed after {time.time()-start:.2f}s: {e}")
         return jsonify({"error": str(e)}), 500
 
 
