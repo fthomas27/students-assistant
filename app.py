@@ -1274,6 +1274,19 @@ def logout():
     return redirect("/login")
 
 
+@app.route("/debug-security-code")
+def debug_security_code():
+    """Debug endpoint - shows security code status (no auth required)"""
+    security_code = os.environ.get("SECURITY_CODE", "")
+    lockdown = is_app_locked_down()
+    return jsonify({
+        "security_code_set": bool(security_code),
+        "security_code_length": len(security_code),
+        "security_code_value": security_code if security_code else "NOT_SET",
+        "system_locked_down": lockdown
+    })
+
+
 @app.route("/admin", methods=["GET", "POST"])
 def admin():
     if request.method == "GET":
