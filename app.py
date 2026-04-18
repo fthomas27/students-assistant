@@ -483,7 +483,9 @@ def fetch_ical(url):
     if url.startswith("webcal://"):
         url = "https://" + url[9:]
     now = time.monotonic()
+
     with _ical_cache_lock:
+        # Check cache first
         if url in _ical_cache:
             cached_at, cached_cal = _ical_cache[url]
             if now - cached_at < ICAL_CACHE_TTL:
@@ -492,35 +494,60 @@ def fetch_ical(url):
         # Check if another thread is already fetching this URL
         if url in _ical_inflight:
             event = _ical_inflight[url]
+        else:
+            event = None
 
-    # If another thread is fetching, wait for it
-    if url in _ical_inflight:
-        _ical_inflight[url].wait(timeout=20)
+    # If another thread is fetching, wait for it (do this outside the lock to avoid deadlock)
+    if event is not None:
+        log.info(f"iCal: waiting for another thread to fetch {url}")
+        event.wait(timeout=20)
         with _ical_cache_lock:
             if url in _ical_cache:
-                return _ical_cache[url][1]
+                cached_at, cached_cal = _ical_cache[url]
+                return cached_cal
         return None
 
     # Mark this URL as being fetched
-    event = threading.Event()
+    new_event = threading.Event()
     with _ical_cache_lock:
-        _ical_inflight[url] = event
+        # Double-check another thread didn't start in the meantime
+        if url in _ical_inflight:
+            # Another thread started fetching, wait for it instead
+            event = _ical_inflight[url]
+        else:
+            _ical_inflight[url] = new_event
+            event = None
 
+    # If we found another thread was fetching, wait for it
+    if event is not None:
+        log.info(f"iCal: another thread started fetching {url}, waiting...")
+        event.wait(timeout=20)
+        with _ical_cache_lock:
+            if url in _ical_cache:
+                cached_at, cached_cal = _ical_cache[url]
+                return cached_cal
+        return None
+
+    # We own the fetch now
     try:
+        log.info(f"iCal: fetching {url}")
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         cal = Calendar.from_ical(resp.content)
         with _ical_cache_lock:
             _ical_cache[url] = (time.monotonic(), cal)
-        event.set()  # Signal other waiting threads
+        new_event.set()  # Signal other waiting threads
+        log.info(f"iCal: successfully cached {url}")
         return cal
     except Exception as e:
         log.warning("iCal fetch failed for %s: %s", url, e)
-        event.set()  # Signal other waiting threads even on failure
+        new_event.set()  # Signal other waiting threads even on failure
         # Return stale cache on failure rather than None
         with _ical_cache_lock:
             if url in _ical_cache:
-                return _ical_cache[url][1]
+                cached_at, cached_cal = _ical_cache[url]
+                log.info(f"iCal: returning stale cache for {url} after fetch error")
+                return cached_cal
         return None
     finally:
         with _ical_cache_lock:
