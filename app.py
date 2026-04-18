@@ -59,7 +59,7 @@ _briefing_lock = threading.Lock()
 def require_auth():
     if request.path in ('/login', '/logout', '/admin'):
         return None
-    if request.path in ('/api/lockdown-status',):
+    if request.path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
         return None
     if request.path.startswith('/api/admin/'):
         return None
