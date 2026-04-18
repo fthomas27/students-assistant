@@ -76,6 +76,28 @@ gap: 8px;
 align-items: center;
 }
 
+.clock-display {
+font-family: 'DM Sans', sans-serif;
+font-size: 13px;
+color: var(--text2);
+text-align: right;
+min-width: 120px;
+font-weight: 500;
+letter-spacing: 0.5px;
+}
+
+.clock-time {
+font-size: 14px;
+color: var(--text);
+font-weight: 600;
+}
+
+.clock-date {
+font-size: 11px;
+color: var(--text3);
+margin-top: 2px;
+}
+
 .gear-btn {
 width: 36px;
 height: 36px;
@@ -1408,8 +1430,12 @@ margin-bottom: 0;
 <body>
 
 <div class="header">
-<div class="header-title">Finn</div>
+<div class="header-title">Jarvis</div>
 <div class="header-actions">
+<div class="clock-display">
+  <div class="clock-time" id="clockTime">12:00 PM</div>
+  <div class="clock-date" id="clockDate">Monday</div>
+</div>
 <button class="menu-btn" id="sidebarToggle" onclick="toggleSidebar()">☰</button>
 </div>
 </div>
@@ -2626,7 +2652,7 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: conversationHistory,
-        system: `You are Finn, a personalized AI assistant for ${customName}. Your role is to help manage assignments, tasks, projects, and schedule efficiently.
+        system: `You are Jarvis, a personalized AI assistant for ${customName}. Your role is to help manage assignments, tasks, projects, and schedule efficiently.
 
 Guidelines:
 - Be concise and actionable - get to the point quickly
@@ -3093,6 +3119,35 @@ window.addEventListener('resize', () => {
     document.getElementById('sidebarBackdrop').classList.remove('visible');
   }
 });
+
+// Update clock display
+function updateClock() {
+  const now = new Date();
+  const timeElement = document.getElementById('clockTime');
+  const dateElement = document.getElementById('clockDate');
+
+  if (timeElement && dateElement) {
+    // Format time as HH:MM AM/PM
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+    const displayMinutes = minutes < 10 ? '0' + minutes : minutes;
+    timeElement.textContent = `${displayHours}:${displayMinutes} ${ampm}`;
+
+    // Format date as Day, Month Date
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const dayName = days[now.getDay()];
+    const monthName = months[now.getMonth()];
+    const date = now.getDate();
+    dateElement.textContent = `${dayName}, ${monthName} ${date}`;
+  }
+}
+
+// Initialize clock and update every minute
+updateClock();
+setInterval(updateClock, 60000);
 
 loadSidebarData();
 // Reload sidebar data every 60 seconds with better error handling

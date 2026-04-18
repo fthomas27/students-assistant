@@ -395,7 +395,7 @@ CREATE TABLE IF NOT EXISTS lockdown_state (
 )""")
 
     defaults = {
-        "name": "Finn",
+        "name": "Jarvis",
         "morning_briefing_time": "07:00",
         "timer_cutoff_multiplier": "2.0",
         "anthropic_api_key": "",
@@ -749,7 +749,7 @@ def generate_briefing(force=False):
             log.warning("Morning briefing: ANTHROPIC_API_KEY not set")
             return
         cfg = get_config()
-        name = cfg.get("name", "Finn")
+        name = cfg.get("name", "Jarvis")
         if not force:
             conn = get_db()
             cur = conn.cursor()
@@ -960,7 +960,7 @@ def generate_evening_debrief():
             log.warning("Evening debrief: ANTHROPIC_API_KEY not set")
             return
         cfg = get_config()
-        name = cfg.get("name", "Finn")
+        name = cfg.get("name", "Jarvis")
         conn = get_db()
         cur = conn.cursor()
         today_start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1897,7 +1897,7 @@ def api_workout_generate():
         history_text = _workout_history_block(cur)
 
         now_local = datetime.now(TZ)
-        name = get_config().get("name", "Finn")
+        name = get_config().get("name", "Jarvis")
         if location == "home":
             equip = (
                 "HOME GYM: dumbbells only up to 35 lb each, plus bodyweight. "
@@ -2096,7 +2096,7 @@ def api_workout_regenerate():
 
     # Generate new workout with same focus but different exercises
     now_local = datetime.now(TZ)
-    name = get_config().get("name", "Finn")
+    name = get_config().get("name", "Jarvis")
 
     if location == "home":
         equip = (
@@ -3252,7 +3252,7 @@ def api_project_tasks_delete(project_id, task_id):
 def api_config_get():
     cfg = get_config()
     return jsonify({
-        "name": cfg.get("name", "Finn"),
+        "name": cfg.get("name", "Jarvis"),
         "morning_briefing_time": cfg.get("morning_briefing_time", "07:00"),
         "timer_cutoff_multiplier": cfg.get("timer_cutoff_multiplier", "2.0"),
         "has_api_key": bool(cfg.get("anthropic_api_key", "")),
@@ -3309,7 +3309,7 @@ def api_chat():
                 system_prompt += (
                     " Today is a %s day at Park City High School. "
                     "School runs 7:%02d AM – %d:%02d %s. "
-                    "Finn is NOT available during school hours. "
+                    "Jarvis is NOT available during school hours. "
                     "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
                     "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM. "
                     "If asked what color day any date is, look it up from the calendar system."
