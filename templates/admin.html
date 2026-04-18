@@ -300,10 +300,11 @@ color: var(--text);
             <th>Status</th>
             <th>Timestamp</th>
             <th>User Agent</th>
+            <th>Action</th>
           </tr>
         </thead>
         <tbody id="login-tbody">
-          <tr><td colspan="4" class="loading">Loading...</td></tr>
+          <tr><td colspan="5" class="loading">Loading...</td></tr>
         </tbody>
       </table>
     </div>
@@ -402,20 +403,24 @@ function loadLoginAttempts() {
         var row = document.createElement('tr');
         var statusClass = attempt.success ? 'status-success' : 'status-failed';
         var statusText = attempt.success ? 'Success' : 'Failed';
-        row.innerHTML = `
-          <td class="ip-address">${attempt.ip_address}</td>
-          <td><span class="status-badge ${statusClass}">${statusText}</span></td>
-          <td class="timestamp">${formatDate(attempt.attempted_at)}</td>
-          <td style="font-size: 12px; color: var(--text3);">
-            ${attempt.user_agent ? attempt.user_agent.substring(0, 50) + '...' : 'N/A'}
-          </td>
-        `;
+        row.innerHTML = '<td class="ip-address"></td><td class="status-cell"></td><td class="timestamp"></td><td class="user-agent"></td><td><button class="edit-btn" style="padding: 6px 12px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Name IP</button></td>';
+        row.querySelector('.ip-address').textContent = attempt.ip_address;
+        var statusSpan = document.createElement('span');
+        statusSpan.className = 'status-badge ' + statusClass;
+        statusSpan.textContent = statusText;
+        row.querySelector('.status-cell').appendChild(statusSpan);
+        row.querySelector('.timestamp').textContent = formatDate(attempt.attempted_at);
+        row.querySelector('.user-agent').textContent = attempt.user_agent ? attempt.user_agent.substring(0, 50) + '...' : 'N/A';
+        row.querySelector('.user-agent').style.fontSize = '12px';
+        row.querySelector('.user-agent').style.color = 'var(--text3)';
+        var ip = attempt.ip_address;
+        row.querySelector('.edit-btn').addEventListener('click', function() { editIPName(ip, ''); });
         tbody.appendChild(row);
       });
 
       document.getElementById('attempt-count').textContent = data.attempts.length;
     })
-    .catch(e => { console.error(e); document.getElementById('login-tbody').innerHTML = '<tr><td colspan="4" class="empty-state">Error loading data</td></tr>'; });
+    .catch(e => { console.error(e); document.getElementById('login-tbody').innerHTML = '<tr><td colspan="5" class="empty-state">Error loading data</td></tr>'; });
 }
 
 function loadSuspiciousActivity() {
@@ -540,14 +545,12 @@ function loadBlockedIPs() {
 
       data.blocked_ips.forEach(item => {
         var row = document.createElement('tr');
-        row.innerHTML = '<td class="ip-address"></td><td class="name-cell"></td><td class="reason-cell"></td><td class="timestamp"></td><td style="display: flex; gap: 6px;"><button class="edit-btn" style="padding: 6px 12px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Edit</button><button class="unblock-btn" style="padding: 6px 12px; background: var(--red); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Unblock</button></td>';
+        row.innerHTML = '<td class="ip-address"></td><td class="name-cell"></td><td class="reason-cell"></td><td class="timestamp"></td><td><button class="unblock-btn" style="padding: 6px 12px; background: var(--red); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Unblock</button></td>';
         row.querySelector('.ip-address').textContent = item.ip;
         row.querySelector('.name-cell').textContent = item.name || '-';
         row.querySelector('.reason-cell').textContent = item.reason || '-';
         row.querySelector('.timestamp').textContent = formatDate(item.blocked_at);
         var ip = item.ip;
-        var currentName = item.name || '';
-        row.querySelector('.edit-btn').addEventListener('click', function() { editIPName(ip, currentName); });
         row.querySelector('.unblock-btn').addEventListener('click', function() { unblockIP(ip); });
         tbody.appendChild(row);
       });
