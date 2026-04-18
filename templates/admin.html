@@ -538,12 +538,12 @@ function loadBlockedIPs() {
 
       data.blocked_ips.forEach(item => {
         var row = document.createElement('tr');
-        row.innerHTML = `
-          <td class="ip-address">${item.ip}</td>
-          <td>${item.reason || '-'}</td>
-          <td class="timestamp">${formatDate(item.blocked_at)}</td>
-          <td><button onclick="unblockIP('${item.ip}')" style="padding: 6px 12px; background: var(--red); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Unblock</button></td>
-        `;
+        row.innerHTML = '<td class="ip-address"></td><td class="reason-cell"></td><td class="timestamp"></td><td><button class="unblock-btn" style="padding: 6px 12px; background: var(--red); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Unblock</button></td>';
+        row.querySelector('.ip-address').textContent = item.ip;
+        row.querySelector('.reason-cell').textContent = item.reason || '-';
+        row.querySelector('.timestamp').textContent = formatDate(item.blocked_at);
+        var ip = item.ip;
+        row.querySelector('.unblock-btn').addEventListener('click', function() { unblockIP(ip); });
         tbody.appendChild(row);
       });
     })
