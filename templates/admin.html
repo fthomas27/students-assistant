@@ -297,6 +297,7 @@ color: var(--text);
         <thead>
           <tr>
             <th>IP Address</th>
+            <th>IP Name</th>
             <th>Status</th>
             <th>Timestamp</th>
             <th>User Agent</th>
@@ -304,7 +305,7 @@ color: var(--text);
           </tr>
         </thead>
         <tbody id="login-tbody">
-          <tr><td colspan="5" class="loading">Loading...</td></tr>
+          <tr><td colspan="6" class="loading">Loading...</td></tr>
         </tbody>
       </table>
     </div>
@@ -423,7 +424,7 @@ function loadLoginAttempts() {
 
       document.getElementById('attempt-count').textContent = data.attempts.length;
     })
-    .catch(e => { console.error(e); document.getElementById('login-tbody').innerHTML = '<tr><td colspan="5" class="empty-state">Error loading data</td></tr>'; });
+    .catch(e => { console.error(e); document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">Error loading data</td></tr>'; });
 }
 
 function loadSuspiciousActivity() {
@@ -625,14 +626,15 @@ function editIPName(ip, currentName) {
     return;
   }
 
-  fetch('/api/admin/block-ip', {
+  fetch('/api/admin/track-ip-name', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    body: JSON.stringify({ ip_address: ip, ip_name: newName.trim(), reason: '' })
+    body: JSON.stringify({ ip_address: ip, ip_name: newName.trim() })
   }).then(r => r.json())
     .then(data => {
-      if (data.status === 'blocked') {
+      if (data.status === 'tracked') {
+        loadLoginAttempts();
         loadBlockedIPs();
       } else {
         alert('Error: ' + (data.error || 'Failed to update IP name'));
