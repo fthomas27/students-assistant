@@ -1295,10 +1295,13 @@ def admin():
     security_code = data.get("security_code")
     is_locked_down = is_app_locked_down()
 
-    log.info(f"Admin login: password={bool(password)}, security_code={bool(security_code)}, locked_down={is_locked_down}, ADMIN_PASSWORD={'***' if ADMIN_PASSWORD else 'NOT_SET'}")
+    log.info(f"Admin login: password={bool(password)}, security_code={bool(security_code)}, locked_down={is_locked_down}")
 
     if password and not security_code:
-        log.info(f"Admin login attempt: checking password (len={len(password)}) against ADMIN_PASSWORD (len={len(ADMIN_PASSWORD)})")
+        import hashlib
+        pwd_hash = hashlib.sha256(password.encode()).hexdigest()[:8]
+        admin_hash = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()[:8]
+        log.info(f"Admin login attempt: password_hash={pwd_hash}, admin_hash={admin_hash}, match={password == ADMIN_PASSWORD}")
         if password == ADMIN_PASSWORD:
             if is_locked_down:
                 return jsonify({
