@@ -1335,14 +1335,18 @@ def login():
             return jsonify({"error": "Invalid username or password"}), 401
 
     if password and security_code:
-        if is_locked_down:
-            security_code_env = os.environ.get("SECURITY_CODE", "test").strip()
-            is_admin = username == ADMIN_USER
-            expected_password = ADMIN_PASSWORD if is_admin else APP_PASSWORD
+        security_code_env = os.environ.get("SECURITY_CODE", "test").strip()
+        is_admin = username == ADMIN_USER
+        expected_password = ADMIN_PASSWORD if is_admin else APP_PASSWORD
+
+        # Allow login with security code if:
+        # 1. System is in lockdown, OR
+        # 2. IP is blocked
+        if is_locked_down or ip_is_blocked:
             import hashlib
             sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
             env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8] if security_code_env else "EMPTY"
-            log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, sc_provided='{security_code}', env_var='{security_code_env}', received_hash={sc_hash}, env_hash={env_hash}")
+            log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, sc_provided='{security_code}', env_var='{security_code_env}', received_hash={sc_hash}, env_hash={env_hash}")
             if password.strip() == expected_password and security_code.strip() == security_code_env:
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
@@ -1577,21 +1581,6 @@ def api_admin_claude_usage():
                 "status": "No API key configured"
             })
 
-        client = anthropic.Anthropic(api_key=api_key)
-
-        try:
-            resp = client.messages.create(
-                model="claude-opus-4-7",
-                max_tokens=1,
-                messages=[{"role": "user", "content": "test"}]
-            )
-            if hasattr(resp, 'usage'):
-                global _api_usage_cache
-                _api_usage_cache["tokens_used"] = _api_usage_cache.get("tokens_used", 0) + (resp.usage.input_tokens + resp.usage.output_tokens)
-        except Exception as e:
-            log.warning(f"Error making test API call for usage: {e}")
-            pass
-
         global _api_usage_cache
         _api_usage_cache["last_updated"] = datetime.now(TZ)
 
@@ -1605,7 +1594,8 @@ def api_admin_claude_usage():
             "tokens_remaining": tokens_limit - tokens_used,
             "percent_used": percent_used,
             "percent_remaining": 100 - percent_used,
-            "last_updated": _api_usage_cache["last_updated"].isoformat()
+            "last_updated": _api_usage_cache["last_updated"].isoformat(),
+            "note": "Usage tracking requires integration with actual API calls in the application"
         })
     except Exception as e:
         log.exception("Error fetching Claude usage")
