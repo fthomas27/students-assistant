@@ -3424,22 +3424,37 @@ def api_plan_my_day_generate():
             projects = []
             calendar_events = []
 
-            # Get assignments due today
+            # Get assignments due today (fetch from Canvas calendar, not via HTTP)
             try:
-                resp = requests.get("http://localhost:5000/api/assignments", timeout=5)
-                if resp.status_code == 200:
-                    all_asgn = resp.json().get("assignments", [])
+                cal = fetch_ical(CANVAS_ICAL_URL)
+                if cal:
+                    conn_inner = get_db()
+                    cur_inner = conn_inner.cursor()
+                    cur_inner.execute("SELECT assignment_title FROM completions")
+                    completed_titles = set(r["assignment_title"] for r in cur_inner.fetchall())
+                    cur_inner.execute("SELECT uid, minutes FROM assignment_estimates")
+                    custom_estimates = {r["uid"]: r["minutes"] for r in cur_inner.fetchall()}
+                    cur_inner.close()
+                    conn_inner.close()
+
+                    all_asgn = parse_canvas_assignments(cal)
                     for a in all_asgn:
+                        if a["title"] in completed_titles:
+                            continue
                         due_iso = a.get("due_iso", "")
                         if due_iso:
                             try:
                                 due_dt = datetime.fromisoformat(due_iso.replace("Z", "+00:00"))
                                 due_date = due_dt.astimezone(TZ).date()
                                 if due_date == today:
-                                    est_mins = estimate_assignment(a.get("title", ""), a.get("class_name", ""))
+                                    uid = a.get("uid", "")
+                                    if uid in custom_estimates:
+                                        est_mins = custom_estimates[uid]
+                                    else:
+                                        est_mins = estimate_assignment(a.get("title", ""), a.get("class_name", ""))
                                     assignments.append({
                                         "type": "assignment",
-                                        "id": a.get("uid", ""),
+                                        "id": uid,
                                         "title": a.get("title", ""),
                                         "class": a.get("class_name", ""),
                                         "estimated_minutes": int(est_mins)
@@ -3449,14 +3464,20 @@ def api_plan_my_day_generate():
             except Exception as e:
                 log.warning(f"Could not fetch assignments for plan: {e}")
 
-            # Get all incomplete tasks (not just due today)
-            cur.execute("SELECT id, title, due_date, urgency FROM tasks WHERE completed = FALSE ORDER BY urgency DESC, due_date ASC")
+            # Get all incomplete tasks (not just due today), limit to avoid huge prompts
+            # Only include tasks due within the next 14 days or urgent tasks
+            cur.execute("""
+                SELECT id, title, due_date, urgency FROM tasks
+                WHERE completed = FALSE
+                AND (due_date IS NULL OR due_date <= %s)
+                ORDER BY urgency DESC, due_date ASC
+                LIMIT 20
+            """, (today + timedelta(days=14),))
+
+            urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
             for task_row in cur.fetchall():
                 due_date = task_row.get("due_date")
                 urgency = task_row.get("urgency", "medium")
-
-                # Determine estimated time based on urgency
-                urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
                 est_mins = urgency_mins.get(urgency, 20)
 
                 tasks.append({
@@ -3468,19 +3489,20 @@ def api_plan_my_day_generate():
                     "estimated_minutes": est_mins
                 })
 
-            # Get all active projects
+            # Get all active projects (fetch directly from database, not via HTTP)
             try:
-                resp = requests.get("http://localhost:5000/api/projects", timeout=5)
-                if resp.status_code == 200:
-                    all_projects = resp.json().get("projects", [])
-                    for p in all_projects:
-                        if p.get("status") == "active":
-                            projects.append({
-                                "type": "project",
-                                "id": p.get("id", ""),
-                                "title": p.get("title", ""),
-                                "estimated_minutes": 45
-                            })
+                conn_inner = get_db()
+                cur_inner = conn_inner.cursor()
+                cur_inner.execute("SELECT id, title FROM projects WHERE status = 'active' ORDER BY created_at DESC LIMIT 10")
+                for p in cur_inner.fetchall():
+                    projects.append({
+                        "type": "project",
+                        "id": str(p["id"]),
+                        "title": p["title"],
+                        "estimated_minutes": 45
+                    })
+                cur_inner.close()
+                conn_inner.close()
             except Exception as e:
                 log.warning(f"Could not fetch projects for plan: {e}")
 
@@ -3500,15 +3522,73 @@ def api_plan_my_day_generate():
             except Exception as e:
                 log.warning(f"Could not fetch calendar for plan: {e}")
 
-            # Get free time windows
+            # Get free time windows (compute directly, not via HTTP)
             free_windows = []
             try:
-                resp = requests.get("http://localhost:5000/api/availability", timeout=5)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    free_windows = data.get("free_windows", [])
+                now_local = datetime.now(TZ)
+                dtype = get_day_type(today)
+                school_hours = get_school_hours(today)
+
+                busy = []
+                if school_hours:
+                    sh, sm, eh, em = school_hours
+                    busy.append({
+                        "start": now_local.replace(hour=sh, minute=sm, second=0, microsecond=0),
+                        "end": now_local.replace(hour=eh, minute=em, second=0, microsecond=0),
+                        "label": f"School ({dtype.title()} day)"
+                    })
+
+                # Personal calendar events
+                cal = fetch_ical(PERSONAL_ICAL_URL)
+                if cal:
+                    for e in parse_calendar_events(cal, days_ahead=1):
+                        if e["date"] == today.isoformat() and not e.get("all_day"):
+                            try:
+                                es = datetime.fromisoformat(e["start_iso"])
+                                ee_str = e.get("end_iso") or e["start_iso"]
+                                ee = datetime.fromisoformat(ee_str)
+                                if es.tzinfo is None:
+                                    es = es.replace(tzinfo=TZ)
+                                if ee.tzinfo is None:
+                                    ee = ee.replace(tzinfo=TZ)
+                                busy.append({"start": es, "end": ee, "label": e["title"]})
+                            except Exception:
+                                pass
+
+                # Merge and find free windows
+                busy.sort(key=lambda x: x["start"])
+                merged = []
+                for b in busy:
+                    if merged and b["start"] <= merged[-1]["end"]:
+                        merged[-1]["end"] = max(merged[-1]["end"], b["end"])
+                    else:
+                        merged.append(dict(b))
+
+                day_end = now_local.replace(hour=22, minute=0, second=0, microsecond=0)
+                cursor = now_local.replace(second=0, microsecond=0)
+                for b in merged:
+                    if b["end"] <= cursor:
+                        continue
+                    if b["start"] > cursor:
+                        mins = int((b["start"] - cursor).total_seconds() / 60)
+                        if mins >= 15:
+                            free_windows.append({
+                                "start": cursor.strftime("%-I:%M %p"),
+                                "end": b["start"].strftime("%-I:%M %p"),
+                                "minutes": mins
+                            })
+                    cursor = max(cursor, b["end"])
+
+                if cursor < day_end:
+                    mins = int((day_end - cursor).total_seconds() / 60)
+                    if mins >= 15:
+                        free_windows.append({
+                            "start": cursor.strftime("%-I:%M %p"),
+                            "end": day_end.strftime("%-I:%M %p"),
+                            "minutes": mins
+                        })
             except Exception as e:
-                log.warning(f"Could not fetch availability for plan: {e}")
+                log.warning(f"Could not compute availability for plan: {e}")
 
             # Use Claude to generate optimal schedule
             if not api_key:
