@@ -1501,6 +1501,24 @@ def api_test_admin_password():
         return jsonify({"status": "SET_FROM_ENV", "length": len(ADMIN_PASSWORD), "message": "ADMIN_PASSWORD is set from environment variable"})
 
 
+@app.route("/api/test-security-code")
+def api_test_security_code():
+    """Debug endpoint - shows if SECURITY_CODE is set"""
+    security_code = os.environ.get("SECURITY_CODE", "")
+    if not security_code:
+        return jsonify({"status": "NOT_SET", "message": "SECURITY_CODE environment variable not set"})
+    else:
+        return jsonify({"status": "SET_FROM_ENV", "length": len(security_code), "message": "SECURITY_CODE is set from environment variable"})
+
+
+@app.route("/api/test-lockdown-status")
+def api_test_lockdown_status():
+    """Debug endpoint - shows current lockdown state"""
+    is_locked = is_app_locked_down()
+    return jsonify({"is_locked_down": is_locked, "message": f"System is {'LOCKED DOWN' if is_locked else 'NORMAL'}"})
+
+
+
 @app.route("/api/admin/lockdown", methods=["POST"])
 def api_admin_lockdown():
     if not session.get("admin_authenticated"):
