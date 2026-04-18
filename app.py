@@ -57,14 +57,15 @@ _briefing_lock = threading.Lock()
 
 @app.before_request
 def require_auth():
-    if request.path in ('/login', '/logout', '/admin'):
+    path = request.path.rstrip('/')
+    if path in ('/login', '/logout', '/admin'):
         return None
-    if request.path in ('/api/lockdown-status',):
+    if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
         return None
-    if request.path.startswith('/api/admin/'):
+    if path.startswith('/api/admin/'):
         return None
     if not session.get("authenticated"):
-        if request.path.startswith('/api/'):
+        if path.startswith('/api/'):
             return jsonify({"error": "Not authenticated"}), 401
         return redirect("/login")
 
@@ -1345,6 +1346,10 @@ def admin():
     if password and security_code:
         if is_locked_down:
             security_code_env = os.environ.get("SECURITY_CODE", "")
+            import hashlib
+            sc_hash = hashlib.sha256(security_code.encode()).hexdigest()[:8]
+            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
+            log.info(f"Security code check: received_hash={sc_hash}, env_hash={env_hash}, env_len={len(security_code_env)}, received_len={len(security_code)}, match={security_code == security_code_env}")
 
             # Check admin password with security code
             if password == ADMIN_PASSWORD and security_code == security_code_env:
