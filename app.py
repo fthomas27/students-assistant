@@ -3418,12 +3418,13 @@ def api_plan_my_day_generate():
                 # Delete old plan
                 cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
 
-            # Fetch assignments, tasks, and calendar events for today
+            # Fetch assignments, tasks, projects, and calendar events
             assignments = []
             tasks = []
+            projects = []
             calendar_events = []
 
-            # Get assignments
+            # Get assignments due today
             try:
                 resp = requests.get("http://localhost:5000/api/assignments", timeout=5)
                 if resp.status_code == 200:
@@ -3440,6 +3441,7 @@ def api_plan_my_day_generate():
                                         "type": "assignment",
                                         "id": a.get("uid", ""),
                                         "title": a.get("title", ""),
+                                        "class": a.get("class_name", ""),
                                         "estimated_minutes": int(est_mins)
                                     })
                             except Exception:
@@ -3447,15 +3449,40 @@ def api_plan_my_day_generate():
             except Exception as e:
                 log.warning(f"Could not fetch assignments for plan: {e}")
 
-            # Get tasks due today
-            cur.execute("SELECT id, title FROM tasks WHERE due_date = %s AND completed = FALSE", (today,))
+            # Get all incomplete tasks (not just due today)
+            cur.execute("SELECT id, title, due_date, urgency FROM tasks WHERE completed = FALSE ORDER BY urgency DESC, due_date ASC")
             for task_row in cur.fetchall():
+                due_date = task_row.get("due_date")
+                urgency = task_row.get("urgency", "medium")
+
+                # Determine estimated time based on urgency
+                urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
+                est_mins = urgency_mins.get(urgency, 20)
+
                 tasks.append({
                     "type": "task",
                     "id": str(task_row["id"]),
                     "title": task_row["title"],
-                    "estimated_minutes": 30
+                    "due_date": str(due_date) if due_date else None,
+                    "urgency": urgency,
+                    "estimated_minutes": est_mins
                 })
+
+            # Get all active projects
+            try:
+                resp = requests.get("http://localhost:5000/api/projects", timeout=5)
+                if resp.status_code == 200:
+                    all_projects = resp.json().get("projects", [])
+                    for p in all_projects:
+                        if p.get("status") == "active":
+                            projects.append({
+                                "type": "project",
+                                "id": p.get("id", ""),
+                                "title": p.get("title", ""),
+                                "estimated_minutes": 45
+                            })
+            except Exception as e:
+                log.warning(f"Could not fetch projects for plan: {e}")
 
             # Get calendar events for today
             try:
@@ -3490,35 +3517,42 @@ def api_plan_my_day_generate():
                 return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
 
             client = anthropic.Anthropic(api_key=api_key)
-            schedule_prompt = f"""You are a time management assistant. Generate an optimal daily schedule for today.
-
-Today is {today}.
+            schedule_prompt = f"""You are a time management assistant. Generate an optimal daily schedule for today ({today}).
 
 Available time windows (free slots):
 {json.dumps(free_windows, indent=2)}
 
-Tasks to schedule (estimated duration):
-{json.dumps(assignments + tasks, indent=2)}
+ITEMS TO SCHEDULE (choose the most important ones that fit):
+- Assignments due TODAY (MUST include):
+{json.dumps(assignments, indent=2)}
 
-Fixed calendar events (cannot be moved):
+- Tasks to complete (prioritized by urgency and due date):
+{json.dumps(tasks, indent=2)}
+
+- Active projects (work on as time permits):
+{json.dumps(projects, indent=2)}
+
+Fixed calendar events (cannot be moved, already scheduled):
 {json.dumps(calendar_events, indent=2)}
 
 Return a JSON array of scheduled items. Each item should have:
-- item_type: "assignment", "task", or "calendar"
+- item_type: "assignment", "task", "project", or "calendar"
 - item_id: the original ID
 - item_title: the title
 - scheduled_start_time: "HH:MM" format (24-hour)
 - scheduled_end_time: "HH:MM" format (24-hour)
 
-Rules:
-1. Respect all fixed calendar events (don't schedule over them)
-2. Fit assignments and tasks into free windows only
-3. Prioritize high-effort tasks earlier in the day
-4. Keep tasks grouped by subject/type when possible
-5. Avoid context switching (keep similar tasks together)
-6. If something doesn't fit, omit it and note that in a separate "warning" field
+SCHEDULING RULES:
+1. MUST include all assignments due today
+2. Include high/critical urgency tasks that are due soon
+3. Fill remaining time with medium/low urgency tasks and projects
+4. Respect all fixed calendar events (don't schedule over them)
+5. Only schedule into available free windows
+6. Prioritize high-urgency items and near-due items earlier in the day
+7. Keep similar tasks grouped when possible
+8. If items don't fit, prioritize: assignments > critical tasks > high tasks > projects
 
-Return ONLY valid JSON, no markdown or extra text."""
+Return ONLY valid JSON array, no markdown or extra text."""
 
             try:
                 message = client.messages.create(
