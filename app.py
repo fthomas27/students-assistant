@@ -58,7 +58,7 @@ _briefing_lock = threading.Lock()
 @app.before_request
 def require_auth():
     path = request.path.rstrip('/')
-    if path in ('/login', '/logout', '/admin'):
+    if path in ('/login', '/logout', '/admin', '/debug-security-code'):
         return None
     if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
         return None
