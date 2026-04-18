@@ -1246,8 +1246,8 @@ def login():
 
     if password and security_code:
         if is_locked_down:
-            security_code_env = os.environ.get("SECURITY_CODE", "")
-            if password == APP_PASSWORD and security_code == security_code_env:
+            security_code_env = os.environ.get("SECURITY_CODE", "").strip()
+            if password.strip() == APP_PASSWORD and security_code.strip() == security_code_env:
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
                 session["authenticated"] = True
@@ -1358,14 +1358,14 @@ def admin():
     # Handle security code for both app and admin
     if password and security_code:
         if is_locked_down:
-            security_code_env = os.environ.get("SECURITY_CODE", "")
+            security_code_env = os.environ.get("SECURITY_CODE", "").strip()
             import hashlib
-            sc_hash = hashlib.sha256(security_code.encode()).hexdigest()[:8]
+            sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
             env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
-            log.info(f"Security code check: received_hash={sc_hash}, env_hash={env_hash}, env_len={len(security_code_env)}, received_len={len(security_code)}, match={security_code == security_code_env}")
+            log.info(f"Security code check: received_hash={sc_hash}, env_hash={env_hash}, env_len={len(security_code_env)}, received_len={len(security_code.strip())}, match={security_code.strip() == security_code_env}")
 
             # Check admin password with security code
-            if password == ADMIN_PASSWORD and security_code == security_code_env:
+            if password.strip() == ADMIN_PASSWORD and security_code.strip() == security_code_env:
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
                 session["admin_authenticated"] = True
@@ -1373,7 +1373,7 @@ def admin():
                 return jsonify({"status": "ok", "redirect": "/admin"})
 
             # Check app password with security code
-            if password == APP_PASSWORD and security_code == security_code_env:
+            if password.strip() == APP_PASSWORD and security_code.strip() == security_code_env:
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
                 session["authenticated"] = True
