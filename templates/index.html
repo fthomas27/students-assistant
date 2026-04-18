@@ -2760,6 +2760,100 @@ async function createTaskFromChat(taskData, loadingBubble) {
   }
 }
 
+async function loadAndDisplaySuggestions() {
+  try {
+    const response = await fetch('/api/task-suggestions');
+    const data = await response.json();
+
+    if (data.suggestions && data.suggestions.length > 0) {
+      displayTaskSuggestions(data.suggestions);
+    }
+  } catch (e) {
+    console.error('Failed to load task suggestions:', e);
+  }
+}
+
+function displayTaskSuggestions(suggestions) {
+  const messagesDiv = document.getElementById('chatMessages');
+
+  suggestions.forEach((sugg, idx) => {
+    const bubble = document.createElement('div');
+    bubble.className = 'message assistant';
+    const suggestionId = `sugg-${Math.random().toString(36)}`;
+
+    const dueDateStr = sugg.due_date ? ` due ${sugg.due_date}` : '';
+    const urgencyEmoji = sugg.urgency === 'high' ? '🔴' : sugg.urgency === 'medium' ? '🟡' : '🟢';
+
+    bubble.innerHTML = `
+      <div class="message-bubble" style="background: var(--surface2); border-left: 3px solid var(--accent);">
+        <div style="margin-bottom: 8px;">
+          <strong>Suggestion:</strong> ${escapeHtml(sugg.reason)}<br>
+          <em>${escapeHtml(sugg.title)}</em> ${urgencyEmoji} ${dueDateStr}
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button onclick="acceptTaskSuggestion(${JSON.stringify(sugg).replace(/"/g, '&quot;')}, '${suggestionId}')"
+                  style="background: var(--green); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
+            ✓ Create Task
+          </button>
+          <button onclick="rejectTaskSuggestion('${suggestionId}')"
+                  style="background: var(--text3); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">
+            ✕ Skip
+          </button>
+        </div>
+      </div>
+    `;
+    bubble.id = `suggestion-${suggestionId}`;
+    messagesDiv.appendChild(bubble);
+  });
+
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+async function acceptTaskSuggestion(taskData, suggestionId) {
+  try {
+    // Create the task
+    const response = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: taskData.title.trim(),
+        urgency: taskData.urgency || 'low',
+        due_date: taskData.due_date || null,
+        notes: taskData.reason ? `From suggestion: ${taskData.reason}` : ''
+      })
+    });
+
+    if (!response.ok) {
+      console.error('Failed to create task from suggestion');
+      return;
+    }
+
+    // Remove suggestion bubble
+    const bubble = document.getElementById(`suggestion-${suggestionId}`);
+    if (bubble) {
+      bubble.style.opacity = '0';
+      bubble.style.transition = 'opacity 0.3s';
+      setTimeout(() => bubble.remove(), 300);
+    }
+
+    // Refresh tasks sidebar
+    await loadSidebarData();
+
+    console.log('Task created from suggestion:', taskData.title);
+  } catch (e) {
+    console.error('Error accepting suggestion:', e);
+  }
+}
+
+function rejectTaskSuggestion(suggestionId) {
+  const bubble = document.getElementById(`suggestion-${suggestionId}`);
+  if (bubble) {
+    bubble.style.opacity = '0';
+    bubble.style.transition = 'opacity 0.3s';
+    setTimeout(() => bubble.remove(), 300);
+  }
+}
+
 function suggestMessage(text) {
   chatInput.value = text;
   chatInput.focus();
@@ -3005,6 +3099,11 @@ loadSidebarData();
 setInterval(() => {
   loadSidebarData().catch(e => console.error('Sidebar reload failed:', e));
 }, 60000);
+
+// Load and display task suggestions after a brief delay (non-blocking)
+setTimeout(() => {
+  loadAndDisplaySuggestions().catch(e => console.error('Failed to load suggestions:', e));
+}, 2000);
 
 // Restore last chat if available
 const lastChat = JSON.parse(localStorage.getItem('chatHistories') || '[]')[0];
