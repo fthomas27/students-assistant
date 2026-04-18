@@ -353,7 +353,7 @@ color: var(--text);
 <script>
 function logout() {
   fetch('/logout', { method: 'POST', credentials: 'same-origin' })
-    .then(() => { window.location.href = '/admin'; });
+    .then(() => { window.location.href = '/login'; });
 }
 
 function formatDate(isoString) {

@@ -1295,10 +1295,15 @@ def admin():
     security_code = data.get("security_code")
     is_locked_down = is_app_locked_down()
 
-    log.info(f"Admin login: password={bool(password)}, security_code={bool(security_code)}, locked_down={is_locked_down}, ADMIN_PASSWORD={'***' if ADMIN_PASSWORD else 'NOT_SET'}")
+    log.info(f"Admin login: password={bool(password)}, security_code={bool(security_code)}, locked_down={is_locked_down}")
 
     if password and not security_code:
-        log.info(f"Admin login attempt: checking password (len={len(password)}) against ADMIN_PASSWORD (len={len(ADMIN_PASSWORD)})")
+        import hashlib
+        pwd_hash = hashlib.sha256(password.encode()).hexdigest()[:8]
+        admin_hash = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()[:8]
+        log.info(f"Login attempt: password_hash={pwd_hash}, admin_hash={admin_hash}, match={password == ADMIN_PASSWORD}")
+
+        # Check if admin password
         if password == ADMIN_PASSWORD:
             if is_locked_down:
                 return jsonify({
@@ -1310,37 +1315,66 @@ def admin():
             session.permanent = True
             session["admin_authenticated"] = True
             session.modified = True
-            return jsonify({"status": "ok"})
-        else:
-            lockout_info = record_login_attempt(ip_addr, False)
-            if lockout_info["locked"]:
-                return jsonify({
-                    "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
-                    "lockout": True
-                }), 429
-            return jsonify({"error": "Wrong admin password"}), 401
+            return jsonify({"status": "ok", "redirect": "/admin"})
 
+        # Check if app password
+        if password == APP_PASSWORD:
+            if is_locked_down:
+                return jsonify({
+                    "is_locked_down": True,
+                    "message": "System in lockdown. Please provide security code."
+                }), 202
+
+            record_login_attempt(ip_addr, True)
+            session.permanent = True
+            session["authenticated"] = True
+            session.modified = True
+            return jsonify({"status": "ok", "redirect": "/"})
+
+        # Neither password matched
+        lockout_info = record_login_attempt(ip_addr, False)
+        if lockout_info["locked"]:
+            return jsonify({
+                "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
+                "lockout": True,
+                "minutes_remaining": lockout_info["minutes_remaining"]
+            }), 429
+        return jsonify({"error": "Wrong password"}), 401
+
+    # Handle security code for both app and admin
     if password and security_code:
         if is_locked_down:
             security_code_env = os.environ.get("SECURITY_CODE", "")
+
+            # Check admin password with security code
             if password == ADMIN_PASSWORD and security_code == security_code_env:
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
                 session["admin_authenticated"] = True
                 session.modified = True
-                return jsonify({"status": "ok"})
-            else:
-                lockout_info = record_login_attempt(ip_addr, False)
-                if lockout_info["locked"]:
-                    return jsonify({
-                        "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
-                        "lockout": True
-                    }), 429
-                return jsonify({"error": "Wrong admin password or security code"}), 401
+                return jsonify({"status": "ok", "redirect": "/admin"})
+
+            # Check app password with security code
+            if password == APP_PASSWORD and security_code == security_code_env:
+                record_login_attempt(ip_addr, True)
+                session.permanent = True
+                session["authenticated"] = True
+                session.modified = True
+                return jsonify({"status": "ok", "redirect": "/"})
+
+            # Neither matched
+            lockout_info = record_login_attempt(ip_addr, False)
+            if lockout_info["locked"]:
+                return jsonify({
+                    "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
+                    "lockout": True,
+                    "minutes_remaining": lockout_info["minutes_remaining"]
+                }), 429
+            return jsonify({"error": "Wrong password or security code"}), 401
         else:
             return jsonify({"error": "Security code not required"}), 400
 
-    return jsonify({"error": "Missing admin password"}), 400
+    return jsonify({"error": "Missing password"}), 400
 
 
 @app.route("/api/admin/login-attempts")
@@ -1465,6 +1499,24 @@ def api_test_admin_password():
         return jsonify({"status": "USING_DEFAULT", "message": "ADMIN_PASSWORD not set in environment, using default"})
     else:
         return jsonify({"status": "SET_FROM_ENV", "length": len(ADMIN_PASSWORD), "message": "ADMIN_PASSWORD is set from environment variable"})
+
+
+@app.route("/api/test-security-code")
+def api_test_security_code():
+    """Debug endpoint - shows if SECURITY_CODE is set"""
+    security_code = os.environ.get("SECURITY_CODE", "")
+    if not security_code:
+        return jsonify({"status": "NOT_SET", "message": "SECURITY_CODE environment variable not set"})
+    else:
+        return jsonify({"status": "SET_FROM_ENV", "length": len(security_code), "message": "SECURITY_CODE is set from environment variable"})
+
+
+@app.route("/api/test-lockdown-status")
+def api_test_lockdown_status():
+    """Debug endpoint - shows current lockdown state"""
+    is_locked = is_app_locked_down()
+    return jsonify({"is_locked_down": is_locked, "message": f"System is {'LOCKED DOWN' if is_locked else 'NORMAL'}"})
+
 
 
 @app.route("/api/admin/lockdown", methods=["POST"])
