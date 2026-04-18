@@ -142,6 +142,9 @@ overflow-y: auto;
 overflow-x: hidden;
 display: none;
 flex-direction: column;
+height: 100%;
+max-height: 100vh;
+-webkit-overflow-scrolling: touch;
 }
 
 .sidebar-col-1,
@@ -342,14 +345,15 @@ transform: rotate(-90deg);
 }
 
 .section-content {
-max-height: 500px;
-overflow: hidden;
-transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+max-height: none;
+overflow-y: auto;
+transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 padding: 0 8px;
+-webkit-overflow-scrolling: touch;
 }
 
 .section-content.collapsed {
-max-height: 0;
+display: none;
 padding: 0 8px;
 }
 
@@ -1880,14 +1884,14 @@ async function loadSidebarData() {
     el.innerHTML = skeletonHTML + skeletonHTML;
   });
 
-  // Timeout safety: if still loading after 15 seconds, show timeout message
+  // Timeout safety: if still loading after 35 seconds, show timeout message
   const timeoutId = setTimeout(() => {
     Object.entries(elements).forEach(([key, el]) => {
       if (el.innerHTML.includes('pulse')) {
         el.innerHTML = '<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 20px 0; font-size: 12px;">Connection timeout</div>';
       }
     });
-  }, 15000);
+  }, 35000);
 
   // Handle each API request individually for progressive rendering
   const dataHandlers = {
@@ -1943,7 +1947,7 @@ async function loadSidebarData() {
 
   // Fetch each endpoint independently for progressive rendering
   for (const [key, handler] of Object.entries(dataHandlers)) {
-    fetchWithTimeout(handler.url, {}, 8000)
+    fetchWithTimeout(handler.url, {}, 12000)
       .then(r => {
         if (!r.ok) {
           console.error(`Error fetching ${handler.url}: HTTP ${r.status}`);
