@@ -1039,6 +1039,14 @@ border-left: 3px solid var(--amber);
 border-radius: var(--r-sm);
 margin-bottom: 8px;
 font-size: 13px;
+cursor: pointer;
+transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+will-change: background, transform;
+}
+
+.calendar-event-item:hover {
+background: var(--surface);
+transform: translateX(4px);
 }
 
 .calendar-event-item:last-child {
@@ -2670,6 +2678,7 @@ function suggestMessage(text) {
 // Calendar functionality
 let calendarCurrentDate = new Date();
 let calendarEventsByDate = {};
+let currentDayEvents = [];
 
 function openCalendarModal() {
   calendarCurrentDate = new Date(); // Reset to today for consistency
@@ -2797,13 +2806,13 @@ function showCalendarEvents(day, month, year, events) {
     return;
   }
 
-  const sorted = events.sort((a, b) => new Date(a.start_iso) - new Date(b.start_iso));
+  currentDayEvents = events.sort((a, b) => new Date(a.start_iso) - new Date(b.start_iso));
   eventsList.innerHTML = `<div style="font-size: 12px; color: var(--text2); margin-bottom: 12px; font-weight: 600;">${dateStr}</div>` +
-    sorted.map((e, idx) => {
+    currentDayEvents.map((e, idx) => {
       const eventDate = new Date(e.start_iso);
       const timeStr = eventDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
       return `
-        <div class="calendar-event-item" onclick="showEventDetail(${idx}, '${btoa(JSON.stringify(sorted))}')" style="cursor: pointer; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); will-change: background, transform;" onmouseover="this.style.background='var(--surface)'; this.style.transform='translateX(4px)';" onmouseout="this.style.background='var(--surface2)'; this.style.transform='translateX(0)';">
+        <div class="calendar-event-item" onclick="showEventDetail(${idx})">
           <div class="calendar-event-title">📅 ${escapeHtml(e.title)}</div>
           <div class="calendar-event-time">${timeStr}</div>
         </div>
@@ -2811,10 +2820,9 @@ function showCalendarEvents(day, month, year, events) {
     }).join('');
 }
 
-function showEventDetail(eventIdx, encodedEvents) {
+function showEventDetail(eventIdx) {
   try {
-    const events = JSON.parse(atob(encodedEvents));
-    const event = events[eventIdx];
+    const event = currentDayEvents[eventIdx];
     if (!event) return;
 
     const modal = document.getElementById('eventDetailModal');
