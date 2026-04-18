@@ -2664,10 +2664,9 @@ function openCalendarModal() {
   document.getElementById('calendarBackdrop').classList.add('visible');
   renderCalendarModal();
 
-  const today = new Date();
-  const dateKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
+  const dateKey = `${calendarCurrentDate.getFullYear()}-${calendarCurrentDate.getMonth()}-${calendarCurrentDate.getDate()}`;
   const todayEvents = calendarEventsByDate[dateKey] || [];
-  showCalendarEvents(today.getDate(), today.getMonth(), today.getFullYear(), todayEvents);
+  showCalendarEvents(calendarCurrentDate.getDate(), calendarCurrentDate.getMonth(), calendarCurrentDate.getFullYear(), todayEvents);
 }
 
 function closeCalendarModal() {
