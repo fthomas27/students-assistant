@@ -31,6 +31,8 @@ app.config.update(
 
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "finn2025").strip()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin-change-me").strip()
+AVERAGE_USER = os.environ.get("AVERAGE_USER", "user").strip()
+ADMIN_USER = os.environ.get("ADMIN_USER", "admin").strip()
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -1217,12 +1219,19 @@ def login():
         }), 429
 
     data = request.get_json(force=True) or {}
+    username = data.get("username", "").strip()
     password = data.get("password")
     security_code = data.get("security_code")
     is_locked_down = is_app_locked_down()
 
+    if not username:
+        return jsonify({"error": "Username required"}), 400
+
     if password and not security_code:
-        if password.strip() == APP_PASSWORD:
+        is_admin = username == ADMIN_USER
+        expected_password = ADMIN_PASSWORD if is_admin else APP_PASSWORD
+
+        if password.strip() == expected_password:
             if is_locked_down:
                 return jsonify({
                     "is_locked_down": True,
@@ -1231,9 +1240,12 @@ def login():
 
             record_login_attempt(ip_addr, True)
             session.permanent = True
-            session["authenticated"] = True
+            if is_admin:
+                session["admin_authenticated"] = True
+            else:
+                session["authenticated"] = True
             session.modified = True
-            return jsonify({"status": "ok"})
+            return jsonify({"status": "ok", "redirect": "/admin" if is_admin else "/"})
         else:
             lockout_info = record_login_attempt(ip_addr, False)
             if lockout_info["locked"]:
@@ -1242,21 +1254,26 @@ def login():
                     "lockout": True,
                     "minutes_remaining": lockout_info["minutes_remaining"]
                 }), 429
-            return jsonify({"error": "Wrong password"}), 401
+            return jsonify({"error": "Invalid username or password"}), 401
 
     if password and security_code:
         if is_locked_down:
             security_code_env = os.environ.get("SECURITY_CODE", "test").strip()
+            is_admin = username == ADMIN_USER
+            expected_password = ADMIN_PASSWORD if is_admin else APP_PASSWORD
             import hashlib
             sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
             env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8] if security_code_env else "EMPTY"
-            log.warning(f"App security code attempt: sc_provided='{security_code}', sc_stripped='{security_code.strip()}', env_var='{security_code_env}', received_hash={sc_hash}, env_hash={env_hash}, env_len={len(security_code_env)}, pwd_match={password.strip() == APP_PASSWORD}")
-            if password.strip() == APP_PASSWORD and security_code.strip() == security_code_env:
+            log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, sc_provided='{security_code}', env_var='{security_code_env}', received_hash={sc_hash}, env_hash={env_hash}")
+            if password.strip() == expected_password and security_code.strip() == security_code_env:
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
-                session["authenticated"] = True
+                if is_admin:
+                    session["admin_authenticated"] = True
+                else:
+                    session["authenticated"] = True
                 session.modified = True
-                return jsonify({"status": "ok"})
+                return jsonify({"status": "ok", "redirect": "/admin" if is_admin else "/"})
             else:
                 lockout_info = record_login_attempt(ip_addr, False)
                 if lockout_info["locked"]:
@@ -1265,11 +1282,11 @@ def login():
                         "lockout": True,
                         "minutes_remaining": lockout_info["minutes_remaining"]
                     }), 429
-                return jsonify({"error": "Wrong password or security code"}), 401
+                return jsonify({"error": "Invalid username, password, or security code"}), 401
         else:
             return jsonify({"error": "Security code not required"}), 400
 
-    return jsonify({"error": "Missing password"}), 400
+    return jsonify({"error": "Missing username or password"}), 400
 
 
 @app.route("/logout")

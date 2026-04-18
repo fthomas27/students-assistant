@@ -228,6 +228,18 @@ text-align: center;
 
   <div class="system-status" id="system-status" style="display:none;"></div>
 
+  <div class="field-label">Username</div>
+  <div class="pw-wrap">
+    <input
+      class="field-input"
+      id="username-input"
+      type="text"
+      placeholder="Enter username"
+      autocomplete="username"
+      autofocus
+    >
+  </div>
+
   <div class="field-label" id="field-label">Password</div>
   <div class="pw-wrap">
     <input
@@ -236,7 +248,6 @@ text-align: center;
       type="password"
       placeholder="••••••••••••"
       autocomplete="current-password"
-      autofocus
     >
     <button class="toggle-pw" type="button" onclick="toggleVisibility()" id="toggle-btn">👁</button>
   </div>
@@ -249,6 +260,7 @@ text-align: center;
 </div>
 
 <script>
+var usernameInput = document.getElementById('username-input');
 var input = document.getElementById('pw-input');
 var btn = document.getElementById('submit-btn');
 var errMsg = document.getElementById('error-msg');
@@ -258,6 +270,7 @@ var systemStatus = document.getElementById('system-status');
 var visible = false;
 var isLocked = false;
 var lockoutTimer = null;
+var currentUsername = '';
 var currentPassword = '';
 var awaitingSecurityCode = false;
 
@@ -310,6 +323,11 @@ function submitLogin() {
     return;
   }
 
+  if (!awaitingSecurityCode && !usernameInput.value) {
+    errMsg.textContent = 'Username required';
+    return;
+  }
+
   btn.disabled = true;
   btn.textContent = 'Checking...';
   errMsg.textContent = '';
@@ -317,8 +335,8 @@ function submitLogin() {
   input.classList.remove('error');
 
   var payload = awaitingSecurityCode
-    ? { password: currentPassword, security_code: inputValue }
-    : { password: inputValue };
+    ? { username: currentUsername, password: currentPassword, security_code: inputValue }
+    : { username: usernameInput.value, password: inputValue };
 
   fetch('/login', {
     method: 'POST',
@@ -336,8 +354,10 @@ function submitLogin() {
       var redirect = response.data.redirect || '/';
       setTimeout(function() { window.location.href = redirect; }, 300);
     } else if (response.status === 202) {
+      currentUsername = usernameInput.value;
       currentPassword = inputValue;
       awaitingSecurityCode = true;
+      usernameInput.disabled = true;
       fieldLabel.textContent = 'Security Code';
       input.type = 'text';
       input.value = '';
@@ -356,13 +376,15 @@ function submitLogin() {
     } else {
       input.value = '';
       input.classList.add('error');
-      errMsg.textContent = response.data.error || (awaitingSecurityCode ? 'Invalid security code' : 'Invalid password');
+      errMsg.textContent = response.data.error || (awaitingSecurityCode ? 'Invalid security code' : 'Invalid credentials');
       btn.disabled = false;
       btn.textContent = 'Unlock';
       input.focus();
-      var warningMsg = awaitingSecurityCode
-        ? '⚠ Incorrect security code. Multiple attempts may lock your account.'
-        : '⚠ Incorrect password. Multiple attempts may lock your account.';
+      if (awaitingSecurityCode) {
+        var warningMsg = '⚠ Incorrect security code. Multiple attempts may lock your account.';
+      } else {
+        var warningMsg = '⚠ Incorrect username or password. Multiple attempts may lock your account.';
+      }
       showSecurityInfo(warningMsg, true);
     }
   }).catch(function(error) {
