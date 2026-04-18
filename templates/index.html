@@ -864,7 +864,197 @@ background: #ff6a3a;
 transform: scale(0.9);
 }
 
-/* Settings Modal */
+/* Calendar Modal Styles */
+.calendar-modal-backdrop {
+display: none;
+position: fixed;
+inset: 0;
+background: rgba(0,0,0,0);
+z-index: 100;
+transition: background 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.calendar-modal-backdrop.visible {
+display: block;
+background: rgba(0,0,0,0.5);
+}
+
+.calendar-modal {
+display: none;
+position: fixed;
+top: 50%;
+left: 50%;
+transform: translate(-50%, -50%);
+background: var(--surface);
+border: 1px solid var(--border);
+border-radius: var(--r);
+z-index: 101;
+box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+width: 90%;
+max-width: 500px;
+max-height: 85vh;
+overflow-y: auto;
+}
+
+.calendar-modal.visible {
+display: block;
+animation: modalSlideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.calendar-modal-header {
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 16px;
+border-bottom: 1px solid var(--border);
+flex-shrink: 0;
+}
+
+.calendar-modal-header h2 {
+font-size: 18px;
+font-weight: 600;
+color: var(--text);
+margin: 0;
+}
+
+.calendar-nav {
+display: flex;
+gap: 8px;
+align-items: center;
+}
+
+.calendar-nav-btn {
+width: 32px;
+height: 32px;
+border: 1px solid var(--border);
+background: var(--surface2);
+border-radius: 50%;
+display: flex;
+align-items: center;
+justify-content: center;
+cursor: pointer;
+color: var(--text);
+transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+will-change: background, transform;
+}
+
+.calendar-nav-btn:hover {
+background: var(--accent);
+color: white;
+transform: scale(1.08);
+}
+
+.calendar-nav-btn:active {
+transform: scale(0.92);
+}
+
+.calendar-month-year {
+font-size: 14px;
+font-weight: 600;
+color: var(--text2);
+min-width: 120px;
+text-align: center;
+}
+
+.calendar-grid {
+display: grid;
+grid-template-columns: repeat(7, 1fr);
+gap: 1px;
+padding: 16px;
+background: var(--border);
+}
+
+.calendar-day-header {
+padding: 8px;
+text-align: center;
+font-size: 12px;
+font-weight: 600;
+color: var(--text2);
+text-transform: uppercase;
+background: var(--surface);
+}
+
+.calendar-day {
+aspect-ratio: 1;
+display: flex;
+flex-direction: column;
+align-items: center;
+justify-content: center;
+padding: 4px;
+background: var(--surface);
+cursor: pointer;
+transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+will-change: background, color;
+position: relative;
+min-height: 50px;
+}
+
+.calendar-day:hover {
+background: var(--surface2);
+}
+
+.calendar-day.other-month {
+color: var(--text3);
+cursor: default;
+}
+
+.calendar-day.today {
+background: var(--accent);
+color: white;
+font-weight: 600;
+}
+
+.calendar-day.has-event::after {
+content: '';
+position: absolute;
+width: 4px;
+height: 4px;
+background: var(--amber);
+border-radius: 50%;
+bottom: 4px;
+}
+
+.calendar-day-num {
+font-size: 13px;
+font-weight: 500;
+}
+
+.calendar-day-events {
+font-size: 10px;
+color: var(--text3);
+margin-top: 2px;
+}
+
+.calendar-events-list {
+padding: 16px;
+border-top: 1px solid var(--border);
+max-height: 300px;
+overflow-y: auto;
+}
+
+.calendar-event-item {
+padding: 12px;
+background: var(--surface2);
+border-left: 3px solid var(--amber);
+border-radius: var(--r-sm);
+margin-bottom: 8px;
+font-size: 13px;
+}
+
+.calendar-event-item:last-child {
+margin-bottom: 0;
+}
+
+.calendar-event-title {
+color: var(--text);
+font-weight: 500;
+}
+
+.calendar-event-time {
+color: var(--text3);
+font-size: 12px;
+margin-top: 4px;
+}
 .settings-modal-backdrop {
 display: none;
 position: fixed;
@@ -1103,7 +1293,7 @@ margin-bottom: 0;
     <button class="sidebar-toggle-btn small" onclick="openSettings()" title="Settings">⚙</button>
   </div>
   <button class="sidebar-toggle-btn active" data-column="1" onclick="toggleSidebarColumn(1)" title="Tasks">✓</button>
-  <button class="sidebar-toggle-btn" data-column="2" onclick="toggleSidebarColumn(2)" title="Calendar">📅</button>
+  <button class="sidebar-toggle-btn" data-column="2" onclick="openCalendarModal()" title="Calendar">📅</button>
   <button class="sidebar-toggle-btn" data-column="3" onclick="toggleSidebarColumn(3)" title="Plan">🎯</button>
   <button class="sidebar-toggle-btn" data-column="4" onclick="toggleSidebarColumn(4)" title="Assignments">📋</button>
 </div>
@@ -1188,6 +1378,22 @@ margin-bottom: 0;
 </div>
 </div>
 </aside>
+
+<!-- Calendar Modal -->
+<div class="calendar-modal-backdrop" id="calendarBackdrop" onclick="closeCalendarModal()"></div>
+<div class="calendar-modal" id="calendarModal">
+  <div class="calendar-modal-header">
+    <h2>Calendar</h2>
+    <div class="calendar-nav">
+      <button class="calendar-nav-btn" onclick="previousMonth()" title="Previous month">←</button>
+      <div class="calendar-month-year" id="calendarMonthYear"></div>
+      <button class="calendar-nav-btn" onclick="nextMonth()" title="Next month">→</button>
+      <button class="calendar-nav-btn" onclick="closeCalendarModal()" title="Close">✕</button>
+    </div>
+  </div>
+  <div class="calendar-grid" id="calendarGrid"></div>
+  <div class="calendar-events-list" id="calendarEventsList"></div>
+</div>
 
 <!-- LEFT COLUMN 2: Calendar & Events -->
 <aside class="sidebar sidebar-col-2" id="sidebarCol2">
@@ -1521,7 +1727,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
 }
 
 async function loadSidebarData() {
-  // Show loading states with smooth skeleton
+  // Show skeleton loaders for each section
   const elements = {
     assignmentsList: document.getElementById('assignmentsList'),
     tasksList: document.getElementById('tasksList'),
@@ -1530,18 +1736,25 @@ async function loadSidebarData() {
     planContent: document.getElementById('planContent')
   };
 
+  const skeletonHTML = `
+    <div class="sidebar-item" style="color: var(--text3); animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;">
+      <div style="height: 16px; background: var(--surface2); border-radius: 4px; margin-bottom: 6px;"></div>
+      <div style="height: 12px; background: var(--surface2); border-radius: 4px; width: 80%;"></div>
+    </div>
+  `;
+
   Object.values(elements).forEach(el => {
-    el.innerHTML = '<div class="sidebar-item" style="color: var(--text3); animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;">⌛ Loading...</div>';
+    el.innerHTML = skeletonHTML + skeletonHTML;
   });
 
-  // Timeout safety: if still loading after 8 seconds, show error
+  // Timeout safety: if still loading after 10 seconds, show error
   const timeoutId = setTimeout(() => {
     Object.entries(elements).forEach(([key, el]) => {
-      if (el.innerHTML.includes('Loading...')) {
-        el.innerHTML = '<div class="sidebar-item" style="color: var(--red);">Connection timeout - please refresh</div>';
+      if (el.innerHTML.includes('pulse')) {
+        el.innerHTML = '<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 20px 0;">No data available</div>';
       }
     });
-  }, 8000);
+  }, 10000);
 
   // Handle each API request individually for progressive rendering
   const dataHandlers = {
@@ -1553,6 +1766,7 @@ async function loadSidebarData() {
         if (!dataChanged(assignmentsCache, newData)) return;
         assignmentsCache = newData;
         renderAssignments();
+        clearTimeout(timeoutId);
       }
     },
     tasks: {
@@ -1600,14 +1814,17 @@ async function loadSidebarData() {
 
   // Fetch each endpoint independently for progressive rendering
   for (const [key, handler] of Object.entries(dataHandlers)) {
-    fetchWithTimeout(handler.url)
+    fetchWithTimeout(handler.url, {}, 5000)
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then(data => {
         handler.processor(data);
       })
       .catch(e => {
         const errorMsg = getErrorMessage(e);
-        document.getElementById(handler.containerId).innerHTML = `<div class="sidebar-item" style="color: var(--red);">${errorMsg}</div>`;
+        const container = document.getElementById(handler.containerId);
+        if (container && container.innerHTML.includes('pulse')) {
+          container.innerHTML = `<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 12px 0; font-size: 12px;">No data</div>`;
+        }
         clearTimeout(timeoutId);
       });
   }
@@ -2316,6 +2533,146 @@ function suggestMessage(text) {
   chatInput.value = text;
   chatInput.focus();
   chatInput.style.height = 'auto';
+}
+
+// Calendar functionality
+let calendarCurrentDate = new Date();
+
+function openCalendarModal() {
+  document.getElementById('calendarModal').classList.add('visible');
+  document.getElementById('calendarBackdrop').classList.add('visible');
+  renderCalendar();
+}
+
+function closeCalendarModal() {
+  const modal = document.getElementById('calendarModal');
+  const backdrop = document.getElementById('calendarBackdrop');
+  modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
+  backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
+  backdrop.style.background = 'rgba(0,0,0,0)';
+  setTimeout(() => {
+    modal.classList.remove('visible');
+    backdrop.classList.remove('visible');
+    modal.style.animation = '';
+  }, 300);
+}
+
+function previousMonth() {
+  calendarCurrentDate.setMonth(calendarCurrentDate.getMonth() - 1);
+  renderCalendar();
+}
+
+function nextMonth() {
+  calendarCurrentDate.setMonth(calendarCurrentDate.getMonth() + 1);
+  renderCalendar();
+}
+
+function renderCalendar() {
+  const year = calendarCurrentDate.getFullYear();
+  const month = calendarCurrentDate.getMonth();
+
+  document.getElementById('calendarMonthYear').textContent =
+    new Date(year, month).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const daysInPrevMonth = new Date(year, month, 0).getDate();
+
+  const grid = document.getElementById('calendarGrid');
+  grid.innerHTML = '';
+
+  // Day headers
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  dayNames.forEach(day => {
+    const header = document.createElement('div');
+    header.className = 'calendar-day-header';
+    header.textContent = day;
+    grid.appendChild(header);
+  });
+
+  // Previous month days
+  for (let i = firstDay - 1; i >= 0; i--) {
+    const day = document.createElement('div');
+    day.className = 'calendar-day other-month';
+    day.textContent = daysInPrevMonth - i;
+    grid.appendChild(day);
+  }
+
+  // Current month days
+  const today = new Date();
+  const isCurrentMonth = today.getFullYear() === year && today.getMonth() === month;
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const day = document.createElement('div');
+    day.className = 'calendar-day';
+
+    const currentDate = new Date(year, month, d);
+    const eventsOnDay = calendarCache.filter(e => {
+      const eventDate = new Date(e.start_iso);
+      return eventDate.getDate() === d &&
+             eventDate.getMonth() === month &&
+             eventDate.getFullYear() === year;
+    });
+
+    if (isCurrentMonth && d === today.getDate()) {
+      day.classList.add('today');
+    }
+
+    if (eventsOnDay.length > 0) {
+      day.classList.add('has-event');
+    }
+
+    day.innerHTML = `<div class="calendar-day-num">${d}</div>`;
+    day.style.cursor = 'pointer';
+    day.onclick = () => showCalendarEvents(d, month, year, eventsOnDay);
+    grid.appendChild(day);
+  }
+
+  // Next month days
+  const totalCells = grid.children.length - 7; // subtract day headers
+  const remainingCells = 42 - totalCells; // 6 rows × 7 days
+  for (let i = 1; i <= remainingCells; i++) {
+    const day = document.createElement('div');
+    day.className = 'calendar-day other-month';
+    day.textContent = i;
+    grid.appendChild(day);
+  }
+
+  // Show today's events by default
+  const todayEvents = calendarCache.filter(e => {
+    const eventDate = new Date(e.start_iso);
+    return eventDate.getDate() === today.getDate() &&
+           eventDate.getMonth() === today.getMonth() &&
+           eventDate.getFullYear() === today.getFullYear();
+  });
+  showCalendarEvents(today.getDate(), today.getMonth(), today.getFullYear(), todayEvents);
+}
+
+function showCalendarEvents(day, month, year, events) {
+  const eventsList = document.getElementById('calendarEventsList');
+  const dateStr = new Date(year, month, day).toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric'
+  });
+
+  if (events.length === 0) {
+    eventsList.innerHTML = `<div style="text-align: center; color: var(--text3); padding: 20px;">No events on ${dateStr}</div>`;
+    return;
+  }
+
+  const sorted = events.sort((a, b) => new Date(a.start_iso) - new Date(b.start_iso));
+  eventsList.innerHTML = `<div style="font-size: 12px; color: var(--text2); margin-bottom: 12px; font-weight: 600;">${dateStr}</div>` +
+    sorted.map(e => {
+      const eventDate = new Date(e.start_iso);
+      const timeStr = eventDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      return `
+        <div class="calendar-event-item">
+          <div class="calendar-event-title">📅 ${escapeHtml(e.title)}</div>
+          <div class="calendar-event-time">${timeStr}</div>
+        </div>
+      `;
+    }).join('');
 }
 
 window.addEventListener('resize', () => {
