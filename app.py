@@ -2899,14 +2899,6 @@ def api_task_suggestions():
             cal = fetch_ical(CANVAS_ICAL_URL)
             if cal:
                 assignments = parse_canvas_assignments(cal)
-                # Filter out completed assignments
-                conn = get_db()
-                cur = conn.cursor()
-                cur.execute("SELECT DISTINCT assignment_title FROM completions")
-                completed_titles = set(r["assignment_title"] for r in cur.fetchall())
-                assignments = [a for a in assignments if a["title"] not in completed_titles]
-                cur.close()
-                conn.close()
         except Exception as e:
             log.warning(f"Could not fetch assignments for suggestions: {e}")
 
@@ -2919,17 +2911,27 @@ def api_task_suggestions():
         except Exception as e:
             log.warning(f"Could not fetch calendar events for suggestions: {e}")
 
-        # Get existing tasks to avoid duplicates
+        # Get existing tasks and filter completed assignments
         existing_task_titles = set()
+        completed_titles = set()
+        conn = None
         try:
             conn = get_db()
             cur = conn.cursor()
+            # Filter out completed assignments
+            cur.execute("SELECT DISTINCT assignment_title FROM completions")
+            completed_titles = set(r["assignment_title"] for r in cur.fetchall())
+            # Get existing tasks to avoid duplicates
             cur.execute("SELECT title FROM tasks WHERE completed = FALSE")
             existing_task_titles = set(r["title"] for r in cur.fetchall())
             cur.close()
-            conn.close()
         except Exception as e:
-            log.warning(f"Could not fetch existing tasks: {e}")
+            log.warning(f"Could not fetch data from database: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+        assignments = [a for a in assignments if a["title"] not in completed_titles]
 
         # Build context for Claude
         asgn_text = "; ".join(

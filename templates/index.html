@@ -2691,7 +2691,7 @@ You have access to the user's assignments, tasks, projects, and calendar. Use th
     const assistantMessage = data.content || 'Sorry, I encountered an error.';
 
     // Check for task creation action in response
-    const taskActionMatch = assistantMessage.match(/\[TASK_ACTION:\s*({.*?})\]/s);
+    const taskActionMatch = assistantMessage.match(/\[TASK_ACTION:\s*({.*})\]/s);
     let displayMessage = assistantMessage;
 
     if (taskActionMatch) {
@@ -2817,7 +2817,7 @@ function displayTaskSuggestions(suggestions) {
           <em>${escapeHtml(sugg.title)}</em> ${urgencyEmoji} ${dueDateStr}
         </div>
         <div style="display: flex; gap: 8px;">
-          <button onclick="acceptTaskSuggestion(${JSON.stringify(sugg).replace(/"/g, '&quot;')}, '${suggestionId}')"
+          <button onclick="acceptTaskSuggestion(${JSON.stringify(sugg).replace(/"/g, '&quot;').replace(/`/g, '\\`')}, '${suggestionId}')"
                   style="background: var(--green); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
             ✓ Create Task
           </button>
