@@ -626,14 +626,15 @@ function editIPName(ip, currentName) {
     return;
   }
 
-  fetch('/api/admin/block-ip', {
+  fetch('/api/admin/track-ip-name', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
-    body: JSON.stringify({ ip_address: ip, ip_name: newName.trim(), reason: '' })
+    body: JSON.stringify({ ip_address: ip, ip_name: newName.trim() })
   }).then(r => r.json())
     .then(data => {
-      if (data.status === 'blocked') {
+      if (data.status === 'tracked') {
+        loadLoginAttempts();
         loadBlockedIPs();
       } else {
         alert('Error: ' + (data.error || 'Failed to update IP name'));

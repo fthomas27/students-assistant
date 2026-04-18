@@ -1138,9 +1138,20 @@ def timer_response(row):
 _login_lock = threading.Lock()
 
 def get_client_ip():
-    """Get client IP address, accounting for proxies."""
+    """Get client IP address, accounting for proxies. Checks multiple headers."""
+    # Check X-Forwarded-For (most common)
     if request.headers.get('X-Forwarded-For'):
         return request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    # Check X-Real-IP (nginx)
+    if request.headers.get('X-Real-IP'):
+        return request.headers.get('X-Real-IP').strip()
+    # Check CF-Connecting-IP (Cloudflare)
+    if request.headers.get('CF-Connecting-IP'):
+        return request.headers.get('CF-Connecting-IP').strip()
+    # Check True-Client-IP (Cloudflare Enterprise)
+    if request.headers.get('True-Client-IP'):
+        return request.headers.get('True-Client-IP').strip()
+    # Fallback to direct connection
     return request.remote_addr or 'unknown'
 
 def is_ip_locked(ip_addr):
@@ -1281,6 +1292,26 @@ def unblock_ip(ip_addr):
         return True
     except Exception as e:
         log.warning(f"Error unblocking IP: {e}")
+    return False
+
+def track_ip_name(ip_addr, ip_name=""):
+    """Track/name an IP for monitoring without blocking it."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        # Insert or update only the ip_name, don't create a block entry if one doesn't exist
+        cur.execute("""
+INSERT INTO blocked_ips (ip_address, ip_name, blocked_by, reason)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (ip_address) DO UPDATE SET ip_name = %s""",
+                    (ip_addr, ip_name, "tracking", "", ip_name))
+        conn.commit()
+        cur.close()
+        conn.close()
+        log.info(f"Tracked IP name: {ip_addr} -> {ip_name}")
+        return True
+    except Exception as e:
+        log.warning(f"Error tracking IP name: {e}")
     return False
 
 def is_app_locked_down():
@@ -1773,6 +1804,29 @@ def api_admin_unblock_ip():
             return jsonify({"error": "Failed to unblock IP"}), 500
     except Exception as e:
         log.exception("Error unblocking IP")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/track-ip-name", methods=["POST"])
+def api_admin_track_ip_name():
+    """Track/name an IP for monitoring without blocking it."""
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        data = request.get_json(force=True) or {}
+        ip_addr = data.get("ip_address", "").strip()
+        ip_name = data.get("ip_name", "").strip()
+
+        if not ip_addr:
+            return jsonify({"error": "IP address required"}), 400
+
+        if track_ip_name(ip_addr, ip_name):
+            return jsonify({"status": "tracked", "ip": ip_addr, "name": ip_name})
+        else:
+            return jsonify({"error": "Failed to track IP name"}), 500
+    except Exception as e:
+        log.exception("Error tracking IP name")
         return jsonify({"error": str(e)}), 500
 
 
