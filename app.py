@@ -410,10 +410,17 @@ CREATE TABLE IF NOT EXISTS lockdown_state (
 CREATE TABLE IF NOT EXISTS blocked_ips (
     id SERIAL PRIMARY KEY,
     ip_address TEXT UNIQUE NOT NULL,
+    ip_name TEXT DEFAULT '',
     blocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     blocked_by TEXT NOT NULL DEFAULT 'admin',
     reason TEXT DEFAULT ''
 )""")
+
+    # Add ip_name column if it doesn't exist (for existing databases)
+    try:
+        cur.execute("ALTER TABLE blocked_ips ADD COLUMN ip_name TEXT DEFAULT ''")
+    except:
+        pass
 
     defaults = {
         "name": "Finn",
@@ -1200,7 +1207,7 @@ def get_blocked_ips():
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT ip_address, blocked_at, reason FROM blocked_ips ORDER BY blocked_at DESC")
+        cur.execute("SELECT ip_address, ip_name, blocked_at, reason FROM blocked_ips ORDER BY blocked_at DESC")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -1209,15 +1216,15 @@ def get_blocked_ips():
         log.warning(f"Error getting blocked IPs: {e}")
     return []
 
-def block_ip(ip_addr, reason=""):
+def block_ip(ip_addr, reason="", ip_name=""):
     """Add IP to blocklist."""
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-INSERT INTO blocked_ips (ip_address, blocked_by, reason)
-VALUES (%s, %s, %s)
-ON CONFLICT (ip_address) DO UPDATE SET reason = %s""", (ip_addr, "admin", reason, reason))
+INSERT INTO blocked_ips (ip_address, ip_name, blocked_by, reason)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (ip_address) DO UPDATE SET ip_name = %s, reason = %s""", (ip_addr, ip_name, "admin", reason, ip_name, reason))
         conn.commit()
         cur.close()
         conn.close()
@@ -1682,7 +1689,7 @@ def api_admin_blocked_ips():
     try:
         blocked = get_blocked_ips()
         return jsonify({
-            "blocked_ips": [{"ip": row["ip_address"], "blocked_at": row["blocked_at"].isoformat() if row["blocked_at"] else None, "reason": row["reason"]} for row in blocked]
+            "blocked_ips": [{"ip": row["ip_address"], "name": row["ip_name"], "blocked_at": row["blocked_at"].isoformat() if row["blocked_at"] else None, "reason": row["reason"]} for row in blocked]
         })
     except Exception as e:
         log.exception("Error getting blocked IPs")
@@ -1698,11 +1705,12 @@ def api_admin_block_ip():
         data = request.get_json(force=True) or {}
         ip_addr = data.get("ip_address", "").strip()
         reason = data.get("reason", "").strip()
+        ip_name = data.get("ip_name", "").strip()
 
         if not ip_addr:
             return jsonify({"error": "IP address required"}), 400
 
-        if block_ip(ip_addr, reason):
+        if block_ip(ip_addr, reason, ip_name):
             return jsonify({"status": "blocked", "ip": ip_addr})
         else:
             return jsonify({"error": "Failed to block IP"}), 500
