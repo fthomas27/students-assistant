@@ -394,6 +394,15 @@ CREATE TABLE IF NOT EXISTS lockdown_state (
     CHECK (id = 1)
 )""")
 
+    cur.execute("""
+CREATE TABLE IF NOT EXISTS blocked_ips (
+    id SERIAL PRIMARY KEY,
+    ip_address TEXT UNIQUE NOT NULL,
+    blocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    blocked_by TEXT NOT NULL DEFAULT 'admin',
+    reason TEXT DEFAULT ''
+)""")
+
     defaults = {
         "name": "Finn",
         "morning_briefing_time": "07:00",
@@ -1158,6 +1167,67 @@ def get_lockout_info(ip_addr):
         log.warning(f"Error getting lockout info: {e}")
     return 0
 
+def is_ip_blocked(ip_addr):
+    """Check if IP address is in the blocklist."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM blocked_ips WHERE ip_address = %s", (ip_addr,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row is not None
+    except Exception as e:
+        log.warning(f"Error checking if IP is blocked: {e}")
+    return False
+
+def get_blocked_ips():
+    """Get list of all blocked IPs."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT ip_address, blocked_at, reason FROM blocked_ips ORDER BY blocked_at DESC")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows or []
+    except Exception as e:
+        log.warning(f"Error getting blocked IPs: {e}")
+    return []
+
+def block_ip(ip_addr, reason=""):
+    """Add IP to blocklist."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+INSERT INTO blocked_ips (ip_address, blocked_by, reason)
+VALUES (%s, %s, %s)
+ON CONFLICT (ip_address) DO UPDATE SET reason = %s""", (ip_addr, "admin", reason, reason))
+        conn.commit()
+        cur.close()
+        conn.close()
+        log.info(f"Blocked IP: {ip_addr}")
+        return True
+    except Exception as e:
+        log.warning(f"Error blocking IP: {e}")
+    return False
+
+def unblock_ip(ip_addr):
+    """Remove IP from blocklist."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM blocked_ips WHERE ip_address = %s", (ip_addr,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        log.info(f"Unblocked IP: {ip_addr}")
+        return True
+    except Exception as e:
+        log.warning(f"Error unblocking IP: {e}")
+    return False
+
 def is_app_locked_down():
     try:
         conn = get_db()
@@ -1223,9 +1293,17 @@ def login():
     password = data.get("password")
     security_code = data.get("security_code")
     is_locked_down = is_app_locked_down()
+    ip_is_blocked = is_ip_blocked(ip_addr)
 
     if not username:
         return jsonify({"error": "Username required"}), 400
+
+    if ip_is_blocked and not security_code:
+        return jsonify({
+            "error": "This IP address is blocked. Please provide security code to access.",
+            "ip_blocked": True,
+            "message": "System requires security code for this IP"
+        }), 202
 
     if password and not security_code:
         is_admin = username == ADMIN_USER
@@ -1507,7 +1585,11 @@ def api_admin_claude_usage():
                 max_tokens=1,
                 messages=[{"role": "user", "content": "test"}]
             )
-        except Exception:
+            if hasattr(resp, 'usage'):
+                global _api_usage_cache
+                _api_usage_cache["tokens_used"] = _api_usage_cache.get("tokens_used", 0) + (resp.usage.input_tokens + resp.usage.output_tokens)
+        except Exception as e:
+            log.warning(f"Error making test API call for usage: {e}")
             pass
 
         global _api_usage_cache
@@ -1585,6 +1667,64 @@ def api_admin_lockdown():
         })
     except Exception as e:
         log.exception("Error toggling lockdown")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/blocked-ips")
+def api_admin_blocked_ips():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        blocked = get_blocked_ips()
+        return jsonify({
+            "blocked_ips": [{"ip": row["ip_address"], "blocked_at": row["blocked_at"].isoformat() if row["blocked_at"] else None, "reason": row["reason"]} for row in blocked]
+        })
+    except Exception as e:
+        log.exception("Error getting blocked IPs")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/block-ip", methods=["POST"])
+def api_admin_block_ip():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        data = request.get_json(force=True) or {}
+        ip_addr = data.get("ip_address", "").strip()
+        reason = data.get("reason", "").strip()
+
+        if not ip_addr:
+            return jsonify({"error": "IP address required"}), 400
+
+        if block_ip(ip_addr, reason):
+            return jsonify({"status": "blocked", "ip": ip_addr})
+        else:
+            return jsonify({"error": "Failed to block IP"}), 500
+    except Exception as e:
+        log.exception("Error blocking IP")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/unblock-ip", methods=["POST"])
+def api_admin_unblock_ip():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    try:
+        data = request.get_json(force=True) or {}
+        ip_addr = data.get("ip_address", "").strip()
+
+        if not ip_addr:
+            return jsonify({"error": "IP address required"}), 400
+
+        if unblock_ip(ip_addr):
+            return jsonify({"status": "unblocked", "ip": ip_addr})
+        else:
+            return jsonify({"error": "Failed to unblock IP"}), 500
+    except Exception as e:
+        log.exception("Error unblocking IP")
         return jsonify({"error": str(e)}), 500
 
 

@@ -348,6 +348,31 @@ color: var(--text);
       </div>
     </div>
   </div>
+
+  <div class="section">
+    <div class="section-title">🚫 Blocked IP Addresses</div>
+    <div style="display: flex; gap: 12px; margin-bottom: 20px;">
+      <input type="text" id="block-ip-input" placeholder="IP address (e.g., 192.168.1.1)" style="flex: 1; padding: 12px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; color: var(--text);">
+      <input type="text" id="block-reason-input" placeholder="Reason (optional)" style="flex: 1; padding: 12px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; color: var(--text);">
+      <button onclick="blockIP()" style="padding: 12px 24px; background: var(--accent); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Block IP</button>
+    </div>
+
+    <div class="table-container">
+      <table id="blocked-ips-table">
+        <thead>
+          <tr>
+            <th>IP Address</th>
+            <th>Reason</th>
+            <th>Blocked At</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="blocked-ips-tbody">
+          <tr><td colspan="4" class="empty-state">No blocked IPs</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -499,15 +524,95 @@ function toggleLockdown() {
     .catch(e => { console.error(e); alert('Error toggling lockdown'); });
 }
 
+function loadBlockedIPs() {
+  fetch('/api/admin/blocked-ips', { credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(data => {
+      var tbody = document.getElementById('blocked-ips-tbody');
+      tbody.innerHTML = '';
+
+      if (!data.blocked_ips || data.blocked_ips.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No blocked IPs</td></tr>';
+        return;
+      }
+
+      data.blocked_ips.forEach(item => {
+        var row = document.createElement('tr');
+        row.innerHTML = `
+          <td class="ip-address">${item.ip}</td>
+          <td>${item.reason || '-'}</td>
+          <td class="timestamp">${formatDate(item.blocked_at)}</td>
+          <td><button onclick="unblockIP('${item.ip}')" style="padding: 6px 12px; background: var(--red); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Unblock</button></td>
+        `;
+        tbody.appendChild(row);
+      });
+    })
+    .catch(e => { console.error(e); });
+}
+
+function blockIP() {
+  var ipInput = document.getElementById('block-ip-input');
+  var reasonInput = document.getElementById('block-reason-input');
+  var ip = ipInput.value.trim();
+  var reason = reasonInput.value.trim();
+
+  if (!ip) {
+    alert('Please enter an IP address');
+    return;
+  }
+
+  fetch('/api/admin/block-ip', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ ip_address: ip, reason: reason })
+  }).then(r => r.json())
+    .then(data => {
+      if (data.status === 'blocked') {
+        alert('✓ IP ' + ip + ' has been blocked');
+        ipInput.value = '';
+        reasonInput.value = '';
+        loadBlockedIPs();
+      } else {
+        alert('Error: ' + (data.error || 'Failed to block IP'));
+      }
+    })
+    .catch(e => { console.error(e); alert('Error blocking IP'); });
+}
+
+function unblockIP(ip) {
+  if (!confirm('Are you sure you want to unblock ' + ip + '?')) {
+    return;
+  }
+
+  fetch('/api/admin/unblock-ip', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ ip_address: ip })
+  }).then(r => r.json())
+    .then(data => {
+      if (data.status === 'unblocked') {
+        alert('✓ IP ' + ip + ' has been unblocked');
+        loadBlockedIPs();
+      } else {
+        alert('Error: ' + (data.error || 'Failed to unblock IP'));
+      }
+    })
+    .catch(e => { console.error(e); alert('Error unblocking IP'); });
+}
+
 loadLoginAttempts();
 loadSuspiciousActivity();
 loadClaudeUsage();
+loadBlockedIPs();
 loadLockdownStatus();
 
 setInterval(loadLoginAttempts, 30000);
 setInterval(loadSuspiciousActivity, 30000);
 setInterval(loadClaudeUsage, 60000);
 setInterval(loadLockdownStatus, 10000);
+setInterval(loadBlockedIPs, 60000);
 </script>
 
 </body>
