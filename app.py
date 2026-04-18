@@ -1283,11 +1283,16 @@ def debug_security_code():
     """Debug endpoint - shows security code status (no auth required)"""
     security_code = os.environ.get("SECURITY_CODE", "")
     lockdown = is_app_locked_down()
+    # Show all env vars that contain 'SECURITY' or 'CODE'
+    all_vars = {k: v for k, v in os.environ.items() if 'SECURITY' in k or 'CODE' in k}
     return jsonify({
         "security_code_set": bool(security_code),
         "security_code_length": len(security_code),
         "security_code_value": security_code if security_code else "NOT_SET",
-        "system_locked_down": lockdown
+        "system_locked_down": lockdown,
+        "all_matching_vars": all_vars,
+        "security_code_from_os_environ": os.environ.get("SECURITY_CODE"),
+        "debug_info": "Check if SECURITY_CODE env var exists"
     })
 
 
