@@ -1247,6 +1247,13 @@ def login():
     if password and security_code:
         if is_locked_down:
             security_code_env = os.environ.get("SECURITY_CODE", "").strip()
+            if not security_code_env:
+                log.error("SECURITY_CODE environment variable not set!")
+                return jsonify({"error": "Security code not configured on server"}), 500
+            import hashlib
+            sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
+            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
+            log.info(f"App security code check: received_hash={sc_hash}, env_hash={env_hash}, env_len={len(security_code_env)}, received_len={len(security_code.strip())}, match={security_code.strip() == security_code_env}, pwd_match={password.strip() == APP_PASSWORD}")
             if password.strip() == APP_PASSWORD and security_code.strip() == security_code_env:
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
@@ -1359,6 +1366,9 @@ def admin():
     if password and security_code:
         if is_locked_down:
             security_code_env = os.environ.get("SECURITY_CODE", "").strip()
+            if not security_code_env:
+                log.error("SECURITY_CODE environment variable not set!")
+                return jsonify({"error": "Security code not configured on server"}), 500
             import hashlib
             sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
             env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
