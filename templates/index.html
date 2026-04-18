@@ -347,13 +347,16 @@ transform: rotate(-90deg);
 .section-content {
 max-height: none;
 overflow-y: auto;
-transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+opacity: 1;
+visibility: visible;
+transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), visibility 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 padding: 0 8px;
 -webkit-overflow-scrolling: touch;
 }
 
 .section-content.collapsed {
-display: none;
+opacity: 0;
+visibility: hidden;
 padding: 0 8px;
 }
 
@@ -1960,15 +1963,12 @@ async function loadSidebarData() {
         handler.processor(data);
       })
       .catch(e => {
-        console.warn(`Failed to load ${key}:`, e);
+        console.error(`Failed to load ${key}:`, e.message || e);
         const container = document.getElementById(handler.containerId);
         if (container && container.innerHTML.includes('pulse')) {
-          // Call the render function to show the default empty state
-          if (key === 'tasks') renderTasks();
-          else if (key === 'projects') renderProjects();
-          else if (key === 'assignments') renderAssignments();
-          else if (key === 'calendar') renderCalendar();
-          else if (key === 'plan') renderPlan({ items: [] });
+          // Show error message for debugging
+          const errorMsg = e.name === 'AbortError' ? 'Request timeout' : e.message || 'Failed to load';
+          container.innerHTML = `<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 12px 0; font-size: 11px;">${errorMsg}</div>`;
         }
       });
   }
@@ -2914,7 +2914,10 @@ window.addEventListener('resize', () => {
 });
 
 loadSidebarData();
-setInterval(loadSidebarData, 30000);
+// Reload sidebar data every 60 seconds with better error handling
+setInterval(() => {
+  loadSidebarData().catch(e => console.error('Sidebar reload failed:', e));
+}, 60000);
 
 // Restore last chat if available
 const lastChat = JSON.parse(localStorage.getItem('chatHistories') || '[]')[0];
