@@ -57,14 +57,15 @@ _briefing_lock = threading.Lock()
 
 @app.before_request
 def require_auth():
-    if request.path in ('/login', '/logout', '/admin'):
+    path = request.path.rstrip('/')
+    if path in ('/login', '/logout', '/admin'):
         return None
-    if request.path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
+    if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
         return None
-    if request.path.startswith('/api/admin/'):
+    if path.startswith('/api/admin/'):
         return None
     if not session.get("authenticated"):
-        if request.path.startswith('/api/'):
+        if path.startswith('/api/'):
             return jsonify({"error": "Not authenticated"}), 401
         return redirect("/login")
 
