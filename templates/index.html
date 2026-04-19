@@ -2205,6 +2205,10 @@ function editTask(taskId) {
         <option value="low" ${task.urgency === 'low' ? 'selected' : ''}>● Low</option>
       </select>
     </div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Due Date</label>
+      <input id="editDueDate" type="date" value="${task.due_date || ''}" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+    </div>
     <div style="margin-bottom: 16px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Notes</label>
       <textarea id="editNotes" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 80px; font-family: inherit;">${escapeHtml(task.notes)}</textarea>
@@ -2236,6 +2240,7 @@ function closeEditModal() {
 async function saveTaskEdit(taskId) {
   const newTitle = document.getElementById('editTitle').value.trim();
   const newUrgency = document.getElementById('editUrgency').value;
+  const newDueDate = document.getElementById('editDueDate').value || null;
   const newNotes = document.getElementById('editNotes').value.trim();
 
   if (!newTitle) {
@@ -2250,6 +2255,7 @@ async function saveTaskEdit(taskId) {
       body: JSON.stringify({
         title: newTitle,
         urgency: newUrgency,
+        due_date: newDueDate,
         notes: newNotes
       })
     });
@@ -2259,6 +2265,7 @@ async function saveTaskEdit(taskId) {
       if (task) {
         task.title = newTitle;
         task.urgency = newUrgency;
+        task.due_date = newDueDate;
         task.notes = newNotes;
         renderTasks();
       }
