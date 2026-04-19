@@ -2353,64 +2353,50 @@ function renderProjects() {
   updateSidebarStats();
 }
 
-async function viewProject(title, description) {
-  try {
-    const project = projectsCache.find(p => p.title === title);
-    if (!project) {
-      console.warn('Project not found:', title);
-      const messagesDiv = document.getElementById('chatMessages');
-      if (messagesDiv && messagesDiv.querySelector('.empty-state')) {
-        messagesDiv.innerHTML = '';
-      }
-      const bubble = document.createElement('div');
-      bubble.className = 'message assistant';
-      bubble.innerHTML = `<div class="message-bubble"><strong>${escapeHtml(title)}</strong><br/>${description ? escapeHtml(description) : 'No description available'}</div>`;
-      if (messagesDiv) messagesDiv.appendChild(bubble);
-      if (messagesDiv) messagesDiv.scrollTop = messagesDiv.scrollHeight;
-      return;
+function viewProject(title, description) {
+  const project = projectsCache.find(p => p.title === title);
+  if (!project) {
+    const messagesDiv = document.getElementById('chatMessages');
+    if (messagesDiv && messagesDiv.querySelector('.empty-state')) {
+      messagesDiv.innerHTML = '';
     }
-
-    const modal = document.getElementById('projectDetailsModal');
-    if (!modal) {
-      console.error('Project modal not found in DOM');
-      return;
+    const bubble = document.createElement('div');
+    bubble.className = 'message assistant';
+    bubble.innerHTML = `<div class="message-bubble"><strong>${escapeHtml(title)}</strong><br/>${description ? escapeHtml(description) : 'No description available'}</div>`;
+    if (messagesDiv) {
+      messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
-
-    if (modal.classList.contains('visible') && parseInt(modal.dataset.projectId) === project.id) {
-      closeProjectDetailsModal();
-    } else {
-      await openProjectDetailsModal(project.id);
-    }
-  } catch (e) {
-    console.error('Error in viewProject:', e);
-    alert('Error opening project: ' + e.message);
+    return;
   }
+  openProjectDetailsModal(project.id);
 }
 
 async function openProjectDetailsModal(projectId) {
   try {
+    const modal = document.getElementById('projectDetailsModal');
+    const backdrop = document.getElementById('projectDetailsBackdrop');
+
+    modal.classList.add('visible');
+    backdrop.classList.add('visible');
+
     const project = projectsCache.find(p => p.id === projectId);
     if (!project) {
-      throw new Error('Project not found in cache: ' + projectId);
+      modal.classList.remove('visible');
+      backdrop.classList.remove('visible');
+      alert('Project not found');
+      return;
     }
+
+    document.getElementById('projectDetailsTitle').textContent = project.title || 'Project';
 
     const [notesRes, tasksRes] = await Promise.all([
       fetch(`/api/projects/${projectId}/notes`),
       fetch(`/api/projects/${projectId}/tasks`)
     ]);
 
-    if (!notesRes.ok || !tasksRes.ok) {
-      throw new Error(`API error: notes=${notesRes.status}, tasks=${tasksRes.status}`);
-    }
-
-    const [notes, tasks] = await Promise.all([
-      notesRes.json(),
-      tasksRes.json()
-    ]);
-
-    const titleEl = document.getElementById('projectDetailsTitle');
-    if (!titleEl) throw new Error('projectDetailsTitle element not found');
-    titleEl.textContent = escapeHtml(project.title);
+    const notes = await notesRes.json();
+    const tasks = await tasksRes.json();
 
     let html = `
       ${project.description ? `<div style="color: var(--text2); margin-bottom: 16px;">${escapeHtml(project.description)}</div>` : ''}
