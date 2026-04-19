@@ -4,6 +4,7 @@ import logging
 import threading
 import socket
 import json
+import ipaddress
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
@@ -13,12 +14,14 @@ from psycopg2 import sql as pgsql
 import requests
 from functools import wraps
 from flask import Flask, request, jsonify, render_template, session, redirect
+from werkzeug.middleware.proxy_fix import ProxyFix
 from icalendar import Calendar
 import recurring_ical_events
 from apscheduler.schedulers.background import BackgroundScheduler
 import anthropic
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 app.secret_key = os.environ.get("SECRET_KEY", "finn-dashboard-secret-change-me")
 app.permanent_session_lifetime = timedelta(days=30)
 
@@ -421,6 +424,13 @@ CREATE TABLE IF NOT EXISTS blocked_ips (
         cur.execute("ALTER TABLE blocked_ips ADD COLUMN ip_name TEXT DEFAULT ''")
     except:
         pass
+
+    cur.execute("""
+CREATE TABLE IF NOT EXISTS ip_names (
+    ip_address TEXT PRIMARY KEY,
+    ip_name TEXT NOT NULL,
+    tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)""")
 
     defaults = {
         "name": "Jarvis",
@@ -1138,21 +1148,15 @@ def timer_response(row):
 _login_lock = threading.Lock()
 
 def get_client_ip():
-    """Get client IP address, accounting for proxies. Checks multiple headers."""
-    # Check X-Forwarded-For (most common)
-    if request.headers.get('X-Forwarded-For'):
-        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
-    # Check X-Real-IP (nginx)
-    if request.headers.get('X-Real-IP'):
-        return request.headers.get('X-Real-IP').strip()
-    # Check CF-Connecting-IP (Cloudflare)
-    if request.headers.get('CF-Connecting-IP'):
-        return request.headers.get('CF-Connecting-IP').strip()
-    # Check True-Client-IP (Cloudflare Enterprise)
-    if request.headers.get('True-Client-IP'):
-        return request.headers.get('True-Client-IP').strip()
-    # Fallback to direct connection
-    return request.remote_addr or 'unknown'
+    """Get validated client IP address. ProxyFix middleware handles reverse proxy headers."""
+    ip = request.remote_addr or 'unknown'
+    if ip != 'unknown':
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            log.warning(f"Invalid IP format detected from request: {ip}")
+            ip = 'unknown'
+    return ip
 
 def is_ip_locked(ip_addr):
     """Check if IP is currently locked out."""
@@ -1295,16 +1299,15 @@ def unblock_ip(ip_addr):
     return False
 
 def track_ip_name(ip_addr, ip_name=""):
-    """Track/name an IP for monitoring without blocking it."""
+    """Track/name an IP for monitoring without blocking it. Uses separate ip_names table."""
     try:
         conn = get_db()
         cur = conn.cursor()
-        # Insert or update only the ip_name, don't create a block entry if one doesn't exist
         cur.execute("""
-INSERT INTO blocked_ips (ip_address, ip_name, blocked_by, reason)
-VALUES (%s, %s, %s, %s)
+INSERT INTO ip_names (ip_address, ip_name)
+VALUES (%s, %s)
 ON CONFLICT (ip_address) DO UPDATE SET ip_name = %s""",
-                    (ip_addr, ip_name, "tracking", "", ip_name))
+                    (ip_addr, ip_name, ip_name))
         conn.commit()
         cur.close()
         conn.close()
@@ -1598,9 +1601,9 @@ def api_admin_login_attempts():
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, COALESCE(bi.ip_name, '') as ip_name
+SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, COALESCE(iname.ip_name, '') as ip_name
 FROM login_attempts la
-LEFT JOIN blocked_ips bi ON la.ip_address = bi.ip_address
+LEFT JOIN ip_names iname ON la.ip_address = iname.ip_address
 ORDER BY la.attempted_at DESC LIMIT 200""")
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
