@@ -93,7 +93,6 @@ def require_auth():
             return jsonify({"error": "Not authenticated"}), 401
         return redirect("/login")
 
-_timer_lock = threading.Lock()
 _workout_lock = threading.Lock()
 _plan_lock = threading.Lock()
 
@@ -1126,49 +1125,6 @@ def schedule_briefing():
     log.info("Recurring tasks processor scheduled for 00:00 Mountain")
 
 
-def get_timer_state_row():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM timer_state WHERE id = 1")
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return dict(row) if row else {}
-
-
-def get_timer_elapsed(row):
-    accumulated = float(row.get("accumulated_seconds") or 0)
-    if row.get("active") and row.get("started_at") and not row.get("paused_at"):
-        started = row["started_at"]
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=ZoneInfo("UTC"))
-        delta = datetime.now(ZoneInfo("UTC")) - started
-        accumulated += delta.total_seconds()
-    return accumulated
-
-
-def timer_response(row):
-    elapsed = get_timer_elapsed(row)
-    elapsed_min = elapsed / 60.0
-    estimate = float(row.get("estimate_minutes") or 30)
-    cfg = get_config()
-    try:
-        multiplier = float(cfg.get("timer_cutoff_multiplier", "2.0"))
-    except Exception:
-        multiplier = 2.0
-    cutoff_min = estimate * multiplier
-    return {
-        "active": bool(row.get("active")),
-        "paused": bool(row.get("paused_at")),
-        "assignment_uid": row.get("assignment_uid", ""),
-        "assignment_title": row.get("assignment_title", ""),
-        "class_name": row.get("class_name", ""),
-        "estimate_minutes": estimate,
-        "elapsed_minutes": round(elapsed_min, 2),
-        "cutoff_minutes": round(cutoff_min, 2),
-        "over_estimate": elapsed_min > estimate,
-        "over_cutoff": elapsed_min > cutoff_min
-    }
 # ── Security Functions ──────────────────────────────────────────────────────────
 
 _login_lock = threading.Lock()
@@ -2000,45 +1956,75 @@ def api_calendar():
     start = time.time()
     days = int(request.args.get("days", 30))
     events = []
-    # Personal calendar
-    t1 = time.time()
-    cal = fetch_ical(PERSONAL_ICAL_URL)
-    log.info(f"/api/calendar: fetch personal took {time.time()-t1:.2f}s")
-    if cal:
-        for e in parse_calendar_events(cal, days_ahead=days):
-            e["source"] = "personal"
-            events.append(e)
-    # Sports calendar
-    t1b = time.time()
-    cal_sports = fetch_ical(SPORTS_ICAL_URL)
-    log.info(f"/api/calendar: fetch sports took {time.time()-t1b:.2f}s")
-    if cal_sports:
-        for e in parse_calendar_events(cal_sports, days_ahead=days):
-            e["source"] = "sports"
-            events.append(e)
-    # Canvas assignments as calendar events
-    t2 = time.time()
-    cal2 = fetch_ical(CANVAS_ICAL_URL)
-    log.info(f"/api/calendar: fetch canvas took {time.time()-t2:.2f}s")
-    if cal2:
-        for a in parse_canvas_assignments(cal2):
-            events.append({
-                "title": a["title"],
-                "start_display": a["due_display"],
-                "end_display": "",
-                "start_iso": a["due_iso"],
-                "date": a["due_iso"][:10],
-                "all_day": False,
-                "source": "canvas",
-                "urgency": a["urgency"],
-                "class_name": a["class_name"]
-            })
-    # Day-specific calendar (red or white day)
-    t3 = time.time()
     today = datetime.now(TZ).date()
-    events.extend(fetch_day_calendar_events(today, days_ahead=days))
-    log.info(f"/api/calendar: fetch day calendar took {time.time()-t3:.2f}s")
-    events.sort(key=lambda x: x["start_iso"])
+
+    def fetch_source(name, url, parser):
+        """Helper to fetch one source with timeout protection."""
+        if not url:
+            return []
+        try:
+            t = time.time()
+            cal = fetch_ical(url)
+            elapsed = time.time() - t
+            if elapsed > 8:
+                log.warning(f"/api/calendar: {name} fetch took {elapsed:.2f}s (slow)")
+            else:
+                log.info(f"/api/calendar: {name} took {elapsed:.2f}s")
+            if not cal:
+                return []
+            return parser(cal, days)
+        except Exception as e:
+            log.warning(f"/api/calendar: {name} failed: {e}")
+            return []
+
+    # Parse results from fetch_source to build events list
+    try:
+        personal_events = fetch_source("personal", PERSONAL_ICAL_URL,
+                                      lambda cal, d: [dict(e, source="personal") for e in parse_calendar_events(cal, days_ahead=d)])
+        events.extend(personal_events)
+    except Exception as e:
+        log.warning(f"/api/calendar: personal parse failed: {e}")
+
+    try:
+        sports_events = fetch_source("sports", SPORTS_ICAL_URL,
+                                    lambda cal, d: [dict(e, source="sports") for e in parse_calendar_events(cal, days_ahead=d)])
+        events.extend(sports_events)
+    except Exception as e:
+        log.warning(f"/api/calendar: sports parse failed: {e}")
+
+    try:
+        if CANVAS_ICAL_URL:
+            t = time.time()
+            cal = fetch_ical(CANVAS_ICAL_URL)
+            elapsed = time.time() - t
+            if elapsed > 8:
+                log.warning(f"/api/calendar: canvas fetch took {elapsed:.2f}s (slow)")
+            else:
+                log.info(f"/api/calendar: canvas took {elapsed:.2f}s")
+            if cal:
+                for a in parse_canvas_assignments(cal):
+                    events.append({
+                        "title": a["title"],
+                        "start_display": a["due_display"],
+                        "end_display": "",
+                        "start_iso": a["due_iso"],
+                        "date": a["due_iso"][:10],
+                        "all_day": False,
+                        "source": "canvas",
+                        "urgency": a["urgency"],
+                        "class_name": a["class_name"]
+                    })
+    except Exception as e:
+        log.warning(f"/api/calendar: canvas failed: {e}")
+
+    try:
+        day_events = fetch_day_calendar_events(today, days_ahead=days)
+        events.extend(day_events)
+        log.info(f"/api/calendar: day calendar added {len(day_events)} events")
+    except Exception as e:
+        log.warning(f"/api/calendar: day calendar failed: {e}")
+
+    events.sort(key=lambda x: x.get("start_iso", ""))
     log.info(f"/api/calendar: total took {time.time()-start:.2f}s with {len(events)} events")
     return jsonify({"events": events})
 
@@ -2485,110 +2471,6 @@ def api_workout_regenerate():
     })
 
 
-@app.route("/api/timer", methods=["GET"])
-def api_timer_get():
-    # Read timer state within lock to prevent race conditions
-    with _timer_lock:
-        row = get_timer_state_row()
-        response = timer_response(row)
-    return jsonify(response)
-
-
-@app.route("/api/timer/start", methods=["POST"])
-def api_timer_start():
-    data = request.get_json(force=True) or {}
-    uid = str(data.get("uid", ""))
-    title = str(data.get("title", ""))
-    class_name = str(data.get("class_name", ""))
-    estimate = float(data.get("estimate_minutes", 30))
-    with _timer_lock:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("""
-UPDATE timer_state SET assignment_uid=%s, assignment_title=%s, class_name=%s,
-estimate_minutes=%s, started_at=NOW(), paused_at=NULL, accumulated_seconds=0, active=TRUE WHERE id=1""",
-                    (uid, title, class_name, estimate))
-        conn.commit()
-        cur.close()
-        conn.close()
-        # Read state within lock to prevent race condition
-        row = get_timer_state_row()
-        response = timer_response(row)
-    return jsonify(response)
-
-
-@app.route("/api/timer/pause", methods=["POST"])
-def api_timer_pause():
-    with _timer_lock:
-        row = get_timer_state_row()
-        if not row.get("active") or row.get("paused_at"):
-            response = timer_response(row)
-            return jsonify(response)
-        elapsed = get_timer_elapsed(row)
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("UPDATE timer_state SET paused_at=NOW(), accumulated_seconds=%s WHERE id=1", (elapsed,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        # Read state within lock
-        row = get_timer_state_row()
-        response = timer_response(row)
-    return jsonify(response)
-
-
-@app.route("/api/timer/resume", methods=["POST"])
-def api_timer_resume():
-    with _timer_lock:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("UPDATE timer_state SET started_at=NOW(), paused_at=NULL WHERE id=1")
-        conn.commit()
-        cur.close()
-        conn.close()
-        # Read state within lock
-        row = get_timer_state_row()
-        response = timer_response(row)
-    return jsonify(response)
-
-
-@app.route("/api/timer/stop", methods=["POST"])
-def api_timer_stop():
-    data = request.get_json(force=True) or {}
-    save = bool(data.get("save", True))
-    with _timer_lock:
-        row = get_timer_state_row()
-        elapsed = get_timer_elapsed(row)
-        elapsed_min = elapsed / 60.0
-        try:
-            if save and row.get("assignment_title") and elapsed_min > 0.5:
-                conn = get_db()
-                try:
-                    cur = conn.cursor()
-                    cur.execute("""
-INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed)
-VALUES (%s, %s, %s, %s, TRUE)""",
-                                (row["assignment_title"], row.get("class_name", ""),
-                                 round(elapsed_min, 2), float(row.get("estimate_minutes") or 30)))
-                    conn.commit()
-                finally:
-                    cur.close()
-                    conn.close()
-        finally:
-            # Always reset timer state, even if completion insertion fails
-            conn2 = get_db()
-            try:
-                cur2 = conn2.cursor()
-                cur2.execute("""
-UPDATE timer_state SET active=FALSE, paused_at=NULL, started_at=NULL,
-accumulated_seconds=0, assignment_uid='', assignment_title='', class_name='' WHERE id=1""")
-                conn2.commit()
-            finally:
-                cur2.close()
-                conn2.close()
-    return jsonify({"saved": save, "elapsed_minutes": round(elapsed_min, 2)})
-
-
 @app.route("/api/complete", methods=["POST"])
 def api_complete():
     data = request.get_json(force=True) or {}
@@ -2906,16 +2788,34 @@ def api_tasks_create():
     notes = str(data.get("notes", ""))[:2000]
     urgency = str(data.get("urgency", "low"))
     due_date = data.get("due_date") or None
+    recurrence = str(data.get("recurrence", "")).lower() or None
+
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("""
+
+    if recurrence and recurrence in ("daily", "weekly", "biweekly", "monthly"):
+        cur.execute("""
+INSERT INTO recurring_tasks (title, notes, urgency, recurrence, active)
+VALUES (%s, %s, %s, %s, TRUE) RETURNING id""",
+                    (title, notes, urgency, recurrence))
+        task_id = cur.fetchone()["id"]
+
+        calc_due_date = _calculate_next_due_date(recurrence)
+        cur.execute("""
+INSERT INTO tasks (title, notes, urgency, due_date)
+VALUES (%s, %s, %s, %s)""",
+                    (title, f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]", urgency, calc_due_date))
+        cur.execute("UPDATE recurring_tasks SET last_created_at = NOW() WHERE id = %s", (task_id,))
+    else:
+        cur.execute("""
 INSERT INTO tasks (title, notes, urgency, due_date) VALUES (%s, %s, %s, %s) RETURNING id""",
-                (title, notes, urgency, due_date))
-    new_id = cur.fetchone()["id"]
+                    (title, notes, urgency, due_date))
+        task_id = cur.fetchone()["id"]
+
     conn.commit()
     cur.close()
     conn.close()
-    return jsonify({"id": new_id, "status": "ok"})
+    return jsonify({"id": task_id, "status": "ok"})
 
 
 @app.route("/api/tasks/<int:task_id>", methods=["PATCH"])

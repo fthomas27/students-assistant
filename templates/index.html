@@ -1683,7 +1683,6 @@ margin-bottom: 0;
 <!-- Sidebar Column Toggle Buttons -->
 <div class="sidebar-toggle-panel">
   <div style="display: flex; flex-direction: row; width: 60px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);">
-    <button class="sidebar-toggle-btn small" onclick="openTimerWidget()" title="Timer">⏱</button>
     <button class="sidebar-toggle-btn small" onclick="openChatHistory()" title="Chat History">💬</button>
     <button class="sidebar-toggle-btn small" onclick="openSettings()" title="Settings">⚙</button>
   </div>
@@ -1691,7 +1690,6 @@ margin-bottom: 0;
   <button class="sidebar-toggle-btn" data-column="2" onclick="openCalendarModal()" title="Calendar">📅</button>
   <button class="sidebar-toggle-btn" data-column="3" onclick="toggleSidebarColumn(3)" title="Plan">🎯</button>
   <button class="sidebar-toggle-btn" data-column="4" onclick="toggleSidebarColumn(4)" title="Assignments">📋</button>
-  <button class="sidebar-toggle-btn" onclick="openRecurringTasksModal()" title="Recurring Tasks">🔁</button>
 </div>
 
 <!-- Settings Modal -->
@@ -1844,21 +1842,6 @@ margin-bottom: 0;
 
 <span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
 </aside>
-
-<!-- Timer Section -->
-<div id="timerContainer" style="position: fixed; bottom: 20px; right: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 16px; width: 280px; z-index: 100; display: none; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-    <strong style="color: var(--text);">⏱ Timer</strong>
-    <button onclick="closeTimerWidget()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px;">✕</button>
-  </div>
-  <div id="timerDisplay" style="font-size: 32px; font-weight: bold; text-align: center; color: var(--accent); margin-bottom: 12px; font-family: monospace;">00:00</div>
-  <div id="timerInfo" style="font-size: 12px; color: var(--text2); margin-bottom: 12px; text-align: center; min-height: 30px;"></div>
-  <div style="display: flex; gap: 8px;">
-    <button id="timerStartBtn" onclick="timerAction('start')" style="flex: 1; padding: 8px; background: var(--green); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600; font-size: 12px;">Start</button>
-    <button id="timerPauseBtn" onclick="timerAction('pause')" style="flex: 1; padding: 8px; background: var(--amber); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600; font-size: 12px; display: none;">Pause</button>
-    <button id="timerStopBtn" onclick="timerAction('stop')" style="flex: 1; padding: 8px; background: var(--red); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600; font-size: 12px; display: none;">Stop</button>
-  </div>
-</div>
 
 <!-- LEFT COLUMN 4: Assignments -->
 <aside class="sidebar sidebar-col-4" id="sidebarCol4">
@@ -2174,14 +2157,14 @@ async function loadSidebarData() {
     el.innerHTML = skeletonHTML + skeletonHTML;
   });
 
-  // Timeout safety: if still loading after 35 seconds, show timeout message
+  // Timeout safety: if still loading after 40 seconds, show timeout message
   const timeoutId = setTimeout(() => {
     Object.entries(elements).forEach(([key, el]) => {
       if (el.innerHTML.includes('pulse')) {
         el.innerHTML = '<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 20px 0; font-size: 12px;">Connection timeout</div>';
       }
     });
-  }, 35000);
+  }, 40000);
 
   // Handle each API request individually for progressive rendering
   const dataHandlers = {
@@ -2237,7 +2220,7 @@ async function loadSidebarData() {
 
   // Fetch each endpoint independently for progressive rendering
   for (const [key, handler] of Object.entries(dataHandlers)) {
-    fetchWithTimeout(handler.url, {}, 12000)
+    fetchWithTimeout(handler.url, {}, 15000)
       .then(r => {
         if (!r.ok) {
           console.error(`Error fetching ${handler.url}: HTTP ${r.status}`);
@@ -2248,6 +2231,8 @@ async function loadSidebarData() {
       .then(data => {
         if (!data) throw new Error('Empty response');
         handler.processor(data);
+        // Clear timeout if all data has loaded successfully
+        clearTimeout(timeoutId);
       })
       .catch(e => {
         console.error(`Failed to load ${key}:`, e.message || e);
@@ -3429,6 +3414,16 @@ function openAddTaskModal() {
       </select>
     </div>
     <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Recurrence (optional)</label>
+      <select id="newTaskRecurrence" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+        <option value="">None</option>
+        <option value="daily">Daily</option>
+        <option value="weekly">Weekly</option>
+        <option value="biweekly">Bi-weekly</option>
+        <option value="monthly">Monthly</option>
+      </select>
+    </div>
+    <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Due Date (optional)</label>
       <input id="newTaskDueDate" type="date" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
     </div>
@@ -3462,6 +3457,7 @@ function closeAddTaskModal() {
 async function saveNewTask() {
   const title = document.getElementById('newTaskTitle').value.trim();
   const urgency = document.getElementById('newTaskUrgency').value;
+  const recurrence = document.getElementById('newTaskRecurrence').value || null;
   const due_date = document.getElementById('newTaskDueDate').value || null;
   const notes = document.getElementById('newTaskNotes').value.trim();
 
@@ -3478,6 +3474,7 @@ async function saveNewTask() {
         title: title,
         urgency: urgency,
         due_date: due_date,
+        recurrence: recurrence,
         notes: notes
       })
     });
@@ -3490,7 +3487,8 @@ async function saveNewTask() {
       const bubble = document.createElement('div');
       bubble.className = 'message assistant';
       const dueDateStr = due_date ? ` due ${due_date}` : '';
-      bubble.innerHTML = `<div class="message-bubble">✓ Task <strong>"${escapeHtml(title)}"</strong> created!${dueDateStr}</div>`;
+      const recurStr = recurrence ? ` (${recurrence})` : '';
+      bubble.innerHTML = `<div class="message-bubble">✓ Task <strong>"${escapeHtml(title)}"</strong> created!${dueDateStr}${recurStr}</div>`;
       messagesDiv.appendChild(bubble);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
     } else {
@@ -4156,114 +4154,6 @@ async function deleteRecurringTaskConfirm(taskId) {
   } catch (e) {
     console.error('Error deleting recurring task:', e);
     alert('Error deleting recurring task');
-  }
-}
-
-// Timer functionality
-let timerInterval = null;
-let timerState = null;
-
-function openTimerWidget() {
-  document.getElementById('timerContainer').style.display = 'block';
-  loadTimerState();
-}
-
-function closeTimerWidget() {
-  document.getElementById('timerContainer').style.display = 'none';
-}
-
-async function loadTimerState() {
-  try {
-    const response = await fetch('/api/timer');
-    const data = await response.json();
-    timerState = data;
-    updateTimerDisplay();
-    startTimerTick();
-  } catch (e) {
-    console.error('Failed to load timer state:', e);
-  }
-}
-
-function updateTimerDisplay() {
-  if (!timerState) return;
-
-  const display = document.getElementById('timerDisplay');
-  const info = document.getElementById('timerInfo');
-  const startBtn = document.getElementById('timerStartBtn');
-  const pauseBtn = document.getElementById('timerPauseBtn');
-  const stopBtn = document.getElementById('timerStopBtn');
-
-  const totalSeconds = Math.floor(timerState.elapsed_seconds || 0);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  display.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-
-  if (timerState.active) {
-    info.innerHTML = `<strong>${timerState.assignment_title || 'Timer Running'}</strong><br/>${timerState.class_name || ''}`;
-    startBtn.style.display = 'none';
-    pauseBtn.style.display = 'flex';
-    stopBtn.style.display = 'flex';
-  } else if (timerState.paused_at) {
-    info.innerHTML = `<strong>${timerState.assignment_title || 'Timer Paused'}</strong><br/>Paused`;
-    startBtn.textContent = 'Resume';
-    startBtn.style.display = 'flex';
-    pauseBtn.style.display = 'none';
-    stopBtn.style.display = 'flex';
-  } else {
-    info.innerHTML = 'Timer ready';
-    startBtn.textContent = 'Start';
-    startBtn.style.display = 'flex';
-    pauseBtn.style.display = 'none';
-    stopBtn.style.display = 'none';
-  }
-}
-
-function startTimerTick() {
-  if (timerInterval) clearInterval(timerInterval);
-  timerInterval = setInterval(() => {
-    if (timerState && timerState.active && !timerState.paused_at) {
-      timerState.elapsed_seconds = (timerState.elapsed_seconds || 0) + 1;
-      updateTimerDisplay();
-    }
-  }, 1000);
-}
-
-async function timerAction(action) {
-  let endpoint = '/api/timer';
-
-  if (action === 'start') {
-    endpoint = timerState?.paused_at ? '/api/timer/resume' : '/api/timer/start';
-  } else if (action === 'pause') {
-    endpoint = '/api/timer/pause';
-  } else if (action === 'stop') {
-    endpoint = '/api/timer/stop';
-  }
-
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        uid: timerState?.assignment_uid || '',
-        title: timerState?.assignment_title || 'Timed Work',
-        class_name: timerState?.class_name || '',
-        estimate_minutes: timerState?.estimate_minutes || 30
-      })
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      timerState = data;
-      updateTimerDisplay();
-      if (action === 'stop') {
-        closeTimerWidget();
-      }
-    } else {
-      alert('Timer action failed');
-    }
-  } catch (e) {
-    console.error('Timer action error:', e);
-    alert('Error: ' + e.message);
   }
 }
 
