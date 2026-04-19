@@ -1768,15 +1768,6 @@ margin-bottom: 0;
 </div>
 </div>
 
-<div class="sidebar-header" style="margin-top: 16px; display: flex; justify-content: space-between; align-items: center;">
-  <span>📦 Projects</span>
-  <button onclick="openAddProjectModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new project">+</button>
-</div>
-<div class="sidebar-section">
-<div id="projectsSection" class="section-content">
-<div id="projectsList"></div>
-</div>
-</div>
 </aside>
 
 <!-- Event Detail Modal -->
@@ -1848,6 +1839,18 @@ margin-bottom: 0;
 <div style="display: flex; gap: 6px; margin-top: 8px;">
 <button onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--accent); background: var(--accent); border-radius: var(--r-sm); cursor: pointer; color: white; transition: background 0.15s; font-weight: 600;">Generate</button>
 <button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
+</div>
+</div>
+
+<div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
+<div class="sidebar-header" style="margin-top: 0; display: flex; justify-content: space-between; align-items: center;">
+  <span>📦 Projects</span>
+  <button onclick="openAddProjectModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new project">+</button>
+</div>
+<div class="sidebar-section" style="margin-top: 8px;">
+<div id="projectsSection" class="section-content">
+<div id="projectsList"></div>
+</div>
 </div>
 </div>
 </div>
