@@ -2369,7 +2369,7 @@ async function viewProject(title, description) {
   }
 
   const modal = document.getElementById('projectDetailsModal');
-  if (modal.classList.contains('visible') && modal.dataset.projectId == project.id) {
+  if (modal.classList.contains('visible') && parseInt(modal.dataset.projectId) === project.id) {
     closeProjectDetailsModal();
   } else {
     openProjectDetailsModal(project.id);
