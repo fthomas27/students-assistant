@@ -2398,8 +2398,10 @@ async function openProjectDetailsModal(projectId) {
       fetch(`/api/projects/${projectId}/tasks`)
     ]);
 
-    const notes = await notesRes.json();
-    const tasks = await tasksRes.json();
+    const [notes, tasks] = await Promise.all([
+      notesRes.json(),
+      tasksRes.json()
+    ]);
 
     let html = `
       ${project.description ? `<div style="color: var(--text2); margin-bottom: 16px;">${escapeHtml(project.description)}</div>` : ''}
