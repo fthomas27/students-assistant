@@ -1841,6 +1841,18 @@ margin-bottom: 0;
 <button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
 </div>
 </div>
+
+<div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
+<div class="sidebar-header" style="margin-top: 0; display: flex; justify-content: space-between; align-items: center;">
+  <span>📦 Projects</span>
+  <button onclick="openAddProjectModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new project">+</button>
+</div>
+<div class="sidebar-section" style="margin-top: 8px;">
+<div id="projectsSection" class="section-content">
+<div id="projectsList"></div>
+</div>
+</div>
+</div>
 </div>
 
 <span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
@@ -2390,42 +2402,53 @@ function renderProjects() {
   updateSidebarStats();
 }
 
-async function viewProject(title, description) {
+function viewProject(title, description) {
   const project = projectsCache.find(p => p.title === title);
   if (!project) {
     const messagesDiv = document.getElementById('chatMessages');
-    if (messagesDiv.querySelector('.empty-state')) {
+    if (messagesDiv && messagesDiv.querySelector('.empty-state')) {
       messagesDiv.innerHTML = '';
     }
     const bubble = document.createElement('div');
     bubble.className = 'message assistant';
     bubble.innerHTML = `<div class="message-bubble"><strong>${escapeHtml(title)}</strong><br/>${description ? escapeHtml(description) : 'No description available'}</div>`;
-    messagesDiv.appendChild(bubble);
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    if (messagesDiv) {
+      messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
     return;
   }
-
-  const modal = document.getElementById('projectDetailsModal');
-  if (modal.classList.contains('visible') && parseInt(modal.dataset.projectId) === project.id) {
-    closeProjectDetailsModal();
-  } else {
-    openProjectDetailsModal(project.id);
-  }
+  openProjectDetailsModal(project.id);
 }
 
 async function openProjectDetailsModal(projectId) {
   try {
+    const modal = document.getElementById('projectDetailsModal');
+    const backdrop = document.getElementById('projectDetailsBackdrop');
+
+    modal.classList.add('visible');
+    backdrop.classList.add('visible');
+    document.getElementById('projectDetailsContent').innerHTML = '<div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div>';
+
     const project = projectsCache.find(p => p.id === projectId);
+    if (!project) {
+      modal.classList.remove('visible');
+      backdrop.classList.remove('visible');
+      alert('Project not found');
+      return;
+    }
+
+    document.getElementById('projectDetailsTitle').textContent = project.title || 'Project';
+
     const [notesRes, tasksRes] = await Promise.all([
       fetch(`/api/projects/${projectId}/notes`),
       fetch(`/api/projects/${projectId}/tasks`)
     ]);
+
     const [notes, tasks] = await Promise.all([
       notesRes.json(),
       tasksRes.json()
     ]);
-
-    document.getElementById('projectDetailsTitle').textContent = escapeHtml(project.title);
 
     let html = `
       ${project.description ? `<div style="color: var(--text2); margin-bottom: 16px;">${escapeHtml(project.description)}</div>` : ''}
@@ -3302,9 +3325,34 @@ function escapeHtml(text) {
 
 function formatMessage(text) {
   let html = escapeHtml(text);
-  html = html.replace(/\n/g, '<br>');
+
+  // Handle headers
+  html = html.replace(/^### (.*?)$/gm, '<h3 style="font-size: 16px; font-weight: 600; margin: 12px 0 8px 0; color: var(--accent);">$1</h3>');
+  html = html.replace(/^## (.*?)$/gm, '<h2 style="font-size: 18px; font-weight: 700; margin: 16px 0 10px 0; color: var(--accent);">$1</h2>');
+  html = html.replace(/^# (.*?)$/gm, '<h1 style="font-size: 20px; font-weight: 700; margin: 18px 0 12px 0; color: var(--accent);">$1</h1>');
+
+  // Handle bold and italic
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/__(.*?)__/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  html = html.replace(/_(.*?)_/g, '<em>$1</em>');
+
+  // Handle lists (- or *)
+  html = html.replace(/^[\-\*] (.*?)$/gm, '<li style="margin-left: 20px; color: var(--text2);">$1</li>');
+  html = html.replace(/(<li[^>]*>.*?<\/li>)/s, '<ul style="list-style: none; padding: 0;">$1</ul>');
+
+  // Handle numbered lists
+  html = html.replace(/^\d+\. (.*?)$/gm, '<li style="margin-left: 20px; color: var(--text2);">$1</li>');
+
+  // Handle line breaks
+  html = html.replace(/\n/g, '<br>');
+
+  // Handle code blocks
+  html = html.replace(/```([\s\S]*?)```/g, '<div style="background: var(--surface2); border-left: 3px solid var(--accent); padding: 8px; margin: 8px 0; font-family: monospace; font-size: 12px; color: var(--text2); overflow-x: auto;">$1</div>');
+
+  // Handle inline code
+  html = html.replace(/`([^`]+)`/g, '<code style="background: var(--surface2); padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; color: var(--accent);">$1</code>');
+
   return html;
 }
 
