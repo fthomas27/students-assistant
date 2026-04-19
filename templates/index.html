@@ -4462,10 +4462,6 @@ setInterval(updateClock, 60000);
 
 loadSidebarData();
 loadProjects();
-// Reload sidebar data every 60 seconds with better error handling (tasks, assignments, calendar, plan)
-setInterval(() => {
-  loadSidebarData().catch(e => console.error('Sidebar reload failed:', e));
-}, 60000);
 
 // Load and display task suggestions after a brief delay (non-blocking)
 setTimeout(() => {
