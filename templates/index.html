@@ -2469,18 +2469,25 @@ async function openProjectDetailsModal(projectId) {
 
 function closeProjectDetailsModal() {
   console.log('closeProjectDetailsModal called');
-  const modals = document.querySelectorAll('[id*="projectDetailsModal"], [id*="projectModal"]');
-  console.log('Found', modals.length, 'modals to close');
-  modals.forEach(modal => {
-    console.log('Removing modal:', modal.id);
-    modal.style.display = 'none';
-    modal.remove();
-  });
-  const legacyModal = document.getElementById('projectDetailsModal');
-  if (legacyModal) {
-    console.log('Removing legacy modal');
-    legacyModal.remove();
+  const modal = document.getElementById('projectDetailsModal');
+  if (!modal) {
+    console.log('No projectDetailsModal found');
+    return;
   }
+  console.log('Found modal, closing...');
+  modal.style.display = 'none';
+  modal.style.visibility = 'hidden';
+  modal.style.opacity = '0';
+  modal.style.pointerEvents = 'none';
+  if (modal.parentNode) {
+    modal.parentNode.removeChild(modal);
+  }
+  try {
+    modal.remove();
+  } catch (e) {
+    console.error('Error removing modal:', e);
+  }
+  console.log('Modal close completed');
 }
 
 async function addProjectNote(projectId) {
