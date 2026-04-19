@@ -2372,10 +2372,14 @@ async function viewProject(title, description) {
 async function openProjectDetailsModal(projectId) {
   try {
     const project = projectsCache.find(p => p.id === projectId);
-    const notesRes = await fetch(`/api/projects/${projectId}/notes`);
-    const tasksRes = await fetch(`/api/projects/${projectId}/tasks`);
-    const notes = await notesRes.json();
-    const tasks = await tasksRes.json();
+    const [notesRes, tasksRes] = await Promise.all([
+      fetch(`/api/projects/${projectId}/notes`),
+      fetch(`/api/projects/${projectId}/tasks`)
+    ]);
+    const [notes, tasks] = await Promise.all([
+      notesRes.json(),
+      tasksRes.json()
+    ]);
 
     document.getElementById('projectDetailsTitle').textContent = escapeHtml(project.title);
 
@@ -2438,6 +2442,7 @@ async function openProjectDetailsModal(projectId) {
     alert('Failed to load project details: ' + e.message);
   }
 }
+
 
 function closeProjectDetailsModal() {
   const modal = document.getElementById('projectDetailsModal');
