@@ -1805,6 +1805,16 @@ margin-bottom: 0;
   <div class="calendar-events-list" id="calendarEventsList"></div>
 </div>
 
+<!-- Project Details Modal -->
+<div class="calendar-modal-backdrop" id="projectDetailsBackdrop" onclick="closeProjectDetailsModal()"></div>
+<div class="calendar-modal" id="projectDetailsModal">
+  <div class="calendar-modal-header">
+    <h2 id="projectDetailsTitle"></h2>
+    <button class="calendar-nav-btn" onclick="closeProjectDetailsModal()" title="Close">✕</button>
+  </div>
+  <div id="projectDetailsContent"></div>
+</div>
+
 <!-- LEFT COLUMN 2: Calendar & Events -->
 <aside class="sidebar sidebar-col-2" id="sidebarCol2">
 <div class="sidebar-header">📅 Personal & Sports</div>
@@ -2361,57 +2371,15 @@ async function viewProject(title, description) {
 
 async function openProjectDetailsModal(projectId) {
   try {
-    closeProjectDetailsModal();
-
-    const existingModal = document.getElementById('projectDetailsModal');
-    if (existingModal) {
-      existingModal.remove();
-    }
-
     const project = projectsCache.find(p => p.id === projectId);
     const notesRes = await fetch(`/api/projects/${projectId}/notes`);
     const tasksRes = await fetch(`/api/projects/${projectId}/tasks`);
     const notes = await notesRes.json();
     const tasks = await tasksRes.json();
 
-    const modal = document.createElement('div');
-    modal.id = 'projectDetailsModal';
-    modal.style.cssText = `
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(0, 0, 0, 0.5);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 999999;
-    `;
-
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) closeProjectDetailsModal();
-    }, true);
-
-    const content = document.createElement('div');
-    content.style.cssText = `
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--r);
-      padding: 24px;
-      max-width: 600px;
-      width: 90%;
-      max-height: 80vh;
-      overflow-y: auto;
-      box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
-      animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-    `;
+    document.getElementById('projectDetailsTitle').textContent = escapeHtml(project.title);
 
     let html = `
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-        <h3 style="margin: 0; color: var(--text);">${escapeHtml(project.title)}</h3>
-        <button onclick="closeProjectDetailsModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px;">✕</button>
-      </div>
       ${project.description ? `<div style="color: var(--text2); margin-bottom: 16px;">${escapeHtml(project.description)}</div>` : ''}
 
       <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 16px;">
@@ -2461,9 +2429,10 @@ async function openProjectDetailsModal(projectId) {
     }
 
     html += '</div>';
-    content.innerHTML = html;
-    modal.appendChild(content);
-    document.body.appendChild(modal);
+
+    document.getElementById('projectDetailsContent').innerHTML = html;
+    document.getElementById('projectDetailsModal').classList.add('visible');
+    document.getElementById('projectDetailsBackdrop').classList.add('visible');
   } catch (e) {
     console.error('Error loading project details:', e);
     alert('Failed to load project details');
@@ -2472,8 +2441,16 @@ async function openProjectDetailsModal(projectId) {
 
 function closeProjectDetailsModal() {
   const modal = document.getElementById('projectDetailsModal');
-  if (modal) {
-    modal.parentNode?.removeChild(modal);
+  const backdrop = document.getElementById('projectDetailsBackdrop');
+  if (modal && backdrop) {
+    modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
+    backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
+    backdrop.style.background = 'rgba(0,0,0,0)';
+    setTimeout(() => {
+      modal.classList.remove('visible');
+      backdrop.classList.remove('visible');
+      modal.style.animation = '';
+    }, 300);
   }
 }
 
