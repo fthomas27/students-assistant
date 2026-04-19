@@ -3517,25 +3517,29 @@ FROM project_tasks WHERE project_id=%s ORDER BY created_at ASC""", (project_id,)
 
 @app.route("/api/projects/<int:project_id>/tasks", methods=["POST"])
 def api_project_tasks_create(project_id):
-    data = request.get_json(force=True) or {}
-    title = str(data.get("title", "")).strip()[:300]
-    if not title:
-        return jsonify({"error": "title required"}), 400
-    notes = str(data.get("notes", ""))[:2000]
-    assignee = str(data.get("assignee", ""))[:100]
-    status = str(data.get("status", "pending"))
-    due_date = data.get("due_date") or None
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
+    try:
+        data = request.get_json(force=True) or {}
+        title = str(data.get("title", "")).strip()[:300]
+        if not title:
+            return jsonify({"error": "title required"}), 400
+        notes = str(data.get("notes", ""))[:2000]
+        assignee = str(data.get("assignee", ""))[:100]
+        status = str(data.get("status", "pending"))
+        due_date = data.get("due_date") or None
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
 INSERT INTO project_tasks (project_id, title, notes, assignee, status, due_date)
 VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-                (project_id, title, notes, assignee, status, due_date))
-    new_id = cur.fetchone()["id"]
-    conn.commit()
-    cur.close()
-    conn.close()
-    return jsonify({"id": new_id, "status": "ok"})
+                    (project_id, title, notes, assignee, status, due_date))
+        new_id = cur.fetchone()["id"]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"id": new_id, "status": "ok"})
+    except Exception as e:
+        log.exception(f"Error adding task to project {project_id}")
+        return jsonify({"error": f"Failed to add task: {str(e)}"}), 500
 
 
 @app.route("/api/projects/<int:project_id>/tasks/<int:task_id>", methods=["PATCH"])
