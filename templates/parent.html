@@ -308,6 +308,79 @@ textarea {
   margin-bottom: 12px;
 }
 
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.task-filter {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.filter-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+  transition: all 0.2s;
+}
+
+.filter-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.filter-btn:hover:not(.active) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.task-item.overdue {
+  border-left: 4px solid var(--red);
+}
+
+.overdue-badge {
+  display: inline-block;
+  background: var(--red);
+  color: white;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 8px;
+}
+
 .message {
   padding: 16px;
   border-radius: 8px;
@@ -332,6 +405,12 @@ textarea {
   color: var(--red);
 }
 
+.message.info {
+  background: rgba(255, 127, 80, 0.15);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
 @keyframes slideInUp {
   from { opacity: 0; transform: translateY(20px); }
   to { opacity: 1; transform: translateY(0); }
@@ -351,6 +430,22 @@ textarea {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+.info-box {
+  background: rgba(177, 151, 252, 0.1);
+  border: 1px solid var(--purple);
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 20px;
+  font-size: 13px;
+  color: var(--text2);
+}
+
+.help-icon {
+  cursor: help;
+  display: inline-block;
+  margin-left: 4px;
+}
 </style>
 </head>
 <body>
@@ -365,6 +460,26 @@ textarea {
   </div>
 
   <div id="message" class="message"></div>
+
+  <!-- Statistics -->
+  <div class="stats-grid" id="statsGrid" style="display: none;">
+    <div class="stat-card">
+      <div class="stat-value" id="statTotal">0</div>
+      <div class="stat-label">Total Tasks</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statCompleted">0</div>
+      <div class="stat-label">Completed</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statPending">0</div>
+      <div class="stat-label">Pending</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statCompletion">0%</div>
+      <div class="stat-label">Completion</div>
+    </div>
+  </div>
 
   <!-- Add Task Form -->
   <div class="form-section">
@@ -402,12 +517,22 @@ textarea {
   <!-- Tasks List -->
   <div class="tasks-section">
     <h2 class="tasks-title">📋 Tasks You've Created</h2>
+    <div class="task-filter">
+      <button class="filter-btn active" onclick="filterTasks('all')">All</button>
+      <button class="filter-btn" onclick="filterTasks('pending')">Pending</button>
+      <button class="filter-btn" onclick="filterTasks('completed')">Completed</button>
+      <button class="filter-btn" onclick="filterTasks('overdue')">Overdue</button>
+    </div>
     <div id="tasksList"></div>
+    <div class="info-box">
+      💡 <strong>Tip:</strong> When your student completes a task you've created, you'll see it marked as complete here. You can also mark tasks complete if you verify they've been finished.
+    </div>
   </div>
 </div>
 
 <script>
 let tasks = [];
+let currentFilter = 'all';
 
 // Load tasks on page load
 document.addEventListener('DOMContentLoaded', () => {
@@ -432,8 +557,45 @@ async function loadTasks() {
   }
 }
 
+function isTaskOverdue(task) {
+  if (!task.due_date || task.completed) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dueDate = new Date(task.due_date);
+  return dueDate < today;
+}
+
+function getFilteredTasks() {
+  return tasks.filter(task => {
+    if (currentFilter === 'all') return true;
+    if (currentFilter === 'pending') return !task.completed;
+    if (currentFilter === 'completed') return task.completed;
+    if (currentFilter === 'overdue') return isTaskOverdue(task);
+    return true;
+  });
+}
+
+function updateStats() {
+  const total = tasks.length;
+  const completed = tasks.filter(t => t.completed).length;
+  const pending = total - completed;
+  const completion = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  document.getElementById('statTotal').textContent = total;
+  document.getElementById('statCompleted').textContent = completed;
+  document.getElementById('statPending').textContent = pending;
+  document.getElementById('statCompletion').textContent = completion + '%';
+
+  if (total > 0) {
+    document.getElementById('statsGrid').style.display = 'grid';
+  }
+}
+
 function renderTasks() {
   const container = document.getElementById('tasksList');
+  const filtered = getFilteredTasks();
+
+  updateStats();
 
   if (tasks.length === 0) {
     container.innerHTML = `
@@ -445,15 +607,27 @@ function renderTasks() {
     return;
   }
 
-  container.innerHTML = tasks.map(task => `
-    <div class="task-item ${task.completed ? 'completed' : ''}">
+  if (filtered.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">✓</div>
+        <p>No ${currentFilter === 'all' ? 'tasks' : currentFilter + ' tasks'} to show.</p>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = filtered.map(task => {
+    const overdue = isTaskOverdue(task);
+    return `
+    <div class="task-item ${task.completed ? 'completed' : ''} ${overdue ? 'overdue' : ''}">
       <div class="task-header">
-        <span class="task-title">${escapeHtml(task.title)}</span>
+        <span class="task-title">${escapeHtml(task.title)}${overdue ? '<span class="overdue-badge">OVERDUE</span>' : ''}</span>
         <span class="task-urgency ${task.urgency}">${task.urgency}</span>
       </div>
       <div class="task-meta">
         ${task.due_date ? `<div class="task-due">📅 ${formatDate(task.due_date)}</div>` : ''}
-        <div>${task.completed ? '✓ Completed' : 'Pending'}</div>
+        <div>${task.completed ? '✓ Completed on ' + formatDate(task.completed_at) : 'Pending'}</div>
       </div>
       ${task.notes ? `<div class="task-notes"><strong>Notes:</strong> ${escapeHtml(task.notes)}</div>` : ''}
       <div class="task-actions">
@@ -461,7 +635,7 @@ function renderTasks() {
         <button class="task-btn" onclick="editTaskNotes(${task.id})">Edit Notes</button>
       </div>
     </div>
-  `).join('');
+  `}).join('');
 }
 
 async function addTask(e) {
@@ -583,6 +757,18 @@ function formatDate(dateStr) {
   if (!dateStr) return '';
   const date = new Date(dateStr);
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function filterTasks(filter) {
+  currentFilter = filter;
+
+  // Update active button
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  event.target.classList.add('active');
+
+  renderTasks();
 }
 </script>
 
