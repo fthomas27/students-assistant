@@ -76,7 +76,7 @@ _briefing_lock = threading.Lock()
 @app.before_request
 def require_auth():
     path = request.path.rstrip('/')
-    if path in ('/login', '/logout', '/admin', '/debug-security-code'):
+    if path in ('/login', '/logout', '/admin'):
         return None
     if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
         return None
@@ -1274,7 +1274,13 @@ def get_blocked_ips():
     return []
 
 def block_ip(ip_addr, reason="", ip_name=""):
-    """Add IP to blocklist or update existing IP name."""
+    """Add IP to blocklist or update existing IP name. Only accepts real IPv4/IPv6 addresses."""
+    try:
+        ipaddress.ip_address(ip_addr)
+    except ValueError:
+        log.warning(f"Cannot block IP: {ip_addr} is not a valid IPv4/IPv6 address")
+        return False
+
     try:
         conn = get_db()
         cur = conn.cursor()
@@ -1479,24 +1485,6 @@ def login():
 def logout():
     session.clear()
     return redirect("/login")
-
-
-@app.route("/debug-security-code")
-def debug_security_code():
-    """Debug endpoint - shows security code status (no auth required)"""
-    security_code = os.environ.get("SECURITY_CODE", "")
-    lockdown = is_app_locked_down()
-    # Show all env vars that contain 'SECURITY' or 'CODE'
-    all_vars = {k: v for k, v in os.environ.items() if 'SECURITY' in k or 'CODE' in k}
-    return jsonify({
-        "security_code_set": bool(security_code),
-        "security_code_length": len(security_code),
-        "security_code_value": security_code if security_code else "NOT_SET",
-        "system_locked_down": lockdown,
-        "all_matching_vars": all_vars,
-        "security_code_from_os_environ": os.environ.get("SECURITY_CODE"),
-        "debug_info": "Check if SECURITY_CODE env var exists"
-    })
 
 
 @app.route("/admin", methods=["GET", "POST"])
@@ -1795,6 +1783,12 @@ def api_admin_block_ip():
 
         if not ip_addr:
             return jsonify({"error": "IP address required"}), 400
+
+        # Validate IP format before attempting to block
+        try:
+            ipaddress.ip_address(ip_addr)
+        except ValueError:
+            return jsonify({"error": f"Invalid IP address: {ip_addr}. Must be a valid IPv4 or IPv6 address. Cannot block temporary/hashed IP addresses."}), 400
 
         if block_ip(ip_addr, reason, ip_name):
             return jsonify({"status": "blocked", "ip": ip_addr})
