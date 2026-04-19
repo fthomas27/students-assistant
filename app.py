@@ -302,10 +302,18 @@ CREATE TABLE IF NOT EXISTS ip_names (
     try:
         cur.execute("ALTER TABLE login_attempts ADD COLUMN username TEXT DEFAULT ''")
         conn.commit()
-    except Exception:
+        log.info("Added username column to login_attempts table")
+    except psycopg2.errors.DuplicateColumn:
+        log.debug("username column already exists on login_attempts table")
         conn.rollback()
-        conn = get_db()
-        cur = conn.cursor()
+    except Exception as e:
+        log.warning(f"Error adding username column to login_attempts: {e}")
+        conn.rollback()
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+        except:
+            pass
 
     # Migrate IP names from blocked_ips to ip_names table
     try:
@@ -1487,12 +1495,27 @@ def api_admin_login_attempts():
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("""
+
+        # Try to use username column if it exists
+        try:
+            cur.execute("""
 SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, la.username, COALESCE(iname.ip_name, bi.ip_name, '') as ip_name
 FROM login_attempts la
 LEFT JOIN ip_names iname ON la.ip_address = iname.ip_address
 LEFT JOIN blocked_ips bi ON la.ip_address = bi.ip_address
 ORDER BY la.attempted_at DESC LIMIT 200""")
+        except psycopg2.errors.UndefinedColumn:
+            # If username column doesn't exist, add it and retry
+            log.info("username column missing from login_attempts, attempting to add it")
+            cur.execute("ALTER TABLE login_attempts ADD COLUMN username TEXT DEFAULT ''")
+            conn.commit()
+            cur.execute("""
+SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, la.username, COALESCE(iname.ip_name, bi.ip_name, '') as ip_name
+FROM login_attempts la
+LEFT JOIN ip_names iname ON la.ip_address = iname.ip_address
+LEFT JOIN blocked_ips bi ON la.ip_address = bi.ip_address
+ORDER BY la.attempted_at DESC LIMIT 200""")
+
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
@@ -1502,9 +1525,12 @@ ORDER BY la.attempted_at DESC LIMIT 200""")
             r["is_valid_user"] = is_valid_username(r.get("username", ""))
 
         return jsonify({"attempts": rows})
+    except (ValueError, psycopg2.OperationalError) as e:
+        log.warning(f"Database connection error in login attempts: {e}")
+        return jsonify({"error": "Database connection failed. Please check system configuration.", "attempts": []}), 500
     except Exception as e:
         log.exception("Error fetching login attempts")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "attempts": []}), 500
 
 
 @app.route("/api/admin/suspicious-activity")
