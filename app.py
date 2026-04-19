@@ -1445,7 +1445,11 @@ def login():
             return jsonify({"error": "Invalid username or password"}), 401
 
     if password and security_code:
-        security_code_env = os.environ.get("SECURITY_CODE", "test").strip()
+        security_code_env = os.environ.get("SECURITY_CODE", "").strip()
+        if not security_code_env:
+            log.error("SECURITY_CODE environment variable not set. Cannot process security code.")
+            return jsonify({"error": "Security code not configured"}), 500
+
         is_admin = username == ADMIN_USER
         expected_password = ADMIN_PASSWORD if is_admin else APP_PASSWORD
 
@@ -1453,10 +1457,9 @@ def login():
         # 1. System is in lockdown, OR
         # 2. IP is blocked
         if is_locked_down or ip_is_blocked:
-            import hashlib
             sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
-            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8] if security_code_env else "EMPTY"
-            log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, sc_provided='{security_code}', env_var='{security_code_env}', received_hash={sc_hash}, env_hash={env_hash}")
+            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
+            log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, received_hash={sc_hash}, env_hash={env_hash}")
             if password.strip() == expected_password and security_code.strip() == security_code_env:
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
@@ -1512,7 +1515,6 @@ def admin():
     log.info(f"Admin login: password={bool(password)}, security_code={bool(security_code)}, locked_down={is_locked_down}")
 
     if password and not security_code:
-        import hashlib
         pwd_hash = hashlib.sha256(password.encode()).hexdigest()[:8]
         admin_hash = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()[:8]
         log.info(f"Login attempt: password_hash={pwd_hash}, admin_hash={admin_hash}, match={password.strip() == ADMIN_PASSWORD}")
@@ -1558,11 +1560,14 @@ def admin():
     # Handle security code for both app and admin
     if password and security_code:
         if is_locked_down:
-            security_code_env = os.environ.get("SECURITY_CODE", "test").strip()
-            import hashlib
+            security_code_env = os.environ.get("SECURITY_CODE", "").strip()
+            if not security_code_env:
+                log.error("SECURITY_CODE environment variable not set. Cannot process security code.")
+                return jsonify({"error": "Security code not configured"}), 500
+
             sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
-            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8] if security_code_env else "EMPTY"
-            log.warning(f"Security code attempt: sc_provided='{security_code}', sc_stripped='{security_code.strip()}', env_var='{security_code_env}', received_hash={sc_hash}, env_hash={env_hash}, env_len={len(security_code_env)}, pwd_match={password.strip() == ADMIN_PASSWORD or password.strip() == APP_PASSWORD}")
+            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
+            log.warning(f"Security code attempt: received_hash={sc_hash}, env_hash={env_hash}, pwd_match={password.strip() == ADMIN_PASSWORD or password.strip() == APP_PASSWORD}")
 
             # Check admin password with security code
             if password.strip() == ADMIN_PASSWORD and security_code.strip() == security_code_env:
@@ -1703,9 +1708,18 @@ def api_lockdown_status():
     return jsonify({"is_locked_down": is_locked})
 
 
+def is_localhost():
+    """Check if request is from localhost (127.0.0.1 or ::1)"""
+    ip = get_client_ip()
+    return ip in ('127.0.0.1', '::1', 'localhost')
+
+
 @app.route("/api/test-admin-password")
 def api_test_admin_password():
-    """Debug endpoint - shows if ADMIN_PASSWORD is set"""
+    """Debug endpoint - localhost only - shows if ADMIN_PASSWORD is set"""
+    if not is_localhost():
+        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
+
     if ADMIN_PASSWORD == "admin-change-me":
         return jsonify({"status": "USING_DEFAULT", "message": "ADMIN_PASSWORD not set in environment, using default"})
     else:
@@ -1714,7 +1728,10 @@ def api_test_admin_password():
 
 @app.route("/api/test-security-code")
 def api_test_security_code():
-    """Debug endpoint - shows if SECURITY_CODE is set"""
+    """Debug endpoint - localhost only - shows if SECURITY_CODE is set"""
+    if not is_localhost():
+        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
+
     security_code = os.environ.get("SECURITY_CODE", "")
     if not security_code:
         return jsonify({"status": "NOT_SET", "message": "SECURITY_CODE environment variable not set"})
@@ -1724,7 +1741,10 @@ def api_test_security_code():
 
 @app.route("/api/test-lockdown-status")
 def api_test_lockdown_status():
-    """Debug endpoint - shows current lockdown state"""
+    """Debug endpoint - localhost only - shows current lockdown state"""
+    if not is_localhost():
+        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
+
     is_locked = is_app_locked_down()
     return jsonify({"is_locked_down": is_locked, "message": f"System is {'LOCKED DOWN' if is_locked else 'NORMAL'}"})
 
