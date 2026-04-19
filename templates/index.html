@@ -2362,6 +2362,12 @@ async function viewProject(title, description) {
 async function openProjectDetailsModal(projectId) {
   try {
     closeProjectDetailsModal();
+
+    const existingModal = document.getElementById('projectDetailsModal');
+    if (existingModal) {
+      existingModal.remove();
+    }
+
     const project = projectsCache.find(p => p.id === projectId);
     const notesRes = await fetch(`/api/projects/${projectId}/notes`);
     const tasksRes = await fetch(`/api/projects/${projectId}/tasks`);
@@ -2380,13 +2386,12 @@ async function openProjectDetailsModal(projectId) {
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 9999;
-      animation: fadeInBackdrop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+      z-index: 999999;
     `;
 
     modal.addEventListener('click', (e) => {
       if (e.target === modal) closeProjectDetailsModal();
-    });
+    }, true);
 
     const content = document.createElement('div');
     content.style.cssText = `
