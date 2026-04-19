@@ -2517,11 +2517,13 @@ async function addProjectTask(projectId) {
     const response = await fetch(`/api/projects/${projectId}/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: title, status: 'pending' })
+      body: JSON.stringify({ title: title, status: 'pending' }),
+      credentials: 'same-origin'
     });
 
     const data = await response.json();
     if (response.ok) {
+      closeProjectDetailsModal();
       await openProjectDetailsModal(projectId);
     } else {
       console.error('Failed to add task:', data);
