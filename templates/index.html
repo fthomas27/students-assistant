@@ -2231,6 +2231,8 @@ async function loadSidebarData() {
       .then(data => {
         if (!data) throw new Error('Empty response');
         handler.processor(data);
+        // Clear timeout if all data has loaded successfully
+        clearTimeout(timeoutId);
       })
       .catch(e => {
         console.error(`Failed to load ${key}:`, e.message || e);
