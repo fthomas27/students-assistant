@@ -1690,6 +1690,7 @@ margin-bottom: 0;
   <button class="sidebar-toggle-btn" data-column="2" onclick="openCalendarModal()" title="Calendar">📅</button>
   <button class="sidebar-toggle-btn" data-column="3" onclick="toggleSidebarColumn(3)" title="Plan">🎯</button>
   <button class="sidebar-toggle-btn" data-column="4" onclick="toggleSidebarColumn(4)" title="Assignments">📋</button>
+  <button class="sidebar-toggle-btn" data-column="5" onclick="toggleSidebarColumn(5)" title="Projects">📦</button>
 </div>
 
 <!-- Settings Modal -->
@@ -1755,7 +1756,7 @@ margin-bottom: 0;
   </div>
 </div>
 
-<!-- LEFT COLUMN 1: Tasks & Projects -->
+<!-- LEFT COLUMN 1: Tasks -->
 <aside class="sidebar sidebar-col-1" id="sidebarCol1">
 <div class="sidebar-header" style="display: flex; justify-content: space-between; align-items: center;">
   <span>✓ Tasks</span>
@@ -1765,16 +1766,6 @@ margin-bottom: 0;
 <div class="sidebar-section">
 <div id="tasksSection" class="section-content">
 <div id="tasksList"></div>
-</div>
-</div>
-
-<div class="sidebar-header" style="margin-top: 16px; display: flex; justify-content: space-between; align-items: center;">
-  <span>📦 Projects</span>
-  <button onclick="openAddProjectModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new project">+</button>
-</div>
-<div class="sidebar-section">
-<div id="projectsSection" class="section-content">
-<div id="projectsList"></div>
 </div>
 </div>
 </aside>
@@ -1860,6 +1851,20 @@ margin-bottom: 0;
 <div class="sidebar-section">
 <div id="assignmentsSection" class="section-content">
 <div id="assignmentsList"></div>
+</div>
+</div>
+</aside>
+
+<!-- LEFT COLUMN 5: Projects -->
+<aside class="sidebar sidebar-col-5" id="sidebarCol5">
+<div class="sidebar-header" style="display: flex; justify-content: space-between; align-items: center;">
+  <span>📦 Projects</span>
+  <button onclick="openAddProjectModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new project">+</button>
+</div>
+
+<div class="sidebar-section">
+<div id="projectsSection" class="section-content">
+<div id="projectsList"></div>
 </div>
 </div>
 </aside>
@@ -2141,7 +2146,6 @@ async function loadSidebarData() {
   const elements = {
     assignmentsList: document.getElementById('assignmentsList'),
     tasksList: document.getElementById('tasksList'),
-    projectsList: document.getElementById('projectsList'),
     calendarList: document.getElementById('calendarList'),
     planContent: document.getElementById('planContent')
   };
@@ -2186,16 +2190,6 @@ async function loadSidebarData() {
         if (!dataChanged(tasksCache, newData)) return;
         tasksCache = newData;
         renderTasks();
-      }
-    },
-    projects: {
-      url: '/api/projects',
-      containerId: 'projectsList',
-      processor: (data) => {
-        const newData = data.projects || [];
-        if (!dataChanged(projectsCache, newData)) return;
-        projectsCache = newData;
-        renderProjects();
       }
     },
     calendar: {
@@ -2243,6 +2237,49 @@ async function loadSidebarData() {
           container.innerHTML = `<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 12px 0; font-size: 11px;">${errorMsg}</div>`;
         }
       });
+  }
+}
+
+async function loadProjects() {
+  const container = document.getElementById('projectsList');
+  if (!container) return;
+
+  // Show skeleton loader
+  const skeletonHTML = `
+    <div class="sidebar-item" style="color: var(--text3); animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;">
+      <div style="height: 16px; background: var(--surface2); border-radius: 4px; margin-bottom: 6px;"></div>
+      <div style="height: 12px; background: var(--surface2); border-radius: 4px; width: 80%;"></div>
+    </div>
+  `;
+  container.innerHTML = skeletonHTML + skeletonHTML;
+
+  // Timeout after 10 seconds
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch('/api/projects', {
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (!data.projects) {
+      container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No projects</div>';
+      return;
+    }
+
+    projectsCache = data.projects;
+    renderProjects();
+  } catch (error) {
+    clearTimeout(timeoutId);
+    console.error('Error loading projects:', error);
+    const errorMsg = error.name === 'AbortError' ? 'Connection timeout' : 'Failed to load projects';
+    container.innerHTML = `<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 12px 0; font-size: 11px;">${errorMsg}</div>`;
   }
 }
 
@@ -3658,7 +3695,7 @@ async function saveNewProject() {
 
     if (response.ok) {
       closeAddProjectModal();
-      await loadSidebarData();
+      await loadProjects();
       const messagesDiv = document.getElementById('chatMessages');
       const bubble = document.createElement('div');
       bubble.className = 'message assistant';
@@ -3757,7 +3794,7 @@ async function saveEditProject(projectId) {
 
     if (response.ok) {
       closeEditProjectModal();
-      await loadSidebarData();
+      await loadProjects();
       const messagesDiv = document.getElementById('chatMessages');
       const bubble = document.createElement('div');
       bubble.className = 'message assistant';
@@ -3789,7 +3826,7 @@ async function deleteProjectConfirm(projectId) {
 
     if (response.ok) {
       closeEditProjectModal();
-      await loadSidebarData();
+      await loadProjects();
       const messagesDiv = document.getElementById('chatMessages');
       const bubble = document.createElement('div');
       bubble.className = 'message assistant';
@@ -4424,10 +4461,7 @@ updateClock();
 setInterval(updateClock, 60000);
 
 loadSidebarData();
-// Reload sidebar data every 60 seconds with better error handling
-setInterval(() => {
-  loadSidebarData().catch(e => console.error('Sidebar reload failed:', e));
-}, 60000);
+loadProjects();
 
 // Load and display task suggestions after a brief delay (non-blocking)
 setTimeout(() => {
