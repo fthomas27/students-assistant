@@ -258,7 +258,7 @@ def init_db():
         ("workout_logs", "CREATE TABLE IF NOT EXISTS workout_logs (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), focus_key TEXT NOT NULL, focus_label TEXT NOT NULL, intensity INT NOT NULL, location TEXT NOT NULL, plan_content TEXT NOT NULL, user_notes TEXT NOT NULL DEFAULT '', perceived_difficulty INT)"),
         ("daily_plans", "CREATE TABLE IF NOT EXISTS daily_plans (id SERIAL PRIMARY KEY, plan_date DATE NOT NULL, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), needs_update BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(plan_date))"),
         ("daily_plan_items", "CREATE TABLE IF NOT EXISTS daily_plan_items (id SERIAL PRIMARY KEY, plan_id INTEGER NOT NULL REFERENCES daily_plans(id) ON DELETE CASCADE, item_type VARCHAR(20) NOT NULL, item_id VARCHAR(255), item_title VARCHAR(500) NOT NULL, scheduled_start_time TIME NOT NULL, scheduled_end_time TIME NOT NULL, estimated_minutes INTEGER, order_index INTEGER, completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, user_edited BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
-        ("login_attempts", "CREATE TABLE IF NOT EXISTS login_attempts (id SERIAL PRIMARY KEY, ip_address TEXT NOT NULL, success BOOLEAN NOT NULL, attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), user_agent TEXT)"),
+        ("login_attempts", "CREATE TABLE IF NOT EXISTS login_attempts (id SERIAL PRIMARY KEY, ip_address TEXT NOT NULL, success BOOLEAN NOT NULL, username TEXT DEFAULT '', attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), user_agent TEXT)"),
         ("login_lockouts", "CREATE TABLE IF NOT EXISTS login_lockouts (ip_address TEXT PRIMARY KEY, locked_until TIMESTAMPTZ NOT NULL, failure_count INT NOT NULL DEFAULT 1, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("lockdown_state", "CREATE TABLE IF NOT EXISTS lockdown_state (id INT PRIMARY KEY DEFAULT 1, is_locked_down BOOLEAN NOT NULL DEFAULT FALSE, activated_at TIMESTAMPTZ, activated_by TEXT, CHECK (id = 1))"),
         ("blocked_ips", "CREATE TABLE IF NOT EXISTS blocked_ips (id SERIAL PRIMARY KEY, ip_address TEXT UNIQUE NOT NULL, ip_name TEXT DEFAULT '', blocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), blocked_by TEXT NOT NULL DEFAULT 'admin', reason TEXT DEFAULT '')"),
@@ -298,6 +298,14 @@ CREATE TABLE IF NOT EXISTS ip_names (
     ip_name TEXT NOT NULL,
     tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )""")
+
+    try:
+        cur.execute("ALTER TABLE login_attempts ADD COLUMN username TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
 
     # Migrate IP names from blocked_ips to ip_names table
     try:
@@ -1012,7 +1020,7 @@ def is_ip_locked(ip_addr):
         log.warning(f"Error checking lockout status: {e}")
     return False
 
-def record_login_attempt(ip_addr, success):
+def record_login_attempt(ip_addr, success, username=""):
     """Record login attempt and update lockout status."""
     try:
         with _login_lock:
@@ -1020,8 +1028,8 @@ def record_login_attempt(ip_addr, success):
             cur = conn.cursor()
 
             cur.execute("""
-INSERT INTO login_attempts (ip_address, success, user_agent)
-VALUES (%s, %s, %s)""", (ip_addr, success, request.headers.get('User-Agent', '')[:500]))
+INSERT INTO login_attempts (ip_address, success, username, user_agent)
+VALUES (%s, %s, %s, %s)""", (ip_addr, success, username[:50] if username else "", request.headers.get('User-Agent', '')[:500]))
 
             if not success:
                 cur.execute("""
@@ -1162,6 +1170,13 @@ ON CONFLICT (ip_address) DO UPDATE SET ip_name = EXCLUDED.ip_name, tracked_at = 
         log.warning(f"Error tracking IP name: {e}")
     return False
 
+def is_valid_username(username):
+    """Check if a username is a recognized/valid system user."""
+    if not username:
+        return False
+    valid_users = [ADMIN_USER, AVERAGE_USER, PARENT_USER, "admin", "user"]
+    return username.strip() in valid_users
+
 def is_app_locked_down():
     try:
         conn = get_db()
@@ -1265,7 +1280,7 @@ def login():
                     "message": "System in lockdown. Please provide security code."
                 }), 202
 
-            record_login_attempt(ip_addr, True)
+            record_login_attempt(ip_addr, True, username)
             session.permanent = True
             if is_admin:
                 session["admin_authenticated"] = True
@@ -1283,7 +1298,7 @@ def login():
                 redirect_url = "/"
             return jsonify({"status": "ok", "redirect": redirect_url})
         else:
-            lockout_info = record_login_attempt(ip_addr, False)
+            lockout_info = record_login_attempt(ip_addr, False, username)
             if lockout_info["locked"]:
                 return jsonify({
                     "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
@@ -1316,7 +1331,7 @@ def login():
             env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
             log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, is_parent={is_parent}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, received_hash={sc_hash}, env_hash={env_hash}")
             if secrets.compare_digest(password.strip(), expected_password) and secrets.compare_digest(security_code.strip(), security_code_env):
-                record_login_attempt(ip_addr, True)
+                record_login_attempt(ip_addr, True, username)
                 session.permanent = True
                 if is_admin:
                     session["admin_authenticated"] = True
@@ -1334,7 +1349,7 @@ def login():
                     redirect_url = "/"
                 return jsonify({"status": "ok", "redirect": redirect_url})
             else:
-                lockout_info = record_login_attempt(ip_addr, False)
+                lockout_info = record_login_attempt(ip_addr, False, username)
                 if lockout_info["locked"]:
                     return jsonify({
                         "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
@@ -1391,7 +1406,7 @@ def admin():
                     "message": "System in lockdown. Please provide security code."
                 }), 202
 
-            record_login_attempt(ip_addr, True)
+            record_login_attempt(ip_addr, True, "admin")
             session.permanent = True
             session["admin_authenticated"] = True
             session.modified = True
@@ -1405,14 +1420,14 @@ def admin():
                     "message": "System in lockdown. Please provide security code."
                 }), 202
 
-            record_login_attempt(ip_addr, True)
+            record_login_attempt(ip_addr, True, "user")
             session.permanent = True
             session["authenticated"] = True
             session.modified = True
             return jsonify({"status": "ok", "redirect": "/"})
 
         # Neither password matched
-        lockout_info = record_login_attempt(ip_addr, False)
+        lockout_info = record_login_attempt(ip_addr, False, "")
         if lockout_info["locked"]:
             return jsonify({
                 "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
@@ -1435,7 +1450,7 @@ def admin():
 
             # Check admin password with security code
             if password.strip() == ADMIN_PASSWORD and security_code.strip() == security_code_env:
-                record_login_attempt(ip_addr, True)
+                record_login_attempt(ip_addr, True, "admin")
                 session.permanent = True
                 session["admin_authenticated"] = True
                 session.modified = True
@@ -1443,14 +1458,14 @@ def admin():
 
             # Check app password with security code
             if password.strip() == APP_PASSWORD and security_code.strip() == security_code_env:
-                record_login_attempt(ip_addr, True)
+                record_login_attempt(ip_addr, True, "user")
                 session.permanent = True
                 session["authenticated"] = True
                 session.modified = True
                 return jsonify({"status": "ok", "redirect": "/"})
 
             # Neither matched
-            lockout_info = record_login_attempt(ip_addr, False)
+            lockout_info = record_login_attempt(ip_addr, False, "")
             if lockout_info["locked"]:
                 return jsonify({
                     "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
@@ -1473,7 +1488,7 @@ def api_admin_login_attempts():
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, COALESCE(iname.ip_name, bi.ip_name, '') as ip_name
+SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, la.username, COALESCE(iname.ip_name, bi.ip_name, '') as ip_name
 FROM login_attempts la
 LEFT JOIN ip_names iname ON la.ip_address = iname.ip_address
 LEFT JOIN blocked_ips bi ON la.ip_address = bi.ip_address
@@ -1484,6 +1499,7 @@ ORDER BY la.attempted_at DESC LIMIT 200""")
 
         for r in rows:
             r["attempted_at"] = r["attempted_at"].isoformat() if r["attempted_at"] else None
+            r["is_valid_user"] = is_valid_username(r.get("username", ""))
 
         return jsonify({"attempts": rows})
     except Exception as e:
