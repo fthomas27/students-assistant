@@ -1690,7 +1690,6 @@ margin-bottom: 0;
   <button class="sidebar-toggle-btn" data-column="2" onclick="openCalendarModal()" title="Calendar">📅</button>
   <button class="sidebar-toggle-btn" data-column="3" onclick="toggleSidebarColumn(3)" title="Plan">🎯</button>
   <button class="sidebar-toggle-btn" data-column="4" onclick="toggleSidebarColumn(4)" title="Assignments">📋</button>
-  <button class="sidebar-toggle-btn" data-column="5" onclick="toggleSidebarColumn(5)" title="Projects">📦</button>
 </div>
 
 <!-- Settings Modal -->
@@ -1910,7 +1909,7 @@ margin-bottom: 0;
 
 <div class="chat-input-area">
 <textarea class="chat-input" id="chatInput" placeholder="Ask me anything..." rows="1"></textarea>
-<button class="send-btn" id="sendBtn" onclick="sendMessage()">→</button>
+<button class="send-btn" id="sendBtn" type="button" onclick="sendMessage()">→</button>
 </div>
 </div>
 </div>
@@ -3199,13 +3198,18 @@ chatInput.addEventListener('keydown', e => {
   }
 });
 
-chatInput.addEventListener('input', () => {
+function updateSendBtn() {
   chatInput.style.transition = 'height 0.2s cubic-bezier(0.4, 0, 0.2, 1)';
   chatInput.style.height = 'auto';
   const newHeight = Math.min(chatInput.scrollHeight, 100);
   chatInput.style.height = newHeight + 'px';
   sendBtn.disabled = !chatInput.value.trim();
-});
+}
+
+chatInput.addEventListener('input', updateSendBtn);
+chatInput.addEventListener('keyup', updateSendBtn);
+chatInput.addEventListener('paste', () => setTimeout(updateSendBtn, 0));
+chatInput.addEventListener('compositionend', updateSendBtn);
 
 sendBtn.disabled = true;
 
@@ -3215,6 +3219,7 @@ async function sendMessage() {
 
   chatInput.value = '';
   chatInput.style.height = 'auto';
+  sendBtn.disabled = true;
 
   const messagesDiv = document.getElementById('chatMessages');
   if (messagesDiv.querySelector('.empty-state')) {
@@ -3508,7 +3513,7 @@ function rejectTaskSuggestion(suggestionId) {
 function suggestMessage(text) {
   chatInput.value = text;
   chatInput.focus();
-  chatInput.style.height = 'auto';
+  updateSendBtn();
 }
 
 function openAddTaskModal() {
