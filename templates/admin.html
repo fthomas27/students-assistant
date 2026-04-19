@@ -298,6 +298,7 @@ color: var(--text);
           <tr>
             <th>IP Address</th>
             <th>IP Name</th>
+            <th>Username</th>
             <th>Status</th>
             <th>Timestamp</th>
             <th>User Agent</th>
@@ -305,7 +306,7 @@ color: var(--text);
           </tr>
         </thead>
         <tbody id="login-tbody">
-          <tr><td colspan="6" class="loading">Loading...</td></tr>
+          <tr><td colspan="7" class="loading">Loading...</td></tr>
         </tbody>
       </table>
     </div>
@@ -407,8 +408,15 @@ function loadLoginAttempts() {
       return r.json();
     })
     .then(data => {
-      if (!data.attempts) {
-        document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">No login attempts found</td></tr>';
+      if (data.error) {
+        console.error('API error in login attempts:', data.error);
+        var errorMsg = data.error.includes('Database') ? 'Database connection error - ' + data.error : data.error;
+        document.getElementById('login-tbody').innerHTML = '<tr><td colspan="7" class="empty-state">' + errorMsg + '</td></tr>';
+        return;
+      }
+
+      if (!data.attempts || data.attempts.length === 0) {
+        document.getElementById('login-tbody').innerHTML = '<tr><td colspan="7" class="empty-state">No login attempts found</td></tr>';
         return;
       }
 
@@ -419,9 +427,23 @@ function loadLoginAttempts() {
         var row = document.createElement('tr');
         var statusClass = attempt.success ? 'status-success' : 'status-failed';
         var statusText = attempt.success ? 'Success' : 'Failed';
-        row.innerHTML = '<td class="ip-address"></td><td class="ip-name-cell" style="cursor: pointer;"></td><td class="status-cell"></td><td class="timestamp"></td><td class="user-agent"></td><td><button class="edit-btn" style="padding: 6px 12px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Name IP</button></td>';
+        row.innerHTML = '<td class="ip-address"></td><td class="ip-name-cell" style="cursor: pointer;"></td><td class="username-cell"></td><td class="status-cell"></td><td class="timestamp"></td><td class="user-agent"></td><td><button class="edit-btn" style="padding: 6px 12px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Name IP</button></td>';
         row.querySelector('.ip-address').textContent = attempt.ip_address;
         row.querySelector('.ip-name-cell').textContent = attempt.ip_name || '-';
+
+        // Display username with validity indicator
+        var usernameCell = row.querySelector('.username-cell');
+        if (attempt.username) {
+          var userDisplay = attempt.username;
+          if (attempt.is_valid_user) {
+            usernameCell.innerHTML = '<span style="color: var(--green); font-weight: 600;">✓ ' + userDisplay + '</span>';
+          } else {
+            usernameCell.innerHTML = '<span style="color: var(--red); font-weight: 600;">✗ ' + userDisplay + '</span>';
+          }
+        } else {
+          usernameCell.textContent = '-';
+        }
+
         var statusSpan = document.createElement('span');
         statusSpan.className = 'status-badge ' + statusClass;
         statusSpan.textContent = statusText;
@@ -441,8 +463,8 @@ function loadLoginAttempts() {
     })
     .catch(e => {
       console.error('Error loading login attempts:', e);
-      var errorMsg = e.name === 'AbortError' ? 'Request timeout - server not responding' : 'Error loading data';
-      document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">' + errorMsg + '</td></tr>';
+      var errorMsg = e.name === 'AbortError' ? 'Request timeout - server not responding' : 'Error loading data: ' + e.message;
+      document.getElementById('login-tbody').innerHTML = '<tr><td colspan="7" class="empty-state">' + errorMsg + '</td></tr>';
     });
 }
 
