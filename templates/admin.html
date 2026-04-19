@@ -380,6 +380,13 @@ color: var(--text);
 </div>
 
 <script>
+function createFetchWithTimeout(url, options = {}) {
+  var controller = new AbortController();
+  var timeoutId = setTimeout(() => controller.abort(), 10000);
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timeoutId));
+}
+
 function logout() {
   fetch('/logout', { method: 'POST', credentials: 'same-origin' })
     .then(() => { window.location.href = '/login'; });
@@ -392,15 +399,10 @@ function formatDate(isoString) {
 }
 
 function loadLoginAttempts() {
-  var controller = new AbortController();
-  var timeoutId = setTimeout(() => controller.abort(), 10000);
-
-  fetch('/api/admin/login-attempts', {
-    credentials: 'same-origin',
-    signal: controller.signal
+  createFetchWithTimeout('/api/admin/login-attempts', {
+    credentials: 'same-origin'
   })
     .then(r => {
-      clearTimeout(timeoutId);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     })
@@ -438,7 +440,6 @@ function loadLoginAttempts() {
       document.getElementById('attempt-count').textContent = data.attempts.length;
     })
     .catch(e => {
-      clearTimeout(timeoutId);
       console.error('Error loading login attempts:', e);
       var errorMsg = e.name === 'AbortError' ? 'Request timeout - server not responding' : 'Error loading data';
       document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">' + errorMsg + '</td></tr>';
@@ -446,15 +447,10 @@ function loadLoginAttempts() {
 }
 
 function loadSuspiciousActivity() {
-  var controller = new AbortController();
-  var timeoutId = setTimeout(() => controller.abort(), 10000);
-
-  fetch('/api/admin/suspicious-activity', {
-    credentials: 'same-origin',
-    signal: controller.signal
+  createFetchWithTimeout('/api/admin/suspicious-activity', {
+    credentials: 'same-origin'
   })
     .then(r => {
-      clearTimeout(timeoutId);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     })
@@ -500,21 +496,18 @@ function loadSuspiciousActivity() {
       document.getElementById('lockout-count').textContent = data.active_lockouts.length;
     })
     .catch(e => {
-      clearTimeout(timeoutId);
       console.error('Error loading suspicious activity:', e);
+      var errorMsg = e.name === 'AbortError' ? 'Timeout' : 'Error loading data';
+      document.getElementById('suspicious-tbody').innerHTML = '<tr><td colspan="3" class="empty-state">' + errorMsg + '</td></tr>';
+      document.getElementById('lockout-tbody').innerHTML = '<tr><td colspan="3" class="empty-state">' + errorMsg + '</td></tr>';
     });
 }
 
 function loadClaudeUsage() {
-  var controller = new AbortController();
-  var timeoutId = setTimeout(() => controller.abort(), 10000);
-
-  fetch('/api/admin/claude-usage', {
-    credentials: 'same-origin',
-    signal: controller.signal
+  createFetchWithTimeout('/api/admin/claude-usage', {
+    credentials: 'same-origin'
   })
     .then(r => {
-      clearTimeout(timeoutId);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     })
@@ -525,21 +518,17 @@ function loadClaudeUsage() {
       document.getElementById('progress-fill').style.width = percent + '%';
     })
     .catch(e => {
-      clearTimeout(timeoutId);
       console.error('Error loading Claude usage:', e);
+      document.getElementById('tokens-percent').textContent = 'Error';
+      document.getElementById('tokens-used').textContent = e.name === 'AbortError' ? 'Request timeout' : 'Error loading data';
     });
 }
 
 function loadLockdownStatus() {
-  var controller = new AbortController();
-  var timeoutId = setTimeout(() => controller.abort(), 10000);
-
-  fetch('/api/lockdown-status', {
-    credentials: 'same-origin',
-    signal: controller.signal
+  createFetchWithTimeout('/api/lockdown-status', {
+    credentials: 'same-origin'
   })
     .then(r => {
-      clearTimeout(timeoutId);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     })
@@ -564,8 +553,10 @@ function loadLockdownStatus() {
       }
     })
     .catch(e => {
-      clearTimeout(timeoutId);
       console.error('Error loading lockdown status:', e);
+      document.getElementById('lockdown-status').textContent = 'Error';
+      document.getElementById('lockdown-status').style.color = 'var(--red)';
+      document.getElementById('lockdown-info').textContent = e.name === 'AbortError' ? 'Request timeout' : 'Failed to load status';
     });
 }
 
@@ -593,15 +584,10 @@ function toggleLockdown() {
 }
 
 function loadBlockedIPs() {
-  var controller = new AbortController();
-  var timeoutId = setTimeout(() => controller.abort(), 10000);
-
-  fetch('/api/admin/blocked-ips', {
-    credentials: 'same-origin',
-    signal: controller.signal
+  createFetchWithTimeout('/api/admin/blocked-ips', {
+    credentials: 'same-origin'
   })
     .then(r => {
-      clearTimeout(timeoutId);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     })
@@ -629,9 +615,9 @@ function loadBlockedIPs() {
       });
     })
     .catch(e => {
-      clearTimeout(timeoutId);
       console.error('Error loading blocked IPs:', e);
-      document.getElementById('blocked-ips-tbody').innerHTML = '<tr><td colspan="5" class="empty-state">Error loading data</td></tr>';
+      var errorMsg = e.name === 'AbortError' ? 'Request timeout - server not responding' : 'Error loading data';
+      document.getElementById('blocked-ips-tbody').innerHTML = '<tr><td colspan="5" class="empty-state">' + errorMsg + '</td></tr>';
     });
 }
 
