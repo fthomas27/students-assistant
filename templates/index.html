@@ -762,6 +762,7 @@ background: var(--surface3);
 color: var(--text3);
 cursor: not-allowed;
 transform: scale(1);
+pointer-events: none;
 }
 
 /* ── RESPONSIVE ── */
@@ -3198,20 +3199,14 @@ chatInput.addEventListener('keydown', e => {
   }
 });
 
-function updateSendBtn() {
+function resizeChatInput() {
   chatInput.style.transition = 'height 0.2s cubic-bezier(0.4, 0, 0.2, 1)';
   chatInput.style.height = 'auto';
-  const newHeight = Math.min(chatInput.scrollHeight, 100);
-  chatInput.style.height = newHeight + 'px';
-  sendBtn.disabled = !chatInput.value.trim();
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 100) + 'px';
 }
 
-chatInput.addEventListener('input', updateSendBtn);
-chatInput.addEventListener('keyup', updateSendBtn);
-chatInput.addEventListener('paste', () => setTimeout(updateSendBtn, 0));
-chatInput.addEventListener('compositionend', updateSendBtn);
-
-sendBtn.disabled = true;
+chatInput.addEventListener('input', resizeChatInput);
+chatInput.addEventListener('paste', () => setTimeout(resizeChatInput, 0));
 
 async function sendMessage() {
   const message = chatInput.value.trim();
@@ -3219,7 +3214,6 @@ async function sendMessage() {
 
   chatInput.value = '';
   chatInput.style.height = 'auto';
-  sendBtn.disabled = true;
 
   const messagesDiv = document.getElementById('chatMessages');
   if (messagesDiv.querySelector('.empty-state')) {
@@ -3513,7 +3507,7 @@ function rejectTaskSuggestion(suggestionId) {
 function suggestMessage(text) {
   chatInput.value = text;
   chatInput.focus();
-  updateSendBtn();
+  resizeChatInput();
 }
 
 function openAddTaskModal() {
