@@ -5,6 +5,7 @@ import threading
 import socket
 import json
 import ipaddress
+import hashlib
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
@@ -75,7 +76,7 @@ _briefing_lock = threading.Lock()
 @app.before_request
 def require_auth():
     path = request.path.rstrip('/')
-    if path in ('/login', '/logout', '/admin', '/debug-security-code'):
+    if path in ('/login', '/logout', '/admin'):
         return None
     if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
         return None
@@ -431,6 +432,16 @@ CREATE TABLE IF NOT EXISTS ip_names (
     ip_name TEXT NOT NULL,
     tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )""")
+
+    # Migrate existing IP names from blocked_ips table to preserve them
+    try:
+        cur.execute("""
+INSERT INTO ip_names (ip_address, ip_name)
+SELECT ip_address, ip_name FROM blocked_ips
+WHERE ip_name IS NOT NULL AND ip_name != ''
+ON CONFLICT (ip_address) DO NOTHING""")
+    except:
+        pass
 
     defaults = {
         "name": "Jarvis",
@@ -1149,14 +1160,18 @@ _login_lock = threading.Lock()
 
 def get_client_ip():
     """Get validated client IP address. ProxyFix middleware handles reverse proxy headers."""
-    ip = request.remote_addr or 'unknown'
-    if ip != 'unknown':
+    ip = request.remote_addr or None
+    if ip:
         try:
             ipaddress.ip_address(ip)
+            return ip
         except ValueError:
             log.warning(f"Invalid IP format detected from request: {ip}")
-            ip = 'unknown'
-    return ip
+    # If IP is invalid/missing, use hash of request context to avoid shared rate limit state
+    user_agent = request.headers.get('User-Agent', '')
+    origin = request.headers.get('Origin', request.headers.get('Referer', ''))
+    context = f"{user_agent}|{origin}|{request.remote_addr}"
+    return f"unknown-{hashlib.sha256(context.encode()).hexdigest()[:12]}"
 
 def is_ip_locked(ip_addr):
     """Check if IP is currently locked out."""
@@ -1259,7 +1274,13 @@ def get_blocked_ips():
     return []
 
 def block_ip(ip_addr, reason="", ip_name=""):
-    """Add IP to blocklist or update existing IP name."""
+    """Add IP to blocklist or update existing IP name. Only accepts real IPv4/IPv6 addresses."""
+    try:
+        ipaddress.ip_address(ip_addr)
+    except ValueError:
+        log.warning(f"Cannot block IP: {ip_addr} is not a valid IPv4/IPv6 address")
+        return False
+
     try:
         conn = get_db()
         cur = conn.cursor()
@@ -1306,8 +1327,8 @@ def track_ip_name(ip_addr, ip_name=""):
         cur.execute("""
 INSERT INTO ip_names (ip_address, ip_name)
 VALUES (%s, %s)
-ON CONFLICT (ip_address) DO UPDATE SET ip_name = %s""",
-                    (ip_addr, ip_name, ip_name))
+ON CONFLICT (ip_address) DO UPDATE SET ip_name = EXCLUDED.ip_name, tracked_at = NOW()""",
+                    (ip_addr, ip_name))
         conn.commit()
         cur.close()
         conn.close()
@@ -1424,7 +1445,11 @@ def login():
             return jsonify({"error": "Invalid username or password"}), 401
 
     if password and security_code:
-        security_code_env = os.environ.get("SECURITY_CODE", "test").strip()
+        security_code_env = os.environ.get("SECURITY_CODE", "").strip()
+        if not security_code_env:
+            log.error("SECURITY_CODE environment variable not set. Cannot process security code.")
+            return jsonify({"error": "Security code not configured"}), 500
+
         is_admin = username == ADMIN_USER
         expected_password = ADMIN_PASSWORD if is_admin else APP_PASSWORD
 
@@ -1432,10 +1457,9 @@ def login():
         # 1. System is in lockdown, OR
         # 2. IP is blocked
         if is_locked_down or ip_is_blocked:
-            import hashlib
             sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
-            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8] if security_code_env else "EMPTY"
-            log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, sc_provided='{security_code}', env_var='{security_code_env}', received_hash={sc_hash}, env_hash={env_hash}")
+            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
+            log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, received_hash={sc_hash}, env_hash={env_hash}")
             if password.strip() == expected_password and security_code.strip() == security_code_env:
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
@@ -1466,24 +1490,6 @@ def logout():
     return redirect("/login")
 
 
-@app.route("/debug-security-code")
-def debug_security_code():
-    """Debug endpoint - shows security code status (no auth required)"""
-    security_code = os.environ.get("SECURITY_CODE", "")
-    lockdown = is_app_locked_down()
-    # Show all env vars that contain 'SECURITY' or 'CODE'
-    all_vars = {k: v for k, v in os.environ.items() if 'SECURITY' in k or 'CODE' in k}
-    return jsonify({
-        "security_code_set": bool(security_code),
-        "security_code_length": len(security_code),
-        "security_code_value": security_code if security_code else "NOT_SET",
-        "system_locked_down": lockdown,
-        "all_matching_vars": all_vars,
-        "security_code_from_os_environ": os.environ.get("SECURITY_CODE"),
-        "debug_info": "Check if SECURITY_CODE env var exists"
-    })
-
-
 @app.route("/admin", methods=["GET", "POST"])
 def admin():
     if request.method == "GET":
@@ -1509,7 +1515,6 @@ def admin():
     log.info(f"Admin login: password={bool(password)}, security_code={bool(security_code)}, locked_down={is_locked_down}")
 
     if password and not security_code:
-        import hashlib
         pwd_hash = hashlib.sha256(password.encode()).hexdigest()[:8]
         admin_hash = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()[:8]
         log.info(f"Login attempt: password_hash={pwd_hash}, admin_hash={admin_hash}, match={password.strip() == ADMIN_PASSWORD}")
@@ -1555,11 +1560,14 @@ def admin():
     # Handle security code for both app and admin
     if password and security_code:
         if is_locked_down:
-            security_code_env = os.environ.get("SECURITY_CODE", "test").strip()
-            import hashlib
+            security_code_env = os.environ.get("SECURITY_CODE", "").strip()
+            if not security_code_env:
+                log.error("SECURITY_CODE environment variable not set. Cannot process security code.")
+                return jsonify({"error": "Security code not configured"}), 500
+
             sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
-            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8] if security_code_env else "EMPTY"
-            log.warning(f"Security code attempt: sc_provided='{security_code}', sc_stripped='{security_code.strip()}', env_var='{security_code_env}', received_hash={sc_hash}, env_hash={env_hash}, env_len={len(security_code_env)}, pwd_match={password.strip() == ADMIN_PASSWORD or password.strip() == APP_PASSWORD}")
+            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
+            log.warning(f"Security code attempt: received_hash={sc_hash}, env_hash={env_hash}, pwd_match={password.strip() == ADMIN_PASSWORD or password.strip() == APP_PASSWORD}")
 
             # Check admin password with security code
             if password.strip() == ADMIN_PASSWORD and security_code.strip() == security_code_env:
@@ -1601,9 +1609,10 @@ def api_admin_login_attempts():
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, COALESCE(iname.ip_name, '') as ip_name
+SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, COALESCE(iname.ip_name, bi.ip_name, '') as ip_name
 FROM login_attempts la
 LEFT JOIN ip_names iname ON la.ip_address = iname.ip_address
+LEFT JOIN blocked_ips bi ON la.ip_address = bi.ip_address
 ORDER BY la.attempted_at DESC LIMIT 200""")
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
@@ -1699,9 +1708,18 @@ def api_lockdown_status():
     return jsonify({"is_locked_down": is_locked})
 
 
+def is_localhost():
+    """Check if request is from localhost (127.0.0.1 or ::1)"""
+    ip = get_client_ip()
+    return ip in ('127.0.0.1', '::1', 'localhost')
+
+
 @app.route("/api/test-admin-password")
 def api_test_admin_password():
-    """Debug endpoint - shows if ADMIN_PASSWORD is set"""
+    """Debug endpoint - localhost only - shows if ADMIN_PASSWORD is set"""
+    if not is_localhost():
+        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
+
     if ADMIN_PASSWORD == "admin-change-me":
         return jsonify({"status": "USING_DEFAULT", "message": "ADMIN_PASSWORD not set in environment, using default"})
     else:
@@ -1710,7 +1728,10 @@ def api_test_admin_password():
 
 @app.route("/api/test-security-code")
 def api_test_security_code():
-    """Debug endpoint - shows if SECURITY_CODE is set"""
+    """Debug endpoint - localhost only - shows if SECURITY_CODE is set"""
+    if not is_localhost():
+        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
+
     security_code = os.environ.get("SECURITY_CODE", "")
     if not security_code:
         return jsonify({"status": "NOT_SET", "message": "SECURITY_CODE environment variable not set"})
@@ -1720,7 +1741,10 @@ def api_test_security_code():
 
 @app.route("/api/test-lockdown-status")
 def api_test_lockdown_status():
-    """Debug endpoint - shows current lockdown state"""
+    """Debug endpoint - localhost only - shows current lockdown state"""
+    if not is_localhost():
+        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
+
     is_locked = is_app_locked_down()
     return jsonify({"is_locked_down": is_locked, "message": f"System is {'LOCKED DOWN' if is_locked else 'NORMAL'}"})
 
@@ -1779,6 +1803,12 @@ def api_admin_block_ip():
 
         if not ip_addr:
             return jsonify({"error": "IP address required"}), 400
+
+        # Validate IP format before attempting to block
+        try:
+            ipaddress.ip_address(ip_addr)
+        except ValueError:
+            return jsonify({"error": f"Invalid IP address: {ip_addr}. Must be a valid IPv4 or IPv6 address. Cannot block temporary/hashed IP addresses."}), 400
 
         if block_ip(ip_addr, reason, ip_name):
             return jsonify({"status": "blocked", "ip": ip_addr})
