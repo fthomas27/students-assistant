@@ -5,6 +5,7 @@ import threading
 import socket
 import json
 import ipaddress
+import hashlib
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
@@ -431,6 +432,16 @@ CREATE TABLE IF NOT EXISTS ip_names (
     ip_name TEXT NOT NULL,
     tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )""")
+
+    # Migrate existing IP names from blocked_ips table to preserve them
+    try:
+        cur.execute("""
+INSERT INTO ip_names (ip_address, ip_name)
+SELECT ip_address, ip_name FROM blocked_ips
+WHERE ip_name IS NOT NULL AND ip_name != ''
+ON CONFLICT (ip_address) DO NOTHING""")
+    except:
+        pass
 
     defaults = {
         "name": "Jarvis",
@@ -1149,14 +1160,18 @@ _login_lock = threading.Lock()
 
 def get_client_ip():
     """Get validated client IP address. ProxyFix middleware handles reverse proxy headers."""
-    ip = request.remote_addr or 'unknown'
-    if ip != 'unknown':
+    ip = request.remote_addr or None
+    if ip:
         try:
             ipaddress.ip_address(ip)
+            return ip
         except ValueError:
             log.warning(f"Invalid IP format detected from request: {ip}")
-            ip = 'unknown'
-    return ip
+    # If IP is invalid/missing, use hash of request context to avoid shared rate limit state
+    user_agent = request.headers.get('User-Agent', '')
+    origin = request.headers.get('Origin', request.headers.get('Referer', ''))
+    context = f"{user_agent}|{origin}|{request.remote_addr}"
+    return f"unknown-{hashlib.sha256(context.encode()).hexdigest()[:12]}"
 
 def is_ip_locked(ip_addr):
     """Check if IP is currently locked out."""
@@ -1306,8 +1321,8 @@ def track_ip_name(ip_addr, ip_name=""):
         cur.execute("""
 INSERT INTO ip_names (ip_address, ip_name)
 VALUES (%s, %s)
-ON CONFLICT (ip_address) DO UPDATE SET ip_name = %s""",
-                    (ip_addr, ip_name, ip_name))
+ON CONFLICT (ip_address) DO UPDATE SET ip_name = EXCLUDED.ip_name, tracked_at = NOW()""",
+                    (ip_addr, ip_name))
         conn.commit()
         cur.close()
         conn.close()
@@ -1601,9 +1616,10 @@ def api_admin_login_attempts():
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, COALESCE(iname.ip_name, '') as ip_name
+SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, COALESCE(iname.ip_name, bi.ip_name, '') as ip_name
 FROM login_attempts la
 LEFT JOIN ip_names iname ON la.ip_address = iname.ip_address
+LEFT JOIN blocked_ips bi ON la.ip_address = bi.ip_address
 ORDER BY la.attempted_at DESC LIMIT 200""")
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
