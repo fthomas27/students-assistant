@@ -2361,9 +2361,7 @@ async function viewProject(title, description) {
 
 async function openProjectDetailsModal(projectId) {
   try {
-    console.log('openProjectDetailsModal called for project', projectId);
     closeProjectDetailsModal();
-    await new Promise(resolve => setTimeout(resolve, 50));
     const project = projectsCache.find(p => p.id === projectId);
     const notesRes = await fetch(`/api/projects/${projectId}/notes`);
     const tasksRes = await fetch(`/api/projects/${projectId}/tasks`);
@@ -2468,26 +2466,10 @@ async function openProjectDetailsModal(projectId) {
 }
 
 function closeProjectDetailsModal() {
-  console.log('closeProjectDetailsModal called');
   const modal = document.getElementById('projectDetailsModal');
-  if (!modal) {
-    console.log('No projectDetailsModal found');
-    return;
+  if (modal) {
+    modal.parentNode?.removeChild(modal);
   }
-  console.log('Found modal, closing...');
-  modal.style.display = 'none';
-  modal.style.visibility = 'hidden';
-  modal.style.opacity = '0';
-  modal.style.pointerEvents = 'none';
-  if (modal.parentNode) {
-    modal.parentNode.removeChild(modal);
-  }
-  try {
-    modal.remove();
-  } catch (e) {
-    console.error('Error removing modal:', e);
-  }
-  console.log('Modal close completed');
 }
 
 async function addProjectNote(projectId) {
