@@ -2407,12 +2407,12 @@ async function openProjectDetailsModal(projectId) {
 
       <div style="border-top: 1px solid var(--border); padding-top: 16px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <h4 style="margin: 0; color: var(--text);">✓ Tasks</h4>
+          <h4 style="margin: 0; color: var(--text);">✓ Tasks (${(tasks.tasks && tasks.tasks.length) || 0})</h4>
           <button onclick="addProjectTask(${projectId})" style="background: none; border: none; color: var(--accent); cursor: pointer; font-size: 16px;">+</button>
         </div>
     `;
 
-    if (tasks.tasks && tasks.tasks.length > 0) {
+    if (tasks && tasks.tasks && tasks.tasks.length > 0) {
       tasks.tasks.forEach(task => {
         html += `
           <div style="background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px;">
@@ -2435,7 +2435,7 @@ async function openProjectDetailsModal(projectId) {
     document.getElementById('projectDetailsBackdrop').classList.add('visible');
   } catch (e) {
     console.error('Error loading project details:', e);
-    alert('Failed to load project details');
+    alert('Failed to load project details: ' + e.message);
   }
 }
 
