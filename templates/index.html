@@ -1519,7 +1519,10 @@ margin-bottom: 0;
 
 <!-- LEFT COLUMN 1: Tasks & Projects -->
 <aside class="sidebar sidebar-col-1" id="sidebarCol1">
-<div class="sidebar-header">✓ Tasks</div>
+<div class="sidebar-header" style="display: flex; justify-content: space-between; align-items: center;">
+  <span>✓ Tasks</span>
+  <button onclick="openAddTaskModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new task">+</button>
+</div>
 
 <div class="sidebar-section">
 <div id="tasksSection" class="section-content">
@@ -2057,9 +2060,12 @@ function renderTasks() {
   container.innerHTML = sorted.slice(0, 8).map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
     return `
-      <div class="sidebar-item ${urgencyClass}" style="cursor: pointer;" onclick="viewTask(${t.id})">
-        <div class="sidebar-item-title">${t.title}</div>
-        <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
+      <div class="sidebar-item ${urgencyClass}" style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
+        <div style="flex: 1; cursor: pointer;" onclick="viewTask(${t.id})">
+          <div class="sidebar-item-title">${t.title}</div>
+          <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
+        </div>
+        <button class="complete-btn" onclick="completeTask(event, ${t.id})" style="background: none; border: none; color: var(--text2); cursor: pointer; font-size: 16px; padding: 2px 6px; margin-top: 2px; flex-shrink: 0;" title="Mark as done">✓</button>
       </div>
     `;
   }).join('');
@@ -2132,6 +2138,7 @@ function viewTask(taskId) {
   };
 
   const urg = urgencyColors[task.urgency] || { color: '#999999', label: task.urgency };
+  const dueDateStr = task.due_date ? `<strong>Due:</strong> ${task.due_date}<br/>` : '';
 
   const bubble = document.createElement('div');
   bubble.className = 'message assistant';
@@ -2139,8 +2146,12 @@ function viewTask(taskId) {
     <div class="message-bubble">
       <strong>✓ ${escapeHtml(task.title)}</strong><br/>
       <strong>Priority:</strong> <span style="display: inline-block; width: 12px; height: 12px; background: ${urg.color}; border-radius: 50%; margin-right: 6px; vertical-align: middle;"></span> ${urg.label}<br/>
+      ${dueDateStr}
       ${task.notes ? `<strong>Notes:</strong> ${escapeHtml(task.notes)}<br/>` : ''}
-      <button onclick="editTask(${taskId})" style="margin-top: 10px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600;">Edit Task</button>
+      <div style="display: flex; gap: 8px; margin-top: 10px;">
+        <button onclick="completeTask(null, ${taskId})" style="flex: 1; padding: 8px 16px; background: var(--green); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600;">✓ Complete</button>
+        <button onclick="editTask(${taskId})" style="flex: 1; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600;">Edit Task</button>
+      </div>
     </div>
   `;
   messagesDiv.appendChild(bubble);
@@ -2884,6 +2895,157 @@ function suggestMessage(text) {
   chatInput.value = text;
   chatInput.focus();
   chatInput.style.height = 'auto';
+}
+
+function openAddTaskModal() {
+  const modal = document.createElement('div');
+  modal.id = 'addTaskModal';
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    animation: fadeInBackdrop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  `;
+
+  const form = document.createElement('div');
+  form.style.cssText = `
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 24px;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
+    animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  `;
+
+  form.innerHTML = `
+    <h3 style="margin: 0 0 16px 0; color: var(--text);">Add New Task</h3>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Title</label>
+      <input id="newTaskTitle" type="text" placeholder="What needs to be done?" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+    </div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Priority</label>
+      <select id="newTaskUrgency" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+        <option value="low">● Low</option>
+        <option value="medium" selected>● Medium</option>
+        <option value="high">● High</option>
+        <option value="critical">● Critical</option>
+      </select>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Due Date (optional)</label>
+      <input id="newTaskDueDate" type="date" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+    </div>
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Notes (optional)</label>
+      <textarea id="newTaskNotes" placeholder="Any additional details..." style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 60px; font-family: inherit;"></textarea>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button onclick="closeAddTaskModal()" style="flex: 1; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); cursor: pointer; font-weight: 600;">Cancel</button>
+      <button onclick="saveNewTask()" style="flex: 1; padding: 8px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Create Task</button>
+    </div>
+  `;
+
+  modal.appendChild(form);
+  document.body.appendChild(modal);
+  document.getElementById('newTaskTitle').focus();
+  modal.onclick = (e) => {
+    if (e.target === modal) closeAddTaskModal();
+  };
+}
+
+function closeAddTaskModal() {
+  const modal = document.getElementById('addTaskModal');
+  if (modal) {
+    modal.style.opacity = '0';
+    modal.style.transition = 'opacity 0.2s';
+    setTimeout(() => modal.remove(), 200);
+  }
+}
+
+async function saveNewTask() {
+  const title = document.getElementById('newTaskTitle').value.trim();
+  const urgency = document.getElementById('newTaskUrgency').value;
+  const due_date = document.getElementById('newTaskDueDate').value || null;
+  const notes = document.getElementById('newTaskNotes').value.trim();
+
+  if (!title) {
+    alert('Task title is required');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: title,
+        urgency: urgency,
+        due_date: due_date,
+        notes: notes
+      })
+    });
+
+    if (response.ok) {
+      closeAddTaskModal();
+      await loadSidebarData();
+
+      const messagesDiv = document.getElementById('chatMessages');
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      const dueDateStr = due_date ? ` due ${due_date}` : '';
+      bubble.innerHTML = `<div class="message-bubble">✓ Task <strong>"${escapeHtml(title)}"</strong> created!${dueDateStr}</div>`;
+      messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    } else {
+      alert('Failed to create task');
+    }
+  } catch (e) {
+    console.error('Error creating task:', e);
+    alert('Error creating task');
+  }
+}
+
+async function completeTask(event, taskId) {
+  if (event) {
+    event.stopPropagation();
+  }
+  try {
+    const response = await fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ completed: true })
+    });
+
+    if (response.ok) {
+      await loadSidebarData();
+      const task = tasksCache.find(t => t.id === taskId);
+      if (task) {
+        task.completed = true;
+      }
+
+      const messagesDiv = document.getElementById('chatMessages');
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      bubble.innerHTML = `<div class="message-bubble">✓ Task completed!</div>`;
+      messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    } else {
+      alert('Failed to complete task');
+    }
+  } catch (e) {
+    console.error('Error completing task:', e);
+    alert('Error completing task');
+  }
 }
 
 // Calendar functionality
