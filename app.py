@@ -289,15 +289,26 @@ def init_db():
 
     try:
         cur.execute("ALTER TABLE blocked_ips ADD COLUMN ip_name TEXT DEFAULT ''")
+        conn.commit()
     except psycopg2.Error as e:
         log.debug(f"Column ip_name may already exist: {e}")
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
 
-    cur.execute("""
+    try:
+        cur.execute("""
 CREATE TABLE IF NOT EXISTS ip_names (
     ip_address TEXT PRIMARY KEY,
     ip_name TEXT NOT NULL,
     tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )""")
+        conn.commit()
+    except psycopg2.Error as e:
+        log.debug(f"ip_names table creation: {e}")
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
 
     try:
         cur.execute("ALTER TABLE login_attempts ADD COLUMN username TEXT DEFAULT ''")
@@ -322,8 +333,12 @@ INSERT INTO ip_names (ip_address, ip_name)
 SELECT ip_address, ip_name FROM blocked_ips
 WHERE ip_name IS NOT NULL AND ip_name != ''
 ON CONFLICT (ip_address) DO NOTHING""")
+        conn.commit()
     except psycopg2.Error as e:
         log.debug(f"IP names migration: {e}")
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
 
     # Insert default config values
     defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas"}
@@ -811,7 +826,7 @@ LIMIT 3""")
             schedule_note = "No school today."
 
         prompt = (
-            "You are Jarvis, the exceptionally capable and sophisticated AI assistant of a high school student in Park City, Utah. "
+            "You are Jarvis, the exceptionally capable and sophisticated AI assistant for %s, a high school student in Park City, Utah. "
             "You communicate with intelligence, wit, and refined professionalism. Address the student with respect. "
             "Provide analytical insights while maintaining an air of composed competence.\n\n"
             "Current time: %s\n"
@@ -938,7 +953,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         now_str = datetime.now(TZ).strftime("%A, %B %-d at %-I:%M %p")
 
         prompt = (
-            "You are Jarvis, a distinguished AI assistant providing an evening debrief to a high school student in Park City, Utah.\n"
+            "You are Jarvis, a distinguished AI assistant providing an evening debrief for %s, a high school student in Park City, Utah.\n"
             "Current time: %s (evening debrief)\n\n"
             "TODAY'S ACCOMPLISHMENTS:\n%s\n\n"
             "PRODUCTIVITY METRICS:\n%s\n\n"
