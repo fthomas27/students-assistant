@@ -1531,7 +1531,10 @@ margin-bottom: 0;
 </div>
 </div>
 
-<div class="sidebar-header" style="margin-top: 16px;">📦 Projects</div>
+<div class="sidebar-header" style="margin-top: 16px; display: flex; justify-content: space-between; align-items: center;">
+  <span>📦 Projects</span>
+  <button onclick="openAddProjectModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new project">+</button>
+</div>
 <div class="sidebar-section">
 <div id="projectsSection" class="section-content">
 <div id="projectsList"></div>
@@ -2096,9 +2099,15 @@ function renderProjects() {
   }
 
   container.innerHTML = projectsCache.filter(p => p.status === 'active').slice(0, 5).map(p => `
-    <div class="sidebar-item" style="cursor: pointer;" onclick="viewProject('${(p.title || '').replace(/'/g, "\\'")}', '${(p.description || '').replace(/'/g, "\\'")}')">
-      <div class="sidebar-item-title">${p.title}</div>
-      <div class="sidebar-item-meta">Project</div>
+    <div class="sidebar-item" style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+      <div style="flex: 1; cursor: pointer;" onclick="viewProject('${(p.title || '').replace(/'/g, "\\'")}', '${(p.description || '').replace(/'/g, "\\'")}')">
+        <div class="sidebar-item-title">${p.title}</div>
+        <div class="sidebar-item-meta">Project</div>
+      </div>
+      <div style="display: flex; gap: 4px; flex-shrink: 0;">
+        <button onclick="editProject(${p.id})" style="background: none; border: none; color: var(--text2); cursor: pointer; font-size: 14px; padding: 2px 4px;" title="Edit">✎</button>
+        <button onclick="deleteProject(${p.id})" style="background: none; border: none; color: var(--red); cursor: pointer; font-size: 14px; padding: 2px 4px;" title="Delete">✕</button>
+      </div>
     </div>
   `).join('');
   updateSidebarStats();
@@ -3098,6 +3107,238 @@ async function deleteTask(taskId) {
   } catch (e) {
     console.error('Error deleting task:', e);
     alert('Error deleting task');
+  }
+}
+
+// Project management
+async function openAddProjectModal() {
+  const modal = document.createElement('div');
+  modal.id = 'addProjectModal';
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    animation: fadeInBackdrop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  `;
+
+  const form = document.createElement('div');
+  form.style.cssText = `
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 24px;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
+    animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  `;
+
+  form.innerHTML = `
+    <h3 style="margin: 0 0 16px 0; color: var(--text);">Create New Project</h3>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Project Name</label>
+      <input id="projectTitle" type="text" placeholder="Project title" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+    </div>
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Description (optional)</label>
+      <textarea id="projectDescription" placeholder="Project description..." style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 80px; font-family: inherit;"></textarea>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button onclick="closeAddProjectModal()" style="flex: 1; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); cursor: pointer; font-weight: 600;">Cancel</button>
+      <button onclick="saveNewProject()" style="flex: 1; padding: 8px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Create</button>
+    </div>
+  `;
+
+  modal.appendChild(form);
+  document.body.appendChild(modal);
+  document.getElementById('projectTitle').focus();
+  modal.onclick = (e) => {
+    if (e.target === modal) closeAddProjectModal();
+  };
+}
+
+function closeAddProjectModal() {
+  const modal = document.getElementById('addProjectModal');
+  if (modal) {
+    modal.style.opacity = '0';
+    modal.style.transition = 'opacity 0.2s';
+    setTimeout(() => modal.remove(), 200);
+  }
+}
+
+async function saveNewProject() {
+  const title = document.getElementById('projectTitle').value.trim();
+  const description = document.getElementById('projectDescription').value.trim();
+
+  if (!title) {
+    alert('Project title is required');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: title,
+        description: description,
+        status: 'active'
+      })
+    });
+
+    if (response.ok) {
+      closeAddProjectModal();
+      await loadSidebarData();
+      const messagesDiv = document.getElementById('chatMessages');
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      bubble.innerHTML = `<div class="message-bubble">✓ Project <strong>"${escapeHtml(title)}"</strong> created!</div>`;
+      messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    } else {
+      alert('Failed to create project');
+    }
+  } catch (e) {
+    console.error('Error creating project:', e);
+    alert('Error creating project');
+  }
+}
+
+async function editProject(projectId) {
+  const project = projectsCache.find(p => p.id === projectId);
+  if (!project) return;
+
+  const modal = document.createElement('div');
+  modal.id = 'editProjectModal';
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+  `;
+
+  const form = document.createElement('div');
+  form.style.cssText = `
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 24px;
+    max-width: 400px;
+    width: 90%;
+  `;
+
+  form.innerHTML = `
+    <h3 style="margin: 0 0 16px 0; color: var(--text);">Edit Project</h3>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Project Name</label>
+      <input id="editProjectTitle" type="text" value="${escapeHtml(project.title)}" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+    </div>
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Description</label>
+      <textarea id="editProjectDescription" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 80px; font-family: inherit;">${escapeHtml(project.description || '')}</textarea>
+    </div>
+    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+      <button onclick="closeEditProjectModal()" style="flex: 1; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); cursor: pointer; font-weight: 600;">Cancel</button>
+      <button onclick="saveEditProject(${projectId})" style="flex: 1; padding: 8px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Save</button>
+    </div>
+    <button onclick="deleteProjectConfirm(${projectId})" style="width: 100%; padding: 8px; background: var(--red); border: 1px solid var(--red); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Delete Project</button>
+  `;
+
+  modal.appendChild(form);
+  document.body.appendChild(modal);
+  document.getElementById('editProjectTitle').focus();
+  modal.onclick = (e) => {
+    if (e.target === modal) closeEditProjectModal();
+  };
+}
+
+function closeEditProjectModal() {
+  const modal = document.getElementById('editProjectModal');
+  if (modal) {
+    modal.style.opacity = '0';
+    setTimeout(() => modal.remove(), 200);
+  }
+}
+
+async function saveEditProject(projectId) {
+  const title = document.getElementById('editProjectTitle').value.trim();
+  const description = document.getElementById('editProjectDescription').value.trim();
+
+  if (!title) {
+    alert('Project title is required');
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: title,
+        description: description
+      })
+    });
+
+    if (response.ok) {
+      closeEditProjectModal();
+      await loadSidebarData();
+      const messagesDiv = document.getElementById('chatMessages');
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      bubble.innerHTML = `<div class="message-bubble">✓ Project updated!</div>`;
+      messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    } else {
+      alert('Failed to update project');
+    }
+  } catch (e) {
+    console.error('Error updating project:', e);
+    alert('Error updating project');
+  }
+}
+
+async function deleteProject(projectId) {
+  deleteProjectConfirm(projectId);
+}
+
+async function deleteProjectConfirm(projectId) {
+  if (!confirm('Delete this project? This action cannot be undone.')) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/projects/${projectId}`, {
+      method: 'DELETE'
+    });
+
+    if (response.ok) {
+      closeEditProjectModal();
+      await loadSidebarData();
+      const messagesDiv = document.getElementById('chatMessages');
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      bubble.innerHTML = `<div class="message-bubble">✓ Project deleted.</div>`;
+      messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    } else {
+      alert('Failed to delete project');
+    }
+  } catch (e) {
+    console.error('Error deleting project:', e);
+    alert('Error deleting project');
   }
 }
 
