@@ -4,6 +4,7 @@ import logging
 import threading
 import socket
 import json
+import ipaddress
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
@@ -13,12 +14,14 @@ from psycopg2 import sql as pgsql
 import requests
 from functools import wraps
 from flask import Flask, request, jsonify, render_template, session, redirect
+from werkzeug.middleware.proxy_fix import ProxyFix
 from icalendar import Calendar
 import recurring_ical_events
 from apscheduler.schedulers.background import BackgroundScheduler
 import anthropic
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 app.secret_key = os.environ.get("SECRET_KEY", "finn-dashboard-secret-change-me")
 app.permanent_session_lifetime = timedelta(days=30)
 
@@ -1145,21 +1148,15 @@ def timer_response(row):
 _login_lock = threading.Lock()
 
 def get_client_ip():
-    """Get client IP address, accounting for proxies. Checks multiple headers."""
-    # Check X-Forwarded-For (most common)
-    if request.headers.get('X-Forwarded-For'):
-        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
-    # Check X-Real-IP (nginx)
-    if request.headers.get('X-Real-IP'):
-        return request.headers.get('X-Real-IP').strip()
-    # Check CF-Connecting-IP (Cloudflare)
-    if request.headers.get('CF-Connecting-IP'):
-        return request.headers.get('CF-Connecting-IP').strip()
-    # Check True-Client-IP (Cloudflare Enterprise)
-    if request.headers.get('True-Client-IP'):
-        return request.headers.get('True-Client-IP').strip()
-    # Fallback to direct connection
-    return request.remote_addr or 'unknown'
+    """Get validated client IP address. ProxyFix middleware handles reverse proxy headers."""
+    ip = request.remote_addr or 'unknown'
+    if ip != 'unknown':
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            log.warning(f"Invalid IP format detected from request: {ip}")
+            ip = 'unknown'
+    return ip
 
 def is_ip_locked(ip_addr):
     """Check if IP is currently locked out."""
