@@ -2368,7 +2368,12 @@ async function viewProject(title, description) {
     return;
   }
 
-  openProjectDetailsModal(project.id);
+  const modal = document.getElementById('projectDetailsModal');
+  if (modal.classList.contains('visible') && modal.dataset.projectId == project.id) {
+    closeProjectDetailsModal();
+  } else {
+    openProjectDetailsModal(project.id);
+  }
 }
 
 async function openProjectDetailsModal(projectId) {
@@ -2388,7 +2393,7 @@ async function openProjectDetailsModal(projectId) {
     let html = `
       ${project.description ? `<div style="color: var(--text2); margin-bottom: 16px;">${escapeHtml(project.description)}</div>` : ''}
 
-      <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 16px;">
+      <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 16px;" data-section="project-notes">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
           <h4 style="margin: 0; color: var(--text);">📝 Notes</h4>
           <button onclick="addProjectNote(${projectId})" style="background: none; border: none; color: var(--accent); cursor: pointer; font-size: 16px;">+</button>
@@ -2411,7 +2416,7 @@ async function openProjectDetailsModal(projectId) {
     html += `
       </div>
 
-      <div style="border-top: 1px solid var(--border); padding-top: 16px;">
+      <div style="border-top: 1px solid var(--border); padding-top: 16px;" data-section="project-tasks">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
           <h4 style="margin: 0; color: var(--text);">✓ Tasks (${(tasks.tasks && tasks.tasks.length) || 0})</h4>
           <button onclick="addProjectTask(${projectId})" style="background: none; border: none; color: var(--accent); cursor: pointer; font-size: 16px;">+</button>
@@ -2437,7 +2442,9 @@ async function openProjectDetailsModal(projectId) {
     html += '</div>';
 
     document.getElementById('projectDetailsContent').innerHTML = html;
-    document.getElementById('projectDetailsModal').classList.add('visible');
+    const modal = document.getElementById('projectDetailsModal');
+    modal.dataset.projectId = projectId;
+    modal.classList.add('visible');
     document.getElementById('projectDetailsBackdrop').classList.add('visible');
   } catch (e) {
     console.error('Error loading project details:', e);
@@ -2465,13 +2472,43 @@ async function addProjectNote(projectId) {
     });
 
     if (response.ok) {
-      await openProjectDetailsModal(projectId);
+      await refreshProjectNotes(projectId);
     } else {
       alert('Failed to add note');
     }
   } catch (e) {
     console.error('Error adding note:', e);
     alert('Error adding note');
+  }
+}
+
+async function refreshProjectNotes(projectId) {
+  const notesRes = await fetch(`/api/projects/${projectId}/notes`);
+  const notes = await notesRes.json();
+
+  let html = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <h4 style="margin: 0; color: var(--text);">📝 Notes</h4>
+      <button onclick="addProjectNote(${projectId})" style="background: none; border: none; color: var(--accent); cursor: pointer; font-size: 16px;">+</button>
+    </div>
+  `;
+
+  if (notes.notes && notes.notes.length > 0) {
+    notes.notes.forEach(note => {
+      html += `
+        <div style="background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px;">
+          <div style="flex: 1; font-size: 13px; color: var(--text2);">${escapeHtml(note.content.substring(0, 100))}</div>
+          <button onclick="deleteProjectNote(${projectId}, ${note.id})" style="background: none; border: none; color: var(--red); cursor: pointer; font-size: 12px;">✕</button>
+        </div>
+      `;
+    });
+  } else {
+    html += '<div style="color: var(--text3); font-size: 12px;">No notes yet</div>';
+  }
+
+  const notesSection = document.querySelector('[data-section="project-notes"]');
+  if (notesSection) {
+    notesSection.innerHTML = html;
   }
 }
 
@@ -2484,7 +2521,7 @@ async function deleteProjectNote(projectId, noteId) {
     });
 
     if (response.ok) {
-      await openProjectDetailsModal(projectId);
+      await refreshProjectNotes(projectId);
     } else {
       alert('Failed to delete note');
     }
@@ -2506,17 +2543,48 @@ async function addProjectTask(projectId) {
       credentials: 'same-origin'
     });
 
-    const data = await response.json();
     if (response.ok) {
-      closeProjectDetailsModal();
-      await openProjectDetailsModal(projectId);
+      await refreshProjectTasks(projectId);
     } else {
-      console.error('Failed to add task:', data);
+      const data = await response.json();
       alert('Failed to add task: ' + (data.error || 'Unknown error'));
     }
   } catch (e) {
     console.error('Error adding task:', e);
     alert('Error adding task: ' + e.message);
+  }
+}
+
+async function refreshProjectTasks(projectId) {
+  const tasksRes = await fetch(`/api/projects/${projectId}/tasks`);
+  const tasks = await tasksRes.json();
+
+  let html = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <h4 style="margin: 0; color: var(--text);">✓ Tasks (${(tasks.tasks && tasks.tasks.length) || 0})</h4>
+      <button onclick="addProjectTask(${projectId})" style="background: none; border: none; color: var(--accent); cursor: pointer; font-size: 16px;">+</button>
+    </div>
+  `;
+
+  if (tasks && tasks.tasks && tasks.tasks.length > 0) {
+    tasks.tasks.forEach(task => {
+      html += `
+        <div style="background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px;">
+          <div style="flex: 1;">
+            <div style="font-size: 13px; color: var(--text);">${escapeHtml(task.title)}</div>
+            <div style="font-size: 11px; color: var(--text3);">Status: ${task.status}</div>
+          </div>
+          <button onclick="deleteProjectTask(${projectId}, ${task.id})" style="background: none; border: none; color: var(--red); cursor: pointer; font-size: 12px;">✕</button>
+        </div>
+      `;
+    });
+  } else {
+    html += '<div style="color: var(--text3); font-size: 12px;">No tasks yet</div>';
+  }
+
+  const tasksSection = document.querySelector('[data-section="project-tasks"]');
+  if (tasksSection) {
+    tasksSection.innerHTML = html;
   }
 }
 
@@ -2529,7 +2597,7 @@ async function deleteProjectTask(projectId, taskId) {
     });
 
     if (response.ok) {
-      await openProjectDetailsModal(projectId);
+      await refreshProjectTasks(projectId);
     } else {
       alert('Failed to delete task');
     }
