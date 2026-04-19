@@ -6,6 +6,7 @@ import socket
 import json
 import ipaddress
 import hashlib
+import secrets
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,7 @@ import requests
 from functools import wraps
 from flask import Flask, request, jsonify, render_template, session, redirect
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import generate_password_hash, check_password_hash
 from icalendar import Calendar
 import recurring_ical_events
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -45,6 +47,14 @@ log = logging.getLogger(__name__)
 
 # Default timezone - will be overridden by config if available
 _TZ_DEFAULT = ZoneInfo("America/Denver")
+
+def is_valid_timezone(tz_str):
+    """Validate timezone string is a valid IANA timezone."""
+    try:
+        ZoneInfo(tz_str)
+        return True
+    except Exception:
+        return False
 
 def get_tz():
     """Get configured timezone from config, default to America/Denver (Mountain Time)."""
@@ -223,8 +233,6 @@ def fetch_day_calendar_events(d, days_ahead=30):
 
 def get_db():
     url = os.environ.get("DATABASE_URL", "")
-    if not url:
-        raise ValueError("DATABASE_URL environment variable not set")
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
     return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
@@ -281,21 +289,25 @@ def init_db():
 
     try:
         cur.execute("ALTER TABLE blocked_ips ADD COLUMN ip_name TEXT DEFAULT ''")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        conn = get_db()
-        cur = conn.cursor()
+    except psycopg2.Error as e:
+        log.debug(f"Column ip_name may already exist: {e}")
+
+    cur.execute("""
+CREATE TABLE IF NOT EXISTS ip_names (
+    ip_address TEXT PRIMARY KEY,
+    ip_name TEXT NOT NULL,
+    tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)""")
 
     # Migrate IP names from blocked_ips to ip_names table
     try:
-        cur.execute("INSERT INTO ip_names (ip_address, ip_name) SELECT ip_address, ip_name FROM blocked_ips WHERE ip_name IS NOT NULL AND ip_name != '' ON CONFLICT (ip_address) DO NOTHING")
-        conn.commit()
-    except Exception as e:
+        cur.execute("""
+INSERT INTO ip_names (ip_address, ip_name)
+SELECT ip_address, ip_name FROM blocked_ips
+WHERE ip_name IS NOT NULL AND ip_name != ''
+ON CONFLICT (ip_address) DO NOTHING""")
+    except psycopg2.Error as e:
         log.debug(f"IP names migration: {e}")
-        conn.rollback()
-        conn = get_db()
-        cur = conn.cursor()
 
     # Insert default config values
     defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas"}
@@ -1246,7 +1258,7 @@ def login():
         else:
             expected_password = APP_PASSWORD
 
-        if password.strip() == expected_password:
+        if secrets.compare_digest(password.strip(), expected_password):
             if is_locked_down:
                 return jsonify({
                     "is_locked_down": True,
@@ -1303,7 +1315,7 @@ def login():
             sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
             env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
             log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, is_parent={is_parent}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, received_hash={sc_hash}, env_hash={env_hash}")
-            if password.strip() == expected_password and security_code.strip() == security_code_env:
+            if secrets.compare_digest(password.strip(), expected_password) and secrets.compare_digest(security_code.strip(), security_code_env):
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
                 if is_admin:
@@ -1372,7 +1384,7 @@ def admin():
         log.info(f"Login attempt: password_hash={pwd_hash}, admin_hash={admin_hash}, match={password.strip() == ADMIN_PASSWORD}")
 
         # Check if admin password
-        if password.strip() == ADMIN_PASSWORD:
+        if secrets.compare_digest(password.strip(), ADMIN_PASSWORD):
             if is_locked_down:
                 return jsonify({
                     "is_locked_down": True,
@@ -1386,7 +1398,7 @@ def admin():
             return jsonify({"status": "ok", "redirect": "/admin"})
 
         # Check if app password
-        if password.strip() == APP_PASSWORD:
+        if secrets.compare_digest(password.strip(), APP_PASSWORD):
             if is_locked_down:
                 return jsonify({
                     "is_locked_down": True,
@@ -1474,12 +1486,9 @@ ORDER BY la.attempted_at DESC LIMIT 200""")
             r["attempted_at"] = r["attempted_at"].isoformat() if r["attempted_at"] else None
 
         return jsonify({"attempts": rows})
-    except (ValueError, psycopg2.OperationalError) as e:
-        log.warning(f"Database connection error in login attempts: {e}")
-        return jsonify({"error": "Database connection failed. Please check system configuration.", "attempts": []}), 500
     except Exception as e:
         log.exception("Error fetching login attempts")
-        return jsonify({"error": str(e), "attempts": []}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/admin/suspicious-activity")
@@ -1516,12 +1525,9 @@ FROM login_lockouts ORDER BY created_at DESC LIMIT 50""")
             "suspicious_ips": suspicious_ips,
             "active_lockouts": lockouts
         })
-    except (ValueError, psycopg2.OperationalError) as e:
-        log.warning(f"Database connection error in suspicious activity: {e}")
-        return jsonify({"error": "Database connection failed. Please check system configuration.", "suspicious_ips": [], "active_lockouts": []}), 500
     except Exception as e:
         log.exception("Error fetching suspicious activity")
-        return jsonify({"error": str(e), "suspicious_ips": [], "active_lockouts": []}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/admin/claude-usage")
@@ -1557,7 +1563,7 @@ def api_admin_claude_usage():
         })
     except Exception as e:
         log.exception("Error fetching Claude usage")
-        return jsonify({"error": str(e), "tokens_used": 0, "tokens_limit": 1000000, "percent_used": 0}), 500
+        return jsonify({"error": str(e), "tokens_used": 0, "tokens_limit": 1000000}), 500
 
 
 @app.route("/api/lockdown-status")
@@ -1630,7 +1636,7 @@ def api_admin_lockdown():
         })
     except Exception as e:
         log.exception("Error toggling lockdown")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to toggle lockdown"}), 500
 
 
 @app.route("/api/admin/blocked-ips")
@@ -1643,12 +1649,9 @@ def api_admin_blocked_ips():
         return jsonify({
             "blocked_ips": [{"ip": row["ip_address"], "name": row["ip_name"], "blocked_at": row["blocked_at"].isoformat() if row["blocked_at"] else None, "reason": row["reason"]} for row in blocked]
         })
-    except (ValueError, psycopg2.OperationalError) as e:
-        log.warning(f"Database connection error in blocked IPs: {e}")
-        return jsonify({"error": "Database connection failed. Please check system configuration.", "blocked_ips": []}), 500
     except Exception as e:
         log.exception("Error getting blocked IPs")
-        return jsonify({"error": str(e), "blocked_ips": []}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/admin/block-ip", methods=["POST"])
@@ -1669,7 +1672,7 @@ def api_admin_block_ip():
         try:
             ipaddress.ip_address(ip_addr)
         except ValueError:
-            return jsonify({"error": f"Invalid IP address: {ip_addr}. Must be a valid IPv4 or IPv6 address. Cannot block temporary/hashed IP addresses."}), 400
+            return jsonify({"error": "Invalid IP address format"}), 400
 
         if block_ip(ip_addr, reason, ip_name):
             return jsonify({"status": "blocked", "ip": ip_addr})
@@ -1677,7 +1680,7 @@ def api_admin_block_ip():
             return jsonify({"error": "Failed to block IP"}), 500
     except Exception as e:
         log.exception("Error blocking IP")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to process IP block request"}), 500
 
 
 @app.route("/api/admin/unblock-ip", methods=["POST"])
@@ -1698,7 +1701,7 @@ def api_admin_unblock_ip():
             return jsonify({"error": "Failed to unblock IP"}), 500
     except Exception as e:
         log.exception("Error unblocking IP")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to process IP unblock request"}), 500
 
 
 @app.route("/api/admin/track-ip-name", methods=["POST"])
@@ -1721,7 +1724,7 @@ def api_admin_track_ip_name():
             return jsonify({"error": "Failed to track IP name"}), 500
     except Exception as e:
         log.exception("Error tracking IP name")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to track IP name"}), 500
 
 
 @app.route("/api/csrf-token")
@@ -1804,7 +1807,12 @@ ON CONFLICT (uid) DO UPDATE SET minutes = EXCLUDED.minutes, updated_at = NOW()
 @app.route("/api/calendar")
 def api_calendar():
     start = time.time()
-    days = int(request.args.get("days", 30))
+    try:
+        days = int(request.args.get("days", 30))
+        # Validate days parameter: must be between 1 and 365
+        days = max(1, min(days, 365))
+    except (ValueError, TypeError):
+        days = 30
     events = []
     today = datetime.now(TZ).date()
 
@@ -2635,8 +2643,15 @@ def api_tasks_create():
     title = str(data.get("title", "")).strip()[:300]
     if not title:
         return jsonify({"error": "title required"}), 400
+
     notes = str(data.get("notes", ""))[:2000]
-    urgency = str(data.get("urgency", "low"))
+    urgency = str(data.get("urgency", "low")).lower()
+
+    # Validate urgency
+    if urgency not in ("high", "medium", "low"):
+        urgency = "low"
+
+    # Validate due_date format
     due_date = data.get("due_date") or None
     recurrence = str(data.get("recurrence", "")).lower() or None
 
@@ -2672,41 +2687,63 @@ INSERT INTO tasks (title, notes, urgency, due_date) VALUES (%s, %s, %s, %s) RETU
 def api_tasks_update(task_id):
     data = request.get_json(force=True) or {}
     conn = get_db()
-    cur = conn.cursor()
-    if "completed" in data:
-        completed = bool(data["completed"])
-        cur.execute("""
-UPDATE tasks SET completed=%s, completed_at=%s WHERE id=%s""",
-                    (completed, datetime.now(TZ) if completed else None, task_id))
-        # Mark today's plan as needing update if task is completed
-        if completed:
-            today = datetime.now(TZ).date()
+    try:
+        cur = conn.cursor()
+        if "completed" in data:
+            completed = bool(data["completed"])
             cur.execute("""
+UPDATE tasks SET completed=%s, completed_at=%s WHERE id=%s""",
+                        (completed, datetime.now(TZ) if completed else None, task_id))
+            # Mark today's plan as needing update if task is completed
+            if completed:
+                today = datetime.now(TZ).date()
+                cur.execute("""
 UPDATE daily_plans SET needs_update = TRUE, last_updated_at = NOW()
 WHERE plan_date = %s""", (today,))
-    if "title" in data:
-        cur.execute("UPDATE tasks SET title=%s WHERE id=%s", (str(data["title"])[:300], task_id))
-    if "urgency" in data:
-        cur.execute("UPDATE tasks SET urgency=%s WHERE id=%s", (str(data["urgency"]), task_id))
-    if "notes" in data:
-        cur.execute("UPDATE tasks SET notes=%s WHERE id=%s", (str(data["notes"])[:2000], task_id))
-    if "due_date" in data:
-        cur.execute("UPDATE tasks SET due_date=%s WHERE id=%s", (data["due_date"] or None, task_id))
-    conn.commit()
-    cur.close()
-    conn.close()
-    return jsonify({"status": "ok"})
+        if "title" in data:
+            title = str(data["title"])[:300]
+            if title.strip():
+                cur.execute("UPDATE tasks SET title=%s WHERE id=%s", (title, task_id))
+        if "urgency" in data:
+            urgency = str(data["urgency"]).lower()
+            if urgency in ("high", "medium", "low"):
+                cur.execute("UPDATE tasks SET urgency=%s WHERE id=%s", (urgency, task_id))
+        if "notes" in data:
+            cur.execute("UPDATE tasks SET notes=%s WHERE id=%s", (str(data["notes"])[:2000], task_id))
+        if "due_date" in data:
+            due_date = data["due_date"] or None
+            if due_date:
+                try:
+                    datetime.strptime(due_date, "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    return jsonify({"error": "invalid due_date format"}), 400
+            cur.execute("UPDATE tasks SET due_date=%s WHERE id=%s", (due_date, task_id))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        conn.rollback()
+        log.error(f"Task update error: {type(e).__name__}")
+        return jsonify({"error": "Failed to update task"}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
 def api_tasks_delete(task_id):
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM tasks WHERE id=%s", (task_id,))
-    conn.commit()
-    cur.close()
-    conn.close()
-    return jsonify({"status": "ok"})
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM tasks WHERE id=%s", (task_id,))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        conn.rollback()
+        log.error(f"Task delete error: {type(e).__name__}")
+        return jsonify({"error": "Failed to delete task"}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 
 # ── Parent API Endpoints ────────────────────────────────────────
@@ -2715,34 +2752,39 @@ def api_tasks_delete(task_id):
 def api_parent_tasks_get():
     """Get tasks created by parent (parent can only see their own tasks)."""
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
+    try:
+        cur = conn.cursor()
+        cur.execute("""
 SELECT id, created_at, title, notes, urgency, completed, completed_at, due_date
 FROM tasks WHERE created_by_parent = TRUE
 ORDER BY completed ASC, created_at DESC""")
-    rows = [dict(r) for r in cur.fetchall()]
-    cur.close()
-    conn.close()
+        rows = [dict(r) for r in cur.fetchall()]
 
-    for row in rows:
-        if row["created_at"]:
-            row["created_at"] = row["created_at"].isoformat()
-        if row["completed_at"]:
-            row["completed_at"] = row["completed_at"].isoformat()
-        if row["due_date"]:
-            row["due_date"] = row["due_date"].isoformat()
+        for row in rows:
+            if row["created_at"]:
+                row["created_at"] = row["created_at"].isoformat()
+            if row["completed_at"]:
+                row["completed_at"] = row["completed_at"].isoformat()
+            if row["due_date"]:
+                row["due_date"] = row["due_date"].isoformat()
 
-    return jsonify({"tasks": rows})
+        return jsonify({"tasks": rows})
+    except Exception as e:
+        log.error(f"Parent tasks GET error: {type(e).__name__}")
+        return jsonify({"error": "Failed to load tasks"}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/api/parent/tasks", methods=["POST"])
 def api_parent_tasks_create():
     """Create a task from parent portal."""
     data = request.get_json(force=True) or {}
-    title = (data.get("title") or "").strip()
-    urgency = data.get("urgency", "medium")
+    title = (data.get("title") or "").strip()[:300]
+    urgency = str(data.get("urgency", "medium")).lower()
     due_date = data.get("due_date")
-    notes = (data.get("notes") or "").strip()
+    notes = (data.get("notes") or "").strip()[:2000]
 
     if not title:
         return jsonify({"error": "Task title required"}), 400
@@ -2750,28 +2792,40 @@ def api_parent_tasks_create():
     if urgency not in ("high", "medium", "low"):
         urgency = "medium"
 
+    # Validate due_date format
+    if due_date:
+        try:
+            datetime.strptime(due_date, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return jsonify({"error": "invalid due_date format (use YYYY-MM-DD)"}), 400
+
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
+    try:
+        cur = conn.cursor()
+        cur.execute("""
 INSERT INTO tasks (title, urgency, due_date, notes, created_by_parent)
 VALUES (%s, %s, %s, %s, TRUE) RETURNING id, created_at""",
-        (title, urgency, due_date or None, notes))
-    result = cur.fetchone()
-    task_id = result["id"]
-    created_at = result["created_at"]
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return jsonify({
-        "id": task_id,
-        "title": title,
-        "urgency": urgency,
-        "due_date": due_date,
-        "notes": notes,
-        "completed": False,
-        "created_at": created_at.isoformat() if created_at else None
-    }), 201
+            (title, urgency, due_date or None, notes))
+        result = cur.fetchone()
+        task_id = result["id"]
+        created_at = result["created_at"]
+        conn.commit()
+        return jsonify({
+            "id": task_id,
+            "title": title,
+            "urgency": urgency,
+            "due_date": due_date,
+            "notes": notes,
+            "completed": False,
+            "created_at": created_at.isoformat() if created_at else None
+        }), 201
+    except Exception as e:
+        conn.rollback()
+        log.error(f"Parent task creation error: {type(e).__name__}")
+        return jsonify({"error": "Failed to create task"}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/api/parent/tasks/<int:task_id>", methods=["PATCH"])
@@ -2780,60 +2834,66 @@ def api_parent_task_update(task_id):
     data = request.get_json(force=True) or {}
 
     conn = get_db()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    # Verify task was created by parent
-    cur.execute("SELECT created_by_parent FROM tasks WHERE id=%s", (task_id,))
-    row = cur.fetchone()
-    if not row or not row["created_by_parent"]:
+        # Verify task was created by parent
+        cur.execute("SELECT created_by_parent FROM tasks WHERE id=%s", (task_id,))
+        row = cur.fetchone()
+        if not row or not row["created_by_parent"]:
+            return jsonify({"error": "Task not found or not created by parent"}), 404
+
+        updates = []
+        params = []
+
+        if "notes" in data:
+            updates.append("notes = %s")
+            params.append(str(data["notes"])[:2000])
+
+        if "completed" in data:
+            updates.append("completed = %s")
+            params.append(bool(data["completed"]))
+            if data["completed"]:
+                updates.append("completed_at = NOW()")
+
+        if not updates:
+            return jsonify({"error": "Nothing to update"}), 400
+
+        params.append(task_id)
+        query = f"UPDATE tasks SET {', '.join(updates)} WHERE id = %s"
+        cur.execute(query, params)
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        conn.rollback()
+        log.error(f"Parent task update error: {type(e).__name__}")
+        return jsonify({"error": "Failed to update task"}), 500
+    finally:
         cur.close()
         conn.close()
-        return jsonify({"error": "Task not found or not created by parent"}), 404
-
-    updates = []
-    params = []
-
-    if "notes" in data:
-        updates.append("notes = %s")
-        params.append(data["notes"])
-
-    if "completed" in data:
-        updates.append("completed = %s")
-        params.append(data["completed"])
-        if data["completed"]:
-            updates.append("completed_at = NOW()")
-
-    if not updates:
-        cur.close()
-        conn.close()
-        return jsonify({"error": "Nothing to update"}), 400
-
-    params.append(task_id)
-    query = f"UPDATE tasks SET {', '.join(updates)} WHERE id = %s"
-    cur.execute(query, params)
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return jsonify({"status": "ok"})
 
 
 @app.route("/recurring-tasks", methods=["GET"])
 def api_recurring_tasks_get():
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
+    try:
+        cur = conn.cursor()
+        cur.execute("""
 SELECT id, title, notes, urgency, recurrence, last_created_at, active, created_at
 FROM recurring_tasks WHERE active = TRUE ORDER BY created_at DESC""")
-    rows = [dict(r) for r in cur.fetchall()]
-    cur.close()
-    conn.close()
-    for r in rows:
-        if r["last_created_at"]:
-            r["last_created_at"] = r["last_created_at"].isoformat()
-        if r["created_at"]:
-            r["created_at"] = r["created_at"].isoformat()
-    return jsonify({"recurring_tasks": rows})
+        rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            if r["last_created_at"]:
+                r["last_created_at"] = r["last_created_at"].isoformat()
+            if r["created_at"]:
+                r["created_at"] = r["created_at"].isoformat()
+        return jsonify({"recurring_tasks": rows})
+    except Exception as e:
+        log.error(f"Recurring tasks GET error: {type(e).__name__}")
+        return jsonify({"error": "Failed to load recurring tasks"}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/api/recurring-tasks", methods=["POST"])
@@ -2852,51 +2912,69 @@ def api_recurring_tasks_create():
         return jsonify({"error": "Title required"}), 400
 
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
+    try:
+        cur = conn.cursor()
+        cur.execute("""
 INSERT INTO recurring_tasks (title, notes, urgency, recurrence, active)
 VALUES (%s, %s, %s, %s, TRUE) RETURNING id""",
-                (title, notes, urgency, recurrence))
-    task_id = cur.fetchone()["id"]
+                    (title, notes, urgency, recurrence))
+        task_id = cur.fetchone()["id"]
 
-    # Create first instance
-    due_date = _calculate_next_due_date(recurrence)
-    cur.execute("""
+        # Create first instance
+        due_date = _calculate_next_due_date(recurrence)
+        cur.execute("""
 INSERT INTO tasks (title, notes, urgency, due_date)
 VALUES (%s, %s, %s, %s)""",
-                (title, f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]", urgency, due_date))
-    cur.execute("UPDATE recurring_tasks SET last_created_at = NOW() WHERE id = %s", (task_id,))
+                    (title, f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]", urgency, due_date))
+        cur.execute("UPDATE recurring_tasks SET last_created_at = NOW() WHERE id = %s", (task_id,))
 
-    conn.commit()
-    cur.close()
-    conn.close()
-    return jsonify({"status": "ok", "id": task_id}), 201
+        conn.commit()
+        return jsonify({"status": "ok", "id": task_id}), 201
+    except Exception as e:
+        conn.rollback()
+        log.error(f"Recurring task creation error: {type(e).__name__}")
+        return jsonify({"error": "Failed to create recurring task"}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/api/recurring-tasks/<int:task_id>", methods=["PATCH"])
 def api_recurring_tasks_update(task_id):
     data = request.get_json(force=True) or {}
     conn = get_db()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    if "active" in data:
-        cur.execute("UPDATE recurring_tasks SET active=%s WHERE id=%s", (bool(data["active"]), task_id))
+        if "active" in data:
+            cur.execute("UPDATE recurring_tasks SET active=%s WHERE id=%s", (bool(data["active"]), task_id))
 
-    conn.commit()
-    cur.close()
-    conn.close()
-    return jsonify({"status": "ok"})
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        conn.rollback()
+        log.error(f"Recurring task update error: {type(e).__name__}")
+        return jsonify({"error": "Failed to update recurring task"}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/api/recurring-tasks/<int:task_id>", methods=["DELETE"])
 def api_recurring_tasks_delete(task_id):
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM recurring_tasks WHERE id=%s", (task_id,))
-    conn.commit()
-    cur.close()
-    conn.close()
-    return jsonify({"status": "ok"})
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM recurring_tasks WHERE id=%s", (task_id,))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        conn.rollback()
+        log.error(f"Recurring task delete error: {type(e).__name__}")
+        return jsonify({"error": "Failed to delete recurring task"}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/api/task-suggestions", methods=["GET"])
