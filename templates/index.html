@@ -1809,10 +1809,12 @@ margin-bottom: 0;
 <div class="calendar-modal-backdrop" id="projectDetailsBackdrop" onclick="closeProjectDetailsModal()"></div>
 <div class="calendar-modal" id="projectDetailsModal">
   <div class="calendar-modal-header">
-    <h2 id="projectDetailsTitle"></h2>
+    <h2 id="projectDetailsTitle">Loading...</h2>
     <button class="calendar-nav-btn" onclick="closeProjectDetailsModal()" title="Close">✕</button>
   </div>
-  <div id="projectDetailsContent" style="padding: 16px; color: var(--text);"></div>
+  <div id="projectDetailsContent" style="padding: 16px; color: var(--text); text-align: center;">
+    <div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div>
+  </div>
 </div>
 
 <!-- LEFT COLUMN 2: Calendar & Events -->
