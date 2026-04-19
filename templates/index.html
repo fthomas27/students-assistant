@@ -2382,6 +2382,7 @@ async function openProjectDetailsModal(projectId) {
 
     modal.classList.add('visible');
     backdrop.classList.add('visible');
+    document.getElementById('projectDetailsContent').innerHTML = '<div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div>';
 
     const project = projectsCache.find(p => p.id === projectId);
     if (!project) {
