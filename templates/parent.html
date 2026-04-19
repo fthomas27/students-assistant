@@ -550,6 +550,8 @@ async function editTaskNotes(taskId) {
     if (response.ok) {
       showMessage('Notes updated!', 'success');
       await loadTasks();
+    } else {
+      showMessage('Failed to update notes', 'error');
     }
   } catch (error) {
     console.error('Error:', error);
