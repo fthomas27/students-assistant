@@ -2354,41 +2354,63 @@ function renderProjects() {
 }
 
 async function viewProject(title, description) {
-  const project = projectsCache.find(p => p.title === title);
-  if (!project) {
-    const messagesDiv = document.getElementById('chatMessages');
-    if (messagesDiv.querySelector('.empty-state')) {
-      messagesDiv.innerHTML = '';
+  try {
+    const project = projectsCache.find(p => p.title === title);
+    if (!project) {
+      console.warn('Project not found:', title);
+      const messagesDiv = document.getElementById('chatMessages');
+      if (messagesDiv && messagesDiv.querySelector('.empty-state')) {
+        messagesDiv.innerHTML = '';
+      }
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      bubble.innerHTML = `<div class="message-bubble"><strong>${escapeHtml(title)}</strong><br/>${description ? escapeHtml(description) : 'No description available'}</div>`;
+      if (messagesDiv) messagesDiv.appendChild(bubble);
+      if (messagesDiv) messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      return;
     }
-    const bubble = document.createElement('div');
-    bubble.className = 'message assistant';
-    bubble.innerHTML = `<div class="message-bubble"><strong>${escapeHtml(title)}</strong><br/>${description ? escapeHtml(description) : 'No description available'}</div>`;
-    messagesDiv.appendChild(bubble);
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    return;
-  }
 
-  const modal = document.getElementById('projectDetailsModal');
-  if (modal.classList.contains('visible') && parseInt(modal.dataset.projectId) === project.id) {
-    closeProjectDetailsModal();
-  } else {
-    openProjectDetailsModal(project.id);
+    const modal = document.getElementById('projectDetailsModal');
+    if (!modal) {
+      console.error('Project modal not found in DOM');
+      return;
+    }
+
+    if (modal.classList.contains('visible') && parseInt(modal.dataset.projectId) === project.id) {
+      closeProjectDetailsModal();
+    } else {
+      await openProjectDetailsModal(project.id);
+    }
+  } catch (e) {
+    console.error('Error in viewProject:', e);
+    alert('Error opening project: ' + e.message);
   }
 }
 
 async function openProjectDetailsModal(projectId) {
   try {
     const project = projectsCache.find(p => p.id === projectId);
+    if (!project) {
+      throw new Error('Project not found in cache: ' + projectId);
+    }
+
     const [notesRes, tasksRes] = await Promise.all([
       fetch(`/api/projects/${projectId}/notes`),
       fetch(`/api/projects/${projectId}/tasks`)
     ]);
+
+    if (!notesRes.ok || !tasksRes.ok) {
+      throw new Error(`API error: notes=${notesRes.status}, tasks=${tasksRes.status}`);
+    }
+
     const [notes, tasks] = await Promise.all([
       notesRes.json(),
       tasksRes.json()
     ]);
 
-    document.getElementById('projectDetailsTitle').textContent = escapeHtml(project.title);
+    const titleEl = document.getElementById('projectDetailsTitle');
+    if (!titleEl) throw new Error('projectDetailsTitle element not found');
+    titleEl.textContent = escapeHtml(project.title);
 
     let html = `
       ${project.description ? `<div style="color: var(--text2); margin-bottom: 16px;">${escapeHtml(project.description)}</div>` : ''}
