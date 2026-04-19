@@ -2209,10 +2209,11 @@ function editTask(taskId) {
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Notes</label>
       <textarea id="editNotes" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 80px; font-family: inherit;">${escapeHtml(task.notes)}</textarea>
     </div>
-    <div style="display: flex; gap: 8px;">
+    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
       <button onclick="closeEditModal()" style="flex: 1; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); cursor: pointer; font-weight: 600;">Cancel</button>
       <button onclick="saveTaskEdit(${taskId})" style="flex: 1; padding: 8px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Save</button>
     </div>
+    <button onclick="deleteTask(${taskId})" style="width: 100%; padding: 8px; background: var(--red); border: 1px solid var(--red); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Delete Task</button>
   `;
 
   modal.appendChild(form);
@@ -3045,6 +3046,35 @@ async function completeTask(event, taskId) {
   } catch (e) {
     console.error('Error completing task:', e);
     alert('Error completing task');
+  }
+}
+
+async function deleteTask(taskId) {
+  if (!confirm('Are you sure you want to delete this task?')) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/tasks/${taskId}`, {
+      method: 'DELETE'
+    });
+
+    if (response.ok) {
+      closeEditModal();
+      await loadSidebarData();
+
+      const messagesDiv = document.getElementById('chatMessages');
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      bubble.innerHTML = `<div class="message-bubble">✓ Task deleted.</div>`;
+      messagesDiv.appendChild(bubble);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    } else {
+      alert('Failed to delete task');
+    }
+  } catch (e) {
+    console.error('Error deleting task:', e);
+    alert('Error deleting task');
   }
 }
 
