@@ -536,12 +536,15 @@ async function editTaskNotes(taskId) {
     const response = await fetch(`/api/parent/tasks/${taskId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({ notes: newNotes })
     });
 
     if (response.ok) {
       showMessage('Notes updated!', 'success');
       await loadTasks();
+    } else {
+      showMessage('Failed to update notes', 'error');
     }
   } catch (error) {
     console.error('Error:', error);
@@ -557,7 +560,10 @@ function showMessage(text, type) {
 }
 
 function logout() {
-  fetch('/logout', { method: 'POST' })
+  fetch('/logout', {
+    method: 'GET',
+    credentials: 'same-origin'
+  })
     .then(() => window.location.href = '/login')
     .catch(err => console.error(err));
 }
