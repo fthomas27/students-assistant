@@ -1504,19 +1504,33 @@ FROM login_attempts la
 LEFT JOIN ip_names iname ON la.ip_address = iname.ip_address
 LEFT JOIN blocked_ips bi ON la.ip_address = bi.ip_address
 ORDER BY la.attempted_at DESC LIMIT 200""")
+            rows = [dict(r) for r in cur.fetchall()]
         except psycopg2.errors.UndefinedColumn:
             # If username column doesn't exist, add it and retry
             log.info("username column missing from login_attempts, attempting to add it")
+            conn.rollback()
+            cur.close()
+            conn.close()
+
+            # Get fresh connection and add column
+            conn = get_db()
+            cur = conn.cursor()
             cur.execute("ALTER TABLE login_attempts ADD COLUMN username TEXT DEFAULT ''")
             conn.commit()
+            cur.close()
+            conn.close()
+
+            # Get another fresh connection and retry the query
+            conn = get_db()
+            cur = conn.cursor()
             cur.execute("""
 SELECT la.ip_address, la.success, la.attempted_at, la.user_agent, la.username, COALESCE(iname.ip_name, bi.ip_name, '') as ip_name
 FROM login_attempts la
 LEFT JOIN ip_names iname ON la.ip_address = iname.ip_address
 LEFT JOIN blocked_ips bi ON la.ip_address = bi.ip_address
 ORDER BY la.attempted_at DESC LIMIT 200""")
+            rows = [dict(r) for r in cur.fetchall()]
 
-        rows = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
 
