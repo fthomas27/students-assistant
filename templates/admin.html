@@ -407,14 +407,7 @@ function loadLoginAttempts() {
       return r.json();
     })
     .then(data => {
-      if (data.error) {
-        console.error('API error in login attempts:', data.error);
-        var errorMsg = data.error.includes('Database') ? 'Database connection error - ' + data.error : data.error;
-        document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">' + errorMsg + '</td></tr>';
-        return;
-      }
-
-      if (!data.attempts || data.attempts.length === 0) {
+      if (!data.attempts) {
         document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">No login attempts found</td></tr>';
         return;
       }
@@ -448,7 +441,7 @@ function loadLoginAttempts() {
     })
     .catch(e => {
       console.error('Error loading login attempts:', e);
-      var errorMsg = e.name === 'AbortError' ? 'Request timeout - server not responding' : 'Error loading data: ' + e.message;
+      var errorMsg = e.name === 'AbortError' ? 'Request timeout - server not responding' : 'Error loading data';
       document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">' + errorMsg + '</td></tr>';
     });
 }
@@ -462,16 +455,6 @@ function loadSuspiciousActivity() {
       return r.json();
     })
     .then(data => {
-      if (data.error) {
-        console.error('API error in suspicious activity:', data.error);
-        var errorMsg = data.error.includes('Database') ? 'Database connection error' : 'Error loading data';
-        document.getElementById('suspicious-tbody').innerHTML = '<tr><td colspan="3" class="empty-state">' + errorMsg + '</td></tr>';
-        document.getElementById('lockout-tbody').innerHTML = '<tr><td colspan="3" class="empty-state">' + errorMsg + '</td></tr>';
-        document.getElementById('suspicious-count').textContent = '0';
-        document.getElementById('lockout-count').textContent = '0';
-        return;
-      }
-
       if (!data.suspicious_ips || !data.active_lockouts) return;
 
       var suspiciousTbody = document.getElementById('suspicious-tbody');
@@ -514,11 +497,9 @@ function loadSuspiciousActivity() {
     })
     .catch(e => {
       console.error('Error loading suspicious activity:', e);
-      var errorMsg = e.name === 'AbortError' ? 'Request timeout' : 'Error loading data';
+      var errorMsg = e.name === 'AbortError' ? 'Timeout' : 'Error loading data';
       document.getElementById('suspicious-tbody').innerHTML = '<tr><td colspan="3" class="empty-state">' + errorMsg + '</td></tr>';
       document.getElementById('lockout-tbody').innerHTML = '<tr><td colspan="3" class="empty-state">' + errorMsg + '</td></tr>';
-      document.getElementById('suspicious-count').textContent = '0';
-      document.getElementById('lockout-count').textContent = '0';
     });
 }
 
@@ -531,13 +512,6 @@ function loadClaudeUsage() {
       return r.json();
     })
     .then(data => {
-      if (data.error && data.percent_used === undefined) {
-        console.error('API error in Claude usage:', data.error);
-        document.getElementById('tokens-percent').textContent = '0%';
-        document.getElementById('tokens-used').textContent = 'Database error';
-        return;
-      }
-
       var percent = data.percent_used || 0;
       document.getElementById('tokens-percent').textContent = percent.toFixed(2) + '%';
       document.getElementById('tokens-used').textContent = data.tokens_used.toLocaleString() + ' / ' + data.tokens_limit.toLocaleString() + ' tokens';
@@ -618,13 +592,6 @@ function loadBlockedIPs() {
       return r.json();
     })
     .then(data => {
-      if (data.error) {
-        console.error('API error in blocked IPs:', data.error);
-        var errorMsg = data.error.includes('Database') ? 'Database connection error' : 'Error loading data';
-        document.getElementById('blocked-ips-tbody').innerHTML = '<tr><td colspan="5" class="empty-state">' + errorMsg + '</td></tr>';
-        return;
-      }
-
       var tbody = document.getElementById('blocked-ips-tbody');
       tbody.innerHTML = '';
 
