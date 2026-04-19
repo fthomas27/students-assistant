@@ -37,6 +37,8 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "finn2025").strip()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin-change-me").strip()
 AVERAGE_USER = os.environ.get("AVERAGE_USER", "user").strip()
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin").strip()
+PARENT_USER = os.environ.get("PARENT_USER", "PARENT_USER").strip()
+PARENT_PASSWORD = os.environ.get("PARENT_PASSWORD", "PARENT_PASSWORD").strip()
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -76,11 +78,15 @@ _briefing_lock = threading.Lock()
 @app.before_request
 def require_auth():
     path = request.path.rstrip('/')
-    if path in ('/login', '/logout', '/admin'):
+    if path in ('/login', '/logout', '/admin', '/parent'):
         return None
     if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
         return None
     if path.startswith('/api/admin/'):
+        return None
+    if path.startswith('/api/parent/'):
+        if not session.get("parent_authenticated"):
+            return jsonify({"error": "Not authenticated"}), 401
         return None
     if not session.get("authenticated"):
         if path.startswith('/api/'):
@@ -287,8 +293,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     urgency TEXT NOT NULL DEFAULT 'low',
     completed BOOLEAN NOT NULL DEFAULT FALSE,
     completed_at TIMESTAMPTZ,
-    due_date DATE
+    due_date DATE,
+    created_by_parent BOOLEAN NOT NULL DEFAULT FALSE
 )""")
+
+    # Add created_by_parent column if it doesn't exist (migration)
+    try:
+        cur.execute("ALTER TABLE tasks ADD COLUMN created_by_parent BOOLEAN NOT NULL DEFAULT FALSE")
+    except psycopg2.Error:
+        pass  # Column already exists
 
     cur.execute("""
 CREATE TABLE IF NOT EXISTS projects (
@@ -1383,6 +1396,14 @@ def deactivate_lockdown():
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
+@app.route("/parent", methods=["GET"])
+def parent_portal():
+    """Parent portal for creating and monitoring student tasks."""
+    if not session.get("parent_authenticated"):
+        return redirect("/login")
+    return render_template("parent.html")
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET":
@@ -1419,7 +1440,14 @@ def login():
 
     if password and not security_code:
         is_admin = username == ADMIN_USER
-        expected_password = ADMIN_PASSWORD if is_admin else APP_PASSWORD
+        is_parent = username == PARENT_USER
+
+        if is_admin:
+            expected_password = ADMIN_PASSWORD
+        elif is_parent:
+            expected_password = PARENT_PASSWORD
+        else:
+            expected_password = APP_PASSWORD
 
         if password.strip() == expected_password:
             if is_locked_down:
@@ -1432,10 +1460,19 @@ def login():
             session.permanent = True
             if is_admin:
                 session["admin_authenticated"] = True
+            elif is_parent:
+                session["parent_authenticated"] = True
             else:
                 session["authenticated"] = True
             session.modified = True
-            return jsonify({"status": "ok", "redirect": "/admin" if is_admin else "/"})
+
+            if is_admin:
+                redirect_url = "/admin"
+            elif is_parent:
+                redirect_url = "/parent"
+            else:
+                redirect_url = "/"
+            return jsonify({"status": "ok", "redirect": redirect_url})
         else:
             lockout_info = record_login_attempt(ip_addr, False)
             if lockout_info["locked"]:
@@ -1453,7 +1490,14 @@ def login():
             return jsonify({"error": "Security code not configured"}), 500
 
         is_admin = username == ADMIN_USER
-        expected_password = ADMIN_PASSWORD if is_admin else APP_PASSWORD
+        is_parent = username == PARENT_USER
+
+        if is_admin:
+            expected_password = ADMIN_PASSWORD
+        elif is_parent:
+            expected_password = PARENT_PASSWORD
+        else:
+            expected_password = APP_PASSWORD
 
         # Allow login with security code if:
         # 1. System is in lockdown, OR
@@ -1461,16 +1505,25 @@ def login():
         if is_locked_down or ip_is_blocked:
             sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
             env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
-            log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, received_hash={sc_hash}, env_hash={env_hash}")
+            log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, is_parent={is_parent}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, received_hash={sc_hash}, env_hash={env_hash}")
             if password.strip() == expected_password and security_code.strip() == security_code_env:
                 record_login_attempt(ip_addr, True)
                 session.permanent = True
                 if is_admin:
                     session["admin_authenticated"] = True
+                elif is_parent:
+                    session["parent_authenticated"] = True
                 else:
                     session["authenticated"] = True
                 session.modified = True
-                return jsonify({"status": "ok", "redirect": "/admin" if is_admin else "/"})
+
+                if is_admin:
+                    redirect_url = "/admin"
+                elif is_parent:
+                    redirect_url = "/parent"
+                else:
+                    redirect_url = "/"
+                return jsonify({"status": "ok", "redirect": redirect_url})
             else:
                 lockout_info = record_login_attempt(ip_addr, False)
                 if lockout_info["locked"]:
@@ -2906,7 +2959,116 @@ def api_tasks_delete(task_id):
     return jsonify({"status": "ok"})
 
 
-@app.route("/api/recurring-tasks", methods=["GET"])
+# ── Parent API Endpoints ────────────────────────────────────────
+
+@app.route("/api/parent/tasks", methods=["GET"])
+def api_parent_tasks_get():
+    """Get tasks created by parent (parent can only see their own tasks)."""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+SELECT id, created_at, title, notes, urgency, completed, completed_at, due_date
+FROM tasks WHERE created_by_parent = TRUE
+ORDER BY completed ASC, created_at DESC""")
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close()
+    conn.close()
+
+    for row in rows:
+        if row["created_at"]:
+            row["created_at"] = row["created_at"].isoformat()
+        if row["completed_at"]:
+            row["completed_at"] = row["completed_at"].isoformat()
+        if row["due_date"]:
+            row["due_date"] = row["due_date"].isoformat()
+
+    return jsonify({"tasks": rows})
+
+
+@app.route("/api/parent/tasks", methods=["POST"])
+def api_parent_tasks_create():
+    """Create a task from parent portal."""
+    data = request.get_json(force=True) or {}
+    title = (data.get("title") or "").strip()
+    urgency = data.get("urgency", "medium")
+    due_date = data.get("due_date")
+    notes = (data.get("notes") or "").strip()
+
+    if not title:
+        return jsonify({"error": "Task title required"}), 400
+
+    if urgency not in ("high", "medium", "low"):
+        urgency = "medium"
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+INSERT INTO tasks (title, urgency, due_date, notes, created_by_parent)
+VALUES (%s, %s, %s, %s, TRUE) RETURNING id, created_at""",
+        (title, urgency, due_date or None, notes))
+    result = cur.fetchone()
+    task_id = result["id"]
+    created_at = result["created_at"]
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return jsonify({
+        "id": task_id,
+        "title": title,
+        "urgency": urgency,
+        "due_date": due_date,
+        "notes": notes,
+        "completed": False,
+        "created_at": created_at.isoformat() if created_at else None
+    }), 201
+
+
+@app.route("/api/parent/tasks/<int:task_id>", methods=["PATCH"])
+def api_parent_task_update(task_id):
+    """Update a parent-created task (can update notes and mark complete)."""
+    data = request.get_json(force=True) or {}
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Verify task was created by parent
+    cur.execute("SELECT created_by_parent FROM tasks WHERE id=%s", (task_id,))
+    row = cur.fetchone()
+    if not row or not row["created_by_parent"]:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "Task not found or not created by parent"}), 404
+
+    updates = []
+    params = []
+
+    if "notes" in data:
+        updates.append("notes = %s")
+        params.append(data["notes"])
+
+    if "completed" in data:
+        updates.append("completed = %s")
+        params.append(data["completed"])
+        if data["completed"]:
+            updates.append("completed_at = NOW()")
+
+    if not updates:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "Nothing to update"}), 400
+
+    params.append(task_id)
+    query = f"UPDATE tasks SET {', '.join(updates)} WHERE id = %s"
+    cur.execute(query, params)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/recurring-tasks", methods=["GET"])
 def api_recurring_tasks_get():
     conn = get_db()
     cur = conn.cursor()
