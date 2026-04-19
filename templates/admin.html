@@ -380,6 +380,13 @@ color: var(--text);
 </div>
 
 <script>
+function createFetchWithTimeout(url, options = {}) {
+  var controller = new AbortController();
+  var timeoutId = setTimeout(() => controller.abort(), 10000);
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timeoutId));
+}
+
 function logout() {
   fetch('/logout', { method: 'POST', credentials: 'same-origin' })
     .then(() => { window.location.href = '/login'; });
@@ -392,10 +399,25 @@ function formatDate(isoString) {
 }
 
 function loadLoginAttempts() {
-  fetch('/api/admin/login-attempts', { credentials: 'same-origin' })
-    .then(r => r.json())
+  createFetchWithTimeout('/api/admin/login-attempts', {
+    credentials: 'same-origin'
+  })
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
     .then(data => {
-      if (!data.attempts) return;
+      if (data.error) {
+        console.error('API error in login attempts:', data.error);
+        var errorMsg = data.error.includes('Database') ? 'Database connection error - ' + data.error : data.error;
+        document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">' + errorMsg + '</td></tr>';
+        return;
+      }
+
+      if (!data.attempts || data.attempts.length === 0) {
+        document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">No login attempts found</td></tr>';
+        return;
+      }
 
       var tbody = document.getElementById('login-tbody');
       tbody.innerHTML = '';
@@ -424,13 +446,32 @@ function loadLoginAttempts() {
 
       document.getElementById('attempt-count').textContent = data.attempts.length;
     })
-    .catch(e => { console.error(e); document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">Error loading data</td></tr>'; });
+    .catch(e => {
+      console.error('Error loading login attempts:', e);
+      var errorMsg = e.name === 'AbortError' ? 'Request timeout - server not responding' : 'Error loading data: ' + e.message;
+      document.getElementById('login-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">' + errorMsg + '</td></tr>';
+    });
 }
 
 function loadSuspiciousActivity() {
-  fetch('/api/admin/suspicious-activity', { credentials: 'same-origin' })
-    .then(r => r.json())
+  createFetchWithTimeout('/api/admin/suspicious-activity', {
+    credentials: 'same-origin'
+  })
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
     .then(data => {
+      if (data.error) {
+        console.error('API error in suspicious activity:', data.error);
+        var errorMsg = data.error.includes('Database') ? 'Database connection error' : 'Error loading data';
+        document.getElementById('suspicious-tbody').innerHTML = '<tr><td colspan="3" class="empty-state">' + errorMsg + '</td></tr>';
+        document.getElementById('lockout-tbody').innerHTML = '<tr><td colspan="3" class="empty-state">' + errorMsg + '</td></tr>';
+        document.getElementById('suspicious-count').textContent = '0';
+        document.getElementById('lockout-count').textContent = '0';
+        return;
+      }
+
       if (!data.suspicious_ips || !data.active_lockouts) return;
 
       var suspiciousTbody = document.getElementById('suspicious-tbody');
@@ -471,24 +512,52 @@ function loadSuspiciousActivity() {
 
       document.getElementById('lockout-count').textContent = data.active_lockouts.length;
     })
-    .catch(e => { console.error(e); });
+    .catch(e => {
+      console.error('Error loading suspicious activity:', e);
+      var errorMsg = e.name === 'AbortError' ? 'Request timeout' : 'Error loading data';
+      document.getElementById('suspicious-tbody').innerHTML = '<tr><td colspan="3" class="empty-state">' + errorMsg + '</td></tr>';
+      document.getElementById('lockout-tbody').innerHTML = '<tr><td colspan="3" class="empty-state">' + errorMsg + '</td></tr>';
+      document.getElementById('suspicious-count').textContent = '0';
+      document.getElementById('lockout-count').textContent = '0';
+    });
 }
 
 function loadClaudeUsage() {
-  fetch('/api/admin/claude-usage', { credentials: 'same-origin' })
-    .then(r => r.json())
+  createFetchWithTimeout('/api/admin/claude-usage', {
+    credentials: 'same-origin'
+  })
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
     .then(data => {
+      if (data.error && data.percent_used === undefined) {
+        console.error('API error in Claude usage:', data.error);
+        document.getElementById('tokens-percent').textContent = '0%';
+        document.getElementById('tokens-used').textContent = 'Database error';
+        return;
+      }
+
       var percent = data.percent_used || 0;
       document.getElementById('tokens-percent').textContent = percent.toFixed(2) + '%';
       document.getElementById('tokens-used').textContent = data.tokens_used.toLocaleString() + ' / ' + data.tokens_limit.toLocaleString() + ' tokens';
       document.getElementById('progress-fill').style.width = percent + '%';
     })
-    .catch(e => { console.error(e); });
+    .catch(e => {
+      console.error('Error loading Claude usage:', e);
+      document.getElementById('tokens-percent').textContent = 'Error';
+      document.getElementById('tokens-used').textContent = e.name === 'AbortError' ? 'Request timeout' : 'Error loading data';
+    });
 }
 
 function loadLockdownStatus() {
-  fetch('/api/lockdown-status', { credentials: 'same-origin' })
-    .then(r => r.json())
+  createFetchWithTimeout('/api/lockdown-status', {
+    credentials: 'same-origin'
+  })
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
     .then(data => {
       var isLocked = data.is_locked_down;
       var statusEl = document.getElementById('lockdown-status');
@@ -509,7 +578,12 @@ function loadLockdownStatus() {
         btnEl.style.background = 'var(--green)';
       }
     })
-    .catch(e => { console.error(e); });
+    .catch(e => {
+      console.error('Error loading lockdown status:', e);
+      document.getElementById('lockdown-status').textContent = 'Error';
+      document.getElementById('lockdown-status').style.color = 'var(--red)';
+      document.getElementById('lockdown-info').textContent = e.name === 'AbortError' ? 'Request timeout' : 'Failed to load status';
+    });
 }
 
 function toggleLockdown() {
@@ -536,9 +610,21 @@ function toggleLockdown() {
 }
 
 function loadBlockedIPs() {
-  fetch('/api/admin/blocked-ips', { credentials: 'same-origin' })
-    .then(r => r.json())
+  createFetchWithTimeout('/api/admin/blocked-ips', {
+    credentials: 'same-origin'
+  })
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
     .then(data => {
+      if (data.error) {
+        console.error('API error in blocked IPs:', data.error);
+        var errorMsg = data.error.includes('Database') ? 'Database connection error' : 'Error loading data';
+        document.getElementById('blocked-ips-tbody').innerHTML = '<tr><td colspan="5" class="empty-state">' + errorMsg + '</td></tr>';
+        return;
+      }
+
       var tbody = document.getElementById('blocked-ips-tbody');
       tbody.innerHTML = '';
 
@@ -561,7 +647,11 @@ function loadBlockedIPs() {
         tbody.appendChild(row);
       });
     })
-    .catch(e => { console.error(e); });
+    .catch(e => {
+      console.error('Error loading blocked IPs:', e);
+      var errorMsg = e.name === 'AbortError' ? 'Request timeout - server not responding' : 'Error loading data';
+      document.getElementById('blocked-ips-tbody').innerHTML = '<tr><td colspan="5" class="empty-state">' + errorMsg + '</td></tr>';
+    });
 }
 
 function blockIP() {
