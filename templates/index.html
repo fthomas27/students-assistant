@@ -2442,16 +2442,8 @@ async function openProjectDetailsModal(projectId) {
 function closeProjectDetailsModal() {
   const modal = document.getElementById('projectDetailsModal');
   const backdrop = document.getElementById('projectDetailsBackdrop');
-  if (modal && backdrop) {
-    modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
-    backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
-    backdrop.style.background = 'rgba(0,0,0,0)';
-    setTimeout(() => {
-      modal.classList.remove('visible');
-      backdrop.classList.remove('visible');
-      modal.style.animation = '';
-    }, 300);
-  }
+  if (modal) modal.classList.remove('visible');
+  if (backdrop) backdrop.classList.remove('visible');
 }
 
 async function addProjectNote(projectId) {
