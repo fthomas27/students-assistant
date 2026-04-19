@@ -242,207 +242,51 @@ def init_db():
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS config (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL DEFAULT ''
-)""")
+    tables = [
+        ("config", "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"),
+        ("completions", "CREATE TABLE IF NOT EXISTS completions (id SERIAL PRIMARY KEY, completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), assignment_title TEXT NOT NULL, class_name TEXT NOT NULL DEFAULT '', duration_minutes REAL NOT NULL DEFAULT 0, estimate_minutes REAL NOT NULL DEFAULT 0, timed BOOLEAN NOT NULL DEFAULT TRUE)"),
+        ("assignment_estimates", "CREATE TABLE IF NOT EXISTS assignment_estimates (uid TEXT PRIMARY KEY, minutes REAL NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("timer_state", "CREATE TABLE IF NOT EXISTS timer_state (id INT PRIMARY KEY DEFAULT 1, assignment_uid TEXT NOT NULL DEFAULT '', assignment_title TEXT NOT NULL DEFAULT '', class_name TEXT NOT NULL DEFAULT '', estimate_minutes REAL NOT NULL DEFAULT 30, started_at TIMESTAMPTZ, paused_at TIMESTAMPTZ, accumulated_seconds REAL NOT NULL DEFAULT 0, active BOOLEAN NOT NULL DEFAULT FALSE)"),
+        ("briefing_cache", "CREATE TABLE IF NOT EXISTS briefing_cache (id INT PRIMARY KEY DEFAULT 1, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL DEFAULT '')"),
+        ("debrief_cache", "CREATE TABLE IF NOT EXISTS debrief_cache (id INT PRIMARY KEY DEFAULT 1, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL DEFAULT '')"),
+        ("tasks", "CREATE TABLE IF NOT EXISTS tasks (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, due_date DATE, created_by_parent BOOLEAN NOT NULL DEFAULT FALSE)"),
+        ("projects", "CREATE TABLE IF NOT EXISTS projects (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', lead TEXT NOT NULL DEFAULT '', members TEXT NOT NULL DEFAULT '', last_checkin TIMESTAMPTZ, checkin_interval_days INT NOT NULL DEFAULT 7, completion_pct INT NOT NULL DEFAULT 0)"),
+        ("project_notes", "CREATE TABLE IF NOT EXISTS project_notes (id SERIAL PRIMARY KEY, project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL)"),
+        ("project_tasks", "CREATE TABLE IF NOT EXISTS project_tasks (id SERIAL PRIMARY KEY, project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', assignee TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', due_date DATE)"),
+        ("recurring_tasks", "CREATE TABLE IF NOT EXISTS recurring_tasks (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', recurrence TEXT NOT NULL, last_created_at TIMESTAMPTZ, active BOOLEAN NOT NULL DEFAULT TRUE)"),
+        ("workout_state", "CREATE TABLE IF NOT EXISTS workout_state (id INT PRIMARY KEY DEFAULT 1, last_focus_index INT NOT NULL DEFAULT -1)"),
+        ("workout_logs", "CREATE TABLE IF NOT EXISTS workout_logs (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), focus_key TEXT NOT NULL, focus_label TEXT NOT NULL, intensity INT NOT NULL, location TEXT NOT NULL, plan_content TEXT NOT NULL, user_notes TEXT NOT NULL DEFAULT '', perceived_difficulty INT)"),
+        ("daily_plans", "CREATE TABLE IF NOT EXISTS daily_plans (id SERIAL PRIMARY KEY, plan_date DATE NOT NULL, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), needs_update BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(plan_date))"),
+        ("daily_plan_items", "CREATE TABLE IF NOT EXISTS daily_plan_items (id SERIAL PRIMARY KEY, plan_id INTEGER NOT NULL REFERENCES daily_plans(id) ON DELETE CASCADE, item_type VARCHAR(20) NOT NULL, item_id VARCHAR(255), item_title VARCHAR(500) NOT NULL, scheduled_start_time TIME NOT NULL, scheduled_end_time TIME NOT NULL, estimated_minutes INTEGER, order_index INTEGER, completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, user_edited BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("login_attempts", "CREATE TABLE IF NOT EXISTS login_attempts (id SERIAL PRIMARY KEY, ip_address TEXT NOT NULL, success BOOLEAN NOT NULL, attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), user_agent TEXT)"),
+        ("login_lockouts", "CREATE TABLE IF NOT EXISTS login_lockouts (ip_address TEXT PRIMARY KEY, locked_until TIMESTAMPTZ NOT NULL, failure_count INT NOT NULL DEFAULT 1, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("lockdown_state", "CREATE TABLE IF NOT EXISTS lockdown_state (id INT PRIMARY KEY DEFAULT 1, is_locked_down BOOLEAN NOT NULL DEFAULT FALSE, activated_at TIMESTAMPTZ, activated_by TEXT, CHECK (id = 1))"),
+        ("blocked_ips", "CREATE TABLE IF NOT EXISTS blocked_ips (id SERIAL PRIMARY KEY, ip_address TEXT UNIQUE NOT NULL, ip_name TEXT DEFAULT '', blocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), blocked_by TEXT NOT NULL DEFAULT 'admin', reason TEXT DEFAULT '')"),
+        ("ip_names", "CREATE TABLE IF NOT EXISTS ip_names (ip_address TEXT PRIMARY KEY, ip_name TEXT NOT NULL, tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+    ]
 
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS completions (
-    id SERIAL PRIMARY KEY,
-    completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    assignment_title TEXT NOT NULL,
-    class_name TEXT NOT NULL DEFAULT '',
-    duration_minutes REAL NOT NULL DEFAULT 0,
-    estimate_minutes REAL NOT NULL DEFAULT 0,
-    timed BOOLEAN NOT NULL DEFAULT TRUE
-)""")
+    for table_name, create_sql in tables:
+        try:
+            cur.execute(create_sql)
+            conn.commit()
+        except Exception as e:
+            log.debug(f"Table {table_name} creation: {e}")
+            conn.rollback()
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+            except:
+                pass
 
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS assignment_estimates (
-    uid TEXT PRIMARY KEY,
-    minutes REAL NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS timer_state (
-    id INT PRIMARY KEY DEFAULT 1,
-    assignment_uid TEXT NOT NULL DEFAULT '',
-    assignment_title TEXT NOT NULL DEFAULT '',
-    class_name TEXT NOT NULL DEFAULT '',
-    estimate_minutes REAL NOT NULL DEFAULT 30,
-    started_at TIMESTAMPTZ,
-    paused_at TIMESTAMPTZ,
-    accumulated_seconds REAL NOT NULL DEFAULT 0,
-    active BOOLEAN NOT NULL DEFAULT FALSE
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS briefing_cache (
-    id INT PRIMARY KEY DEFAULT 1,
-    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    content TEXT NOT NULL DEFAULT ''
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS debrief_cache (
-    id INT PRIMARY KEY DEFAULT 1,
-    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    content TEXT NOT NULL DEFAULT ''
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS tasks (
-    id SERIAL PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    title TEXT NOT NULL,
-    notes TEXT NOT NULL DEFAULT '',
-    urgency TEXT NOT NULL DEFAULT 'low',
-    completed BOOLEAN NOT NULL DEFAULT FALSE,
-    completed_at TIMESTAMPTZ,
-    due_date DATE,
-    created_by_parent BOOLEAN NOT NULL DEFAULT FALSE
-)""")
-
-    # Add created_by_parent column if it doesn't exist (migration)
+    # Add columns if missing (migrations) - with individual rollbacks
     try:
         cur.execute("ALTER TABLE tasks ADD COLUMN created_by_parent BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.commit()
     except psycopg2.Error:
-        pass  # Column already exists
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
 
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS projects (
-    id SERIAL PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    title TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'active',
-    lead TEXT NOT NULL DEFAULT '',
-    members TEXT NOT NULL DEFAULT '',
-    last_checkin TIMESTAMPTZ,
-    checkin_interval_days INT NOT NULL DEFAULT 7,
-    completion_pct INT NOT NULL DEFAULT 0
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS project_notes (
-    id SERIAL PRIMARY KEY,
-    project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    content TEXT NOT NULL
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS project_tasks (
-    id SERIAL PRIMARY KEY,
-    project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    title TEXT NOT NULL,
-    notes TEXT NOT NULL DEFAULT '',
-    assignee TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'pending',
-    due_date DATE
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS recurring_tasks (
-    id SERIAL PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    title TEXT NOT NULL,
-    notes TEXT NOT NULL DEFAULT '',
-    urgency TEXT NOT NULL DEFAULT 'low',
-    recurrence TEXT NOT NULL,
-    last_created_at TIMESTAMPTZ,
-    active BOOLEAN NOT NULL DEFAULT TRUE
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS workout_state (
-    id INT PRIMARY KEY DEFAULT 1,
-    last_focus_index INT NOT NULL DEFAULT -1
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS workout_logs (
-    id SERIAL PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    focus_key TEXT NOT NULL,
-    focus_label TEXT NOT NULL,
-    intensity INT NOT NULL,
-    location TEXT NOT NULL,
-    plan_content TEXT NOT NULL,
-    user_notes TEXT NOT NULL DEFAULT '',
-    perceived_difficulty INT
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS daily_plans (
-    id SERIAL PRIMARY KEY,
-    plan_date DATE NOT NULL,
-    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    needs_update BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(plan_date)
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS daily_plan_items (
-    id SERIAL PRIMARY KEY,
-    plan_id INTEGER NOT NULL REFERENCES daily_plans(id) ON DELETE CASCADE,
-    item_type VARCHAR(20) NOT NULL,
-    item_id VARCHAR(255),
-    item_title VARCHAR(500) NOT NULL,
-    scheduled_start_time TIME NOT NULL,
-    scheduled_end_time TIME NOT NULL,
-    estimated_minutes INTEGER,
-    order_index INTEGER,
-    completed BOOLEAN NOT NULL DEFAULT FALSE,
-    completed_at TIMESTAMPTZ,
-    user_edited BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS login_attempts (
-    id SERIAL PRIMARY KEY,
-    ip_address TEXT NOT NULL,
-    success BOOLEAN NOT NULL,
-    attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    user_agent TEXT
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS login_lockouts (
-    ip_address TEXT PRIMARY KEY,
-    locked_until TIMESTAMPTZ NOT NULL,
-    failure_count INT NOT NULL DEFAULT 1,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS lockdown_state (
-    id INT PRIMARY KEY DEFAULT 1,
-    is_locked_down BOOLEAN NOT NULL DEFAULT FALSE,
-    activated_at TIMESTAMPTZ,
-    activated_by TEXT,
-    CHECK (id = 1)
-)""")
-
-    cur.execute("""
-CREATE TABLE IF NOT EXISTS blocked_ips (
-    id SERIAL PRIMARY KEY,
-    ip_address TEXT UNIQUE NOT NULL,
-    ip_name TEXT DEFAULT '',
-    blocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    blocked_by TEXT NOT NULL DEFAULT 'admin',
-    reason TEXT DEFAULT ''
-)""")
-
-    # Add ip_name column if it doesn't exist (for existing databases)
     try:
         cur.execute("ALTER TABLE blocked_ips ADD COLUMN ip_name TEXT DEFAULT ''")
     except psycopg2.Error as e:
@@ -455,7 +299,7 @@ CREATE TABLE IF NOT EXISTS ip_names (
     tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )""")
 
-    # Migrate existing IP names from blocked_ips table to preserve them
+    # Migrate IP names from blocked_ips to ip_names table
     try:
         cur.execute("""
 INSERT INTO ip_names (ip_address, ip_name)
@@ -465,39 +309,38 @@ ON CONFLICT (ip_address) DO NOTHING""")
     except psycopg2.Error as e:
         log.debug(f"IP names migration: {e}")
 
-    defaults = {
-        "name": "Jarvis",
-        "morning_briefing_time": "07:00",
-        "timer_cutoff_multiplier": "2.0",
-        "anthropic_api_key": "",
-        "weekly_recap_advisor": "Mr. Goldberg",
-        "formal_signoff_name": "Finley Thomas",
-    }
+    # Insert default config values
+    defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas"}
     for k, v in defaults.items():
-        cur.execute("""
-INSERT INTO config (key, value) VALUES (%s, %s)
-ON CONFLICT (key) DO NOTHING""", (k, v))
-
-    cur.execute("INSERT INTO timer_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
-    cur.execute("INSERT INTO briefing_cache (id, content) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
-    cur.execute("INSERT INTO debrief_cache (id, content) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
-    cur.execute("INSERT INTO workout_state (id, last_focus_index) VALUES (1, -1) ON CONFLICT (id) DO NOTHING")
-    cur.execute("INSERT INTO lockdown_state (id, is_locked_down) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING")
-
-    # Create indexes for frequently queried columns
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_completions_assignment_title ON completions(assignment_title)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed, created_at DESC)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_tasks_assignee_status ON project_tasks(assignee, status)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_completions_completed_at ON completions(completed_at DESC)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_plans_date ON daily_plans(plan_date)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_plan_items_plan_id ON daily_plan_items(plan_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_daily_plan_items_completed ON daily_plan_items(completed)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_address, attempted_at DESC)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_login_lockouts_ip ON login_lockouts(ip_address)")
-
+        try:
+            cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
+        except Exception:
+            pass
     conn.commit()
+
+    # Initialize singleton records
+    try:
+        cur.execute("INSERT INTO timer_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+        cur.execute("INSERT INTO briefing_cache (id, content) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
+        cur.execute("INSERT INTO debrief_cache (id, content) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
+        cur.execute("INSERT INTO workout_state (id, last_focus_index) VALUES (1, -1) ON CONFLICT (id) DO NOTHING")
+        cur.execute("INSERT INTO lockdown_state (id, is_locked_down) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING")
+        conn.commit()
+    except Exception as e:
+        log.debug(f"Singleton records: {e}")
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    # Create indexes
+    indexes = ["CREATE INDEX IF NOT EXISTS idx_completions_assignment_title ON completions(assignment_title)", "CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed, created_at DESC)", "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)", "CREATE INDEX IF NOT EXISTS idx_project_tasks_assignee_status ON project_tasks(assignee, status)", "CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)", "CREATE INDEX IF NOT EXISTS idx_completions_completed_at ON completions(completed_at DESC)", "CREATE INDEX IF NOT EXISTS idx_daily_plans_date ON daily_plans(plan_date)", "CREATE INDEX IF NOT EXISTS idx_daily_plan_items_plan_id ON daily_plan_items(plan_id)", "CREATE INDEX IF NOT EXISTS idx_daily_plan_items_completed ON daily_plan_items(completed)", "CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_address, attempted_at DESC)", "CREATE INDEX IF NOT EXISTS idx_login_lockouts_ip ON login_lockouts(ip_address)"]
+    for idx_sql in indexes:
+        try:
+            cur.execute(idx_sql)
+        except Exception:
+            pass
+    conn.commit()
+
     cur.close()
     conn.close()
     log.info("Database initialized.")
