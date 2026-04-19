@@ -2114,17 +2114,217 @@ function renderProjects() {
   updateSidebarStats();
 }
 
-function viewProject(title, description) {
-  const messagesDiv = document.getElementById('chatMessages');
-  if (messagesDiv.querySelector('.empty-state')) {
-    messagesDiv.innerHTML = '';
+async function viewProject(title, description) {
+  const project = projectsCache.find(p => p.title === title);
+  if (!project) {
+    const messagesDiv = document.getElementById('chatMessages');
+    if (messagesDiv.querySelector('.empty-state')) {
+      messagesDiv.innerHTML = '';
+    }
+    const bubble = document.createElement('div');
+    bubble.className = 'message assistant';
+    bubble.innerHTML = `<div class="message-bubble"><strong>${escapeHtml(title)}</strong><br/>${description ? escapeHtml(description) : 'No description available'}</div>`;
+    messagesDiv.appendChild(bubble);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    return;
   }
 
-  const bubble = document.createElement('div');
-  bubble.className = 'message assistant';
-  bubble.innerHTML = `<div class="message-bubble"><strong>${escapeHtml(title)}</strong><br/>${description ? escapeHtml(description) : 'No description available'}</div>`;
-  messagesDiv.appendChild(bubble);
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  openProjectDetailsModal(project.id);
+}
+
+async function openProjectDetailsModal(projectId) {
+  try {
+    const project = projectsCache.find(p => p.id === projectId);
+    const notesRes = await fetch(`/api/projects/${projectId}/notes`);
+    const tasksRes = await fetch(`/api/projects/${projectId}/tasks`);
+    const notes = await notesRes.json();
+    const tasks = await tasksRes.json();
+
+    const modal = document.createElement('div');
+    modal.id = 'projectDetailsModal';
+    modal.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      animation: fadeInBackdrop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    `;
+
+    const content = document.createElement('div');
+    content.style.cssText = `
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 24px;
+      max-width: 600px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
+      animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    `;
+
+    let html = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--text);">${escapeHtml(project.title)}</h3>
+        <button onclick="closeProjectDetailsModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px;">✕</button>
+      </div>
+      ${project.description ? `<div style="color: var(--text2); margin-bottom: 16px;">${escapeHtml(project.description)}</div>` : ''}
+
+      <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h4 style="margin: 0; color: var(--text);">📝 Notes</h4>
+          <button onclick="addProjectNote(${projectId})" style="background: none; border: none; color: var(--accent); cursor: pointer; font-size: 16px;">+</button>
+        </div>
+    `;
+
+    if (notes.notes && notes.notes.length > 0) {
+      notes.notes.forEach(note => {
+        html += `
+          <div style="background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px;">
+            <div style="flex: 1; font-size: 13px; color: var(--text2);">${escapeHtml(note.content.substring(0, 100))}</div>
+            <button onclick="deleteProjectNote(${projectId}, ${note.id})" style="background: none; border: none; color: var(--red); cursor: pointer; font-size: 12px;">✕</button>
+          </div>
+        `;
+      });
+    } else {
+      html += '<div style="color: var(--text3); font-size: 12px;">No notes yet</div>';
+    }
+
+    html += `
+      </div>
+
+      <div style="border-top: 1px solid var(--border); padding-top: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h4 style="margin: 0; color: var(--text);">✓ Tasks</h4>
+          <button onclick="addProjectTask(${projectId})" style="background: none; border: none; color: var(--accent); cursor: pointer; font-size: 16px;">+</button>
+        </div>
+    `;
+
+    if (tasks.tasks && tasks.tasks.length > 0) {
+      tasks.tasks.forEach(task => {
+        html += `
+          <div style="background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px;">
+            <div style="flex: 1;">
+              <div style="font-size: 13px; color: var(--text);">${escapeHtml(task.title)}</div>
+              <div style="font-size: 11px; color: var(--text3);">Status: ${task.status}</div>
+            </div>
+            <button onclick="deleteProjectTask(${projectId}, ${task.id})" style="background: none; border: none; color: var(--red); cursor: pointer; font-size: 12px;">✕</button>
+          </div>
+        `;
+      });
+    } else {
+      html += '<div style="color: var(--text3); font-size: 12px;">No tasks yet</div>';
+    }
+
+    html += '</div>';
+    content.innerHTML = html;
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    modal.onclick = (e) => {
+      if (e.target === modal) closeProjectDetailsModal();
+    };
+  } catch (e) {
+    console.error('Error loading project details:', e);
+    alert('Failed to load project details');
+  }
+}
+
+function closeProjectDetailsModal() {
+  const modal = document.getElementById('projectDetailsModal');
+  if (modal) {
+    modal.style.opacity = '0';
+    modal.style.transition = 'opacity 0.2s';
+    setTimeout(() => modal.remove(), 200);
+  }
+}
+
+async function addProjectNote(projectId) {
+  const content = prompt('Enter note content:');
+  if (!content) return;
+
+  try {
+    const response = await fetch(`/api/projects/${projectId}/notes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: content })
+    });
+
+    if (response.ok) {
+      await openProjectDetailsModal(projectId);
+    } else {
+      alert('Failed to add note');
+    }
+  } catch (e) {
+    console.error('Error adding note:', e);
+    alert('Error adding note');
+  }
+}
+
+async function deleteProjectNote(projectId, noteId) {
+  if (!confirm('Delete this note?')) return;
+
+  try {
+    const response = await fetch(`/api/projects/${projectId}/notes/${noteId}`, {
+      method: 'DELETE'
+    });
+
+    if (response.ok) {
+      await openProjectDetailsModal(projectId);
+    } else {
+      alert('Failed to delete note');
+    }
+  } catch (e) {
+    console.error('Error deleting note:', e);
+    alert('Error deleting note');
+  }
+}
+
+async function addProjectTask(projectId) {
+  const title = prompt('Enter task title:');
+  if (!title) return;
+
+  try {
+    const response = await fetch(`/api/projects/${projectId}/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title, status: 'pending' })
+    });
+
+    if (response.ok) {
+      await openProjectDetailsModal(projectId);
+    } else {
+      alert('Failed to add task');
+    }
+  } catch (e) {
+    console.error('Error adding task:', e);
+    alert('Error adding task');
+  }
+}
+
+async function deleteProjectTask(projectId, taskId) {
+  if (!confirm('Delete this task?')) return;
+
+  try {
+    const response = await fetch(`/api/projects/${projectId}/tasks/${taskId}`, {
+      method: 'DELETE'
+    });
+
+    if (response.ok) {
+      await openProjectDetailsModal(projectId);
+    } else {
+      alert('Failed to delete task');
+    }
+  } catch (e) {
+    console.error('Error deleting task:', e);
+    alert('Error deleting task');
+  }
 }
 
 function viewAssignment(title, className, dueDate, estimateMinutes) {
