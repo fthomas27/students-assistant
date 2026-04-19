@@ -1453,6 +1453,7 @@ margin-bottom: 0;
   <button class="sidebar-toggle-btn" data-column="2" onclick="openCalendarModal()" title="Calendar">📅</button>
   <button class="sidebar-toggle-btn" data-column="3" onclick="toggleSidebarColumn(3)" title="Plan">🎯</button>
   <button class="sidebar-toggle-btn" data-column="4" onclick="toggleSidebarColumn(4)" title="Assignments">📋</button>
+  <button class="sidebar-toggle-btn" onclick="openRecurringTasksModal()" title="Recurring Tasks">🔁</button>
 </div>
 
 <!-- Settings Modal -->
@@ -3339,6 +3340,358 @@ async function deleteProjectConfirm(projectId) {
   } catch (e) {
     console.error('Error deleting project:', e);
     alert('Error deleting project');
+  }
+}
+
+// Recurring tasks management
+let recurringTasksCache = [];
+
+async function openRecurringTasksModal() {
+  try {
+    const response = await fetch('/api/recurring-tasks');
+    const data = await response.json();
+    recurringTasksCache = data.recurring_tasks || [];
+
+    const modal = document.createElement('div');
+    modal.id = 'recurringTasksModal';
+    modal.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      animation: fadeInBackdrop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    `;
+
+    const content = document.createElement('div');
+    content.style.cssText = `
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 24px;
+      max-width: 500px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
+      animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    `;
+
+    let html = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--text);">🔁 Recurring Tasks</h3>
+        <button onclick="closeRecurringTasksModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px;">✕</button>
+      </div>
+      <div style="margin-bottom: 16px;">
+        <button onclick="openAddRecurringTaskModal()" style="width: 100%; padding: 10px; background: var(--accent); color: white; border: none; border-radius: var(--r-sm); cursor: pointer; font-weight: 600;">+ Add Recurring Task</button>
+      </div>
+      <div style="border-top: 1px solid var(--border); padding-top: 16px;">
+    `;
+
+    if (recurringTasksCache.length === 0) {
+      html += '<div style="color: var(--text3); text-align: center; padding: 20px 0;">No recurring tasks yet</div>';
+    } else {
+      recurringTasksCache.forEach(task => {
+        html += `
+          <div style="background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px; margin-bottom: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: start; gap: 8px;">
+              <div style="flex: 1;">
+                <div style="font-weight: 600; color: var(--text);">${escapeHtml(task.title)}</div>
+                <div style="font-size: 12px; color: var(--text2); margin-top: 4px;">
+                  Recurrence: <strong>${task.recurrence}</strong> | Priority: <strong>${task.urgency}</strong>
+                </div>
+                ${task.notes ? `<div style="font-size: 12px; color: var(--text3); margin-top: 4px;">${escapeHtml(task.notes.substring(0, 60))}</div>` : ''}
+              </div>
+              <div style="display: flex; gap: 4px;">
+                <button onclick="editRecurringTask(${task.id})" style="background: none; border: none; color: var(--text2); cursor: pointer; font-size: 14px;">✎</button>
+                <button onclick="deleteRecurringTask(${task.id})" style="background: none; border: none; color: var(--red); cursor: pointer; font-size: 14px;">✕</button>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    html += '</div>';
+    content.innerHTML = html;
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    modal.onclick = (e) => {
+      if (e.target === modal) closeRecurringTasksModal();
+    };
+  } catch (e) {
+    console.error('Error loading recurring tasks:', e);
+    alert('Failed to load recurring tasks');
+  }
+}
+
+function closeRecurringTasksModal() {
+  const modal = document.getElementById('recurringTasksModal');
+  if (modal) {
+    modal.style.opacity = '0';
+    modal.style.transition = 'opacity 0.2s';
+    setTimeout(() => modal.remove(), 200);
+  }
+}
+
+async function openAddRecurringTaskModal() {
+  const modal = document.createElement('div');
+  modal.id = 'addRecurringTaskModal';
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    animation: fadeInBackdrop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  `;
+
+  const form = document.createElement('div');
+  form.style.cssText = `
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 24px;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: 0 20px 25px rgba(0, 0, 0, 0.15);
+    animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  `;
+
+  form.innerHTML = `
+    <h3 style="margin: 0 0 16px 0; color: var(--text);">Add Recurring Task</h3>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Title</label>
+      <input id="recurringTitle" type="text" placeholder="Task title" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+    </div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Recurrence</label>
+      <select id="recurringRecurrence" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+        <option value="daily">Daily</option>
+        <option value="weekly">Weekly</option>
+        <option value="biweekly">Bi-weekly</option>
+        <option value="monthly">Monthly</option>
+      </select>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Priority</label>
+      <select id="recurringUrgency" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+        <option value="low">Low</option>
+        <option value="medium" selected>Medium</option>
+        <option value="high">High</option>
+        <option value="critical">Critical</option>
+      </select>
+    </div>
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Notes (optional)</label>
+      <textarea id="recurringNotes" placeholder="Any additional notes..." style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 60px; font-family: inherit;"></textarea>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button onclick="closeAddRecurringTaskModal()" style="flex: 1; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); cursor: pointer; font-weight: 600;">Cancel</button>
+      <button onclick="saveNewRecurringTask()" style="flex: 1; padding: 8px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Create</button>
+    </div>
+  `;
+
+  modal.appendChild(form);
+  document.body.appendChild(modal);
+  document.getElementById('recurringTitle').focus();
+  modal.onclick = (e) => {
+    if (e.target === modal) closeAddRecurringTaskModal();
+  };
+}
+
+function closeAddRecurringTaskModal() {
+  const modal = document.getElementById('addRecurringTaskModal');
+  if (modal) {
+    modal.style.opacity = '0';
+    modal.style.transition = 'opacity 0.2s';
+    setTimeout(() => modal.remove(), 200);
+  }
+}
+
+async function saveNewRecurringTask() {
+  const title = document.getElementById('recurringTitle').value.trim();
+  const recurrence = document.getElementById('recurringRecurrence').value;
+  const urgency = document.getElementById('recurringUrgency').value;
+  const notes = document.getElementById('recurringNotes').value.trim();
+
+  if (!title) {
+    alert('Title is required');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/recurring-tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: title,
+        recurrence: recurrence,
+        urgency: urgency,
+        notes: notes,
+        active: true
+      })
+    });
+
+    if (response.ok) {
+      closeAddRecurringTaskModal();
+      await openRecurringTasksModal();
+    } else {
+      alert('Failed to create recurring task');
+    }
+  } catch (e) {
+    console.error('Error creating recurring task:', e);
+    alert('Error creating recurring task');
+  }
+}
+
+async function editRecurringTask(taskId) {
+  const task = recurringTasksCache.find(t => t.id === taskId);
+  if (!task) return;
+
+  const modal = document.createElement('div');
+  modal.id = 'editRecurringTaskModal';
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+  `;
+
+  const form = document.createElement('div');
+  form.style.cssText = `
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 24px;
+    max-width: 400px;
+    width: 90%;
+  `;
+
+  form.innerHTML = `
+    <h3 style="margin: 0 0 16px 0; color: var(--text);">Edit Recurring Task</h3>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Title</label>
+      <input id="editRecurringTitle" type="text" value="${escapeHtml(task.title)}" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+    </div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Recurrence</label>
+      <select id="editRecurringRecurrence" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+        <option value="daily" ${task.recurrence === 'daily' ? 'selected' : ''}>Daily</option>
+        <option value="weekly" ${task.recurrence === 'weekly' ? 'selected' : ''}>Weekly</option>
+        <option value="biweekly" ${task.recurrence === 'biweekly' ? 'selected' : ''}>Bi-weekly</option>
+        <option value="monthly" ${task.recurrence === 'monthly' ? 'selected' : ''}>Monthly</option>
+      </select>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Priority</label>
+      <select id="editRecurringUrgency" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+        <option value="low" ${task.urgency === 'low' ? 'selected' : ''}>Low</option>
+        <option value="medium" ${task.urgency === 'medium' ? 'selected' : ''}>Medium</option>
+        <option value="high" ${task.urgency === 'high' ? 'selected' : ''}>High</option>
+        <option value="critical" ${task.urgency === 'critical' ? 'selected' : ''}>Critical</option>
+      </select>
+    </div>
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Notes</label>
+      <textarea id="editRecurringNotes" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 60px; font-family: inherit;">${escapeHtml(task.notes || '')}</textarea>
+    </div>
+    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+      <button onclick="closeEditRecurringTaskModal()" style="flex: 1; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); cursor: pointer; font-weight: 600;">Cancel</button>
+      <button onclick="saveEditRecurringTask(${taskId})" style="flex: 1; padding: 8px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Save</button>
+    </div>
+    <button onclick="deleteRecurringTaskConfirm(${taskId})" style="width: 100%; padding: 8px; background: var(--red); border: 1px solid var(--red); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Delete</button>
+  `;
+
+  modal.appendChild(form);
+  document.body.appendChild(modal);
+  modal.onclick = (e) => {
+    if (e.target === modal) closeEditRecurringTaskModal();
+  };
+}
+
+function closeEditRecurringTaskModal() {
+  const modal = document.getElementById('editRecurringTaskModal');
+  if (modal) {
+    modal.style.opacity = '0';
+    setTimeout(() => modal.remove(), 200);
+  }
+}
+
+async function saveEditRecurringTask(taskId) {
+  const title = document.getElementById('editRecurringTitle').value.trim();
+  const recurrence = document.getElementById('editRecurringRecurrence').value;
+  const urgency = document.getElementById('editRecurringUrgency').value;
+  const notes = document.getElementById('editRecurringNotes').value.trim();
+
+  if (!title) {
+    alert('Title is required');
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/recurring-tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: title,
+        recurrence: recurrence,
+        urgency: urgency,
+        notes: notes
+      })
+    });
+
+    if (response.ok) {
+      closeEditRecurringTaskModal();
+      await openRecurringTasksModal();
+    } else {
+      alert('Failed to update recurring task');
+    }
+  } catch (e) {
+    console.error('Error updating recurring task:', e);
+    alert('Error updating recurring task');
+  }
+}
+
+async function deleteRecurringTask(taskId) {
+  deleteRecurringTaskConfirm(taskId);
+}
+
+async function deleteRecurringTaskConfirm(taskId) {
+  if (!confirm('Delete this recurring task?')) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/recurring-tasks/${taskId}`, {
+      method: 'DELETE'
+    });
+
+    if (response.ok) {
+      closeEditRecurringTaskModal();
+      await openRecurringTasksModal();
+    } else {
+      alert('Failed to delete recurring task');
+    }
+  } catch (e) {
+    console.error('Error deleting recurring task:', e);
+    alert('Error deleting recurring task');
   }
 }
 
