@@ -1900,6 +1900,7 @@ function isMobile() {
 }
 
 function toggleSidebarColumn(colNumber) {
+  closeProjectDetailsModal();
   const sidebar = document.getElementById(`sidebarCol${colNumber}`);
   const isOpen = sidebar.classList.contains('open');
 
@@ -1925,6 +1926,7 @@ function toggleSidebarColumn(colNumber) {
 }
 
 function closeSidebarColumn() {
+  closeProjectDetailsModal();
   document.getElementById('sidebarCol1').classList.remove('open');
   document.getElementById('sidebarCol2').classList.remove('open');
   document.getElementById('sidebarCol3').classList.remove('open');
@@ -1965,6 +1967,7 @@ function updateSidebarStats() {
 }
 
 function openSettings() {
+  closeProjectDetailsModal();
   document.getElementById('settingsModal').classList.add('visible');
   document.getElementById('settingsBackdrop').classList.add('visible');
 
@@ -2010,6 +2013,7 @@ function confirmLogout() {
 }
 
 function openChatHistory() {
+  closeProjectDetailsModal();
   document.getElementById('chatHistoryModal').classList.add('visible');
   document.getElementById('chatHistoryBackdrop').classList.add('visible');
   loadChatHistory();
@@ -4167,6 +4171,7 @@ let calendarEventsByDate = {};
 let currentDayEvents = [];
 
 function openCalendarModal() {
+  closeProjectDetailsModal();
   calendarCurrentDate = new Date(); // Reset to today for consistency
   document.getElementById('calendarModal').classList.add('visible');
   document.getElementById('calendarBackdrop').classList.add('visible');
