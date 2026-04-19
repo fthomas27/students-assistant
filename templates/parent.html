@@ -417,7 +417,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function loadTasks() {
   try {
-    const response = await fetch('/api/parent/tasks');
+    const response = await fetch('/api/parent/tasks', {
+      credentials: 'same-origin'
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
     const data = await response.json();
     tasks = data.tasks || [];
     renderTasks();
@@ -480,6 +485,7 @@ async function addTask(e) {
     const response = await fetch('/api/parent/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({
         title,
         urgency,
@@ -510,6 +516,7 @@ async function completeTask(taskId) {
     const response = await fetch(`/api/parent/tasks/${taskId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({ completed: true })
     });
 
@@ -536,6 +543,7 @@ async function editTaskNotes(taskId) {
     const response = await fetch(`/api/parent/tasks/${taskId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({ notes: newNotes })
     });
 
@@ -557,7 +565,10 @@ function showMessage(text, type) {
 }
 
 function logout() {
-  fetch('/logout', { method: 'POST' })
+  fetch('/logout', {
+    method: 'POST',
+    credentials: 'same-origin'
+  })
     .then(() => window.location.href = '/login')
     .catch(err => console.error(err));
 }
