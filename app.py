@@ -1955,6 +1955,14 @@ def api_calendar():
         for e in parse_calendar_events(cal, days_ahead=days):
             e["source"] = "personal"
             events.append(e)
+    # Sports calendar
+    t1b = time.time()
+    cal_sports = fetch_ical(SPORTS_ICAL_URL)
+    log.info(f"/api/calendar: fetch sports took {time.time()-t1b:.2f}s")
+    if cal_sports:
+        for e in parse_calendar_events(cal_sports, days_ahead=days):
+            e["source"] = "sports"
+            events.append(e)
     # Canvas assignments as calendar events
     t2 = time.time()
     cal2 = fetch_ical(CANVAS_ICAL_URL)

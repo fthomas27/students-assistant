@@ -2769,12 +2769,17 @@ function renderCalendar() {
     return;
   }
 
-  container.innerHTML = filtered.slice(0, 6).map(e => `
-    <div class="sidebar-item">
-      <div class="sidebar-item-title">${e.title || 'Event'}</div>
-      <div class="sidebar-item-meta">${formatEventTime(e.start_iso)}</div>
-    </div>
-  `).join('');
+  container.innerHTML = filtered.slice(0, 6).map(e => {
+    const isSports = e.source === 'sports';
+    const icon = isSports ? '⚽' : '📅';
+    const badge = isSports ? '<span style="display: inline-block; background: var(--purple); color: white; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-left: 4px; font-weight: 600;">SPORTS</span>' : '';
+    return `
+      <div class="sidebar-item" ${isSports ? 'style="border-left: 3px solid var(--purple);"' : ''}>
+        <div class="sidebar-item-title">${icon} ${e.title || 'Event'}${badge}</div>
+        <div class="sidebar-item-meta">${formatEventTime(e.start_iso)}</div>
+      </div>
+    `;
+  }).join('');
   updateSidebarStats();
 }
 
@@ -4398,9 +4403,12 @@ function showCalendarEvents(day, month, year, events) {
     currentDayEvents.map((e, idx) => {
       const eventDate = new Date(e.start_iso);
       const timeStr = eventDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      const isSports = e.source === 'sports';
+      const icon = isSports ? '⚽' : '📅';
+      const badge = isSports ? ' <span style="display: inline-block; background: var(--purple); color: white; font-size: 9px; padding: 2px 5px; border-radius: 3px; margin-left: 6px; font-weight: 600;">SPORTS</span>' : '';
       return `
-        <div class="calendar-event-item" onclick="showEventDetail(${idx})">
-          <div class="calendar-event-title">📅 ${escapeHtml(e.title)}</div>
+        <div class="calendar-event-item" onclick="showEventDetail(${idx})" ${isSports ? 'style="border-left: 3px solid var(--purple);"' : ''}>
+          <div class="calendar-event-title">${icon} ${escapeHtml(e.title)}${badge}</div>
           <div class="calendar-event-time">${timeStr}</div>
         </div>
       `;
