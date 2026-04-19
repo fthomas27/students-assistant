@@ -1268,6 +1268,244 @@ from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 to { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
 }
 
+/* ── Enhanced UX Animations ── */
+@keyframes checkmark {
+0% { opacity: 0; transform: scale(0) rotate(-45deg); }
+50% { opacity: 1; }
+100% { opacity: 1; transform: scale(1) rotate(0deg); }
+}
+
+@keyframes celebrate {
+0% { transform: scale(1) rotateZ(0deg); opacity: 1; }
+50% { transform: scale(1.15) rotateZ(5deg); }
+100% { transform: scale(0.9) rotateZ(-3deg) translateY(20px); opacity: 0; }
+}
+
+@keyframes ripple {
+0% { transform: scale(0); opacity: 0.7; }
+100% { transform: scale(4); opacity: 0; }
+}
+
+@keyframes shimmer {
+0% { background-position: -1000px 0; }
+100% { background-position: 1000px 0; }
+}
+
+@keyframes slideInMessage {
+from { opacity: 0; transform: translateY(10px) scale(0.95); }
+to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes successPulse {
+0%, 100% { transform: scale(1); }
+50% { transform: scale(1.05); }
+}
+
+@keyframes spin {
+from { transform: rotate(0deg); }
+to { transform: rotate(360deg); }
+}
+
+@keyframes slideInUp {
+from { opacity: 0; transform: translateY(20px); }
+to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toastSlideIn {
+from { opacity: 0; transform: translateX(100%) translateY(0); }
+to { opacity: 1; transform: translateX(0) translateY(0); }
+}
+
+@keyframes toastSlideOut {
+from { opacity: 1; transform: translateX(0) translateY(0); }
+to { opacity: 0; transform: translateX(100%) translateY(0); }
+}
+
+/* ── Loading States ── */
+.loading-spinner {
+display: inline-block;
+width: 16px;
+height: 16px;
+border: 2px solid rgba(255,255,255,0.3);
+border-top-color: var(--accent);
+border-radius: 50%;
+animation: spin 0.8s linear infinite;
+}
+
+.loading-skeleton {
+background: linear-gradient(90deg, var(--surface2) 0%, var(--surface3) 50%, var(--surface2) 100%);
+background-size: 1000px 100%;
+animation: shimmer 2s infinite;
+border-radius: var(--r-sm);
+}
+
+/* ── Toast Notifications ── */
+.toast {
+position: fixed;
+bottom: 20px;
+right: 20px;
+background: var(--surface2);
+border: 1px solid var(--border);
+border-radius: var(--r);
+padding: 16px 20px;
+color: var(--text);
+font-size: 14px;
+z-index: 1000;
+box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+display: flex;
+align-items: center;
+gap: 12px;
+animation: toastSlideIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+max-width: 300px;
+}
+
+.toast.success {
+background: rgba(92, 184, 92, 0.15);
+border-color: var(--green);
+}
+
+.toast.error {
+background: rgba(255, 107, 107, 0.15);
+border-color: var(--red);
+}
+
+.toast.info {
+background: rgba(255, 127, 80, 0.15);
+border-color: var(--accent);
+}
+
+.toast.closing {
+animation: toastSlideOut 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.toast-icon {
+font-size: 18px;
+flex-shrink: 0;
+}
+
+/* ── Enhanced Button Feedback ── */
+button {
+position: relative;
+overflow: hidden;
+}
+
+button::before {
+content: '';
+position: absolute;
+top: 50%;
+left: 50%;
+width: 0;
+height: 0;
+border-radius: 50%;
+background: rgba(255,255,255,0.3);
+transform: translate(-50%, -50%);
+pointer-events: none;
+}
+
+button:active::before {
+width: 30px;
+height: 30px;
+animation: ripple 0.6s ease-out;
+}
+
+/* ── Smooth Transitions ── */
+.sidebar-item, .task-item, .chat-message, button, input, textarea, select {
+transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Task Completion Animation ── */
+.task-item.completing {
+opacity: 0.5;
+transform: scale(0.98);
+}
+
+.task-item.completed {
+animation: celebrate 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55) forwards;
+}
+
+.task-check {
+animation: checkmark 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ── Enhanced Input Focus ── */
+input:focus, textarea:focus, select:focus {
+outline: none;
+border-color: var(--accent) !important;
+box-shadow: 0 0 0 3px rgba(255, 127, 80, 0.1) !important;
+}
+
+/* ── Message Animation Stagger ── */
+.chat-message {
+animation: slideInMessage 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.chat-message:nth-child(1) { animation-delay: 0ms; }
+.chat-message:nth-child(2) { animation-delay: 50ms; }
+.chat-message:nth-child(3) { animation-delay: 100ms; }
+.chat-message:nth-child(4) { animation-delay: 150ms; }
+.chat-message:nth-child(5) { animation-delay: 200ms; }
+
+/* ── Typing Indicator ── */
+.typing-indicator {
+display: flex;
+gap: 3px;
+align-items: center;
+padding: 8px 12px;
+background: var(--surface2);
+border-radius: var(--r);
+width: fit-content;
+}
+
+.typing-dot {
+width: 8px;
+height: 8px;
+background: var(--text2);
+border-radius: 50%;
+animation: pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* ── Success State ── */
+.success-state {
+animation: successPulse 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Hover Button Lift ── */
+button:not(:disabled):hover {
+transform: translateY(-2px);
+}
+
+button:not(:disabled):active {
+transform: translateY(0);
+}
+
+/* ── Disabled State ── */
+button:disabled, input:disabled, textarea:disabled, select:disabled {
+opacity: 0.5;
+cursor: not-allowed;
+}
+
+/* ── Smooth Sidebar Transitions ── */
+.sidebar {
+transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar.open {
+transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Form Group Animation ── */
+.form-group {
+animation: slideInUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.form-group:nth-child(1) { animation-delay: 0ms; }
+.form-group:nth-child(2) { animation-delay: 50ms; }
+.form-group:nth-child(3) { animation-delay: 100ms; }
+.form-group:nth-child(4) { animation-delay: 150ms; }
+
 .settings-modal-content {
 display: flex;
 flex-direction: column;
@@ -2880,14 +3118,17 @@ async function sendMessage() {
   userBubble.className = 'message user';
   userBubble.innerHTML = `<div class="message-bubble">${escapeHtml(message)}</div>`;
   messagesDiv.appendChild(userBubble);
+  renderMessageWithDelay(userBubble);
+  triggerHaptic('light');
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
   conversationHistory.push({ role: 'user', content: message });
 
   const loadingBubble = document.createElement('div');
   loadingBubble.className = 'message assistant';
-  loadingBubble.innerHTML = `<div class="message-bubble"><span class="loading-dot"></span><span class="loading-dot"></span><span class="loading-dot"></span></div>`;
+  loadingBubble.innerHTML = `<div class="message-bubble typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>`;
   messagesDiv.appendChild(loadingBubble);
+  renderMessageWithDelay(loadingBubble, 100);
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
   try {
@@ -2955,6 +3196,7 @@ You have access to the user's assignments, tasks, projects, and calendar. Use th
     }
 
     loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(displayMessage)}</div>`;
+    renderMessageWithDelay(loadingBubble);
     conversationHistory.push({ role: 'assistant', content: displayMessage });
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
@@ -2962,7 +3204,9 @@ You have access to the user's assignments, tasks, projects, and calendar. Use th
     saveCurrentChat();
   } catch (e) {
     loadingBubble.innerHTML = `<div class="message-bubble" style="color: var(--red);">Failed to connect. Try again.</div>`;
+    showToast('Connection error. Please try again.', 'error');
     console.error('Chat error:', e);
+    triggerHaptic('error');
   }
 }
 
@@ -3015,6 +3259,10 @@ async function createTaskFromChat(taskData, loadingBubble) {
     const dueDateStr = taskData.due_date ? ` due ${taskData.due_date}` : '';
     confirmBubble.innerHTML = `<div class="message-bubble">✓ Task <strong>"${escapeHtml(taskData.title)}"</strong> created!${dueDateStr}</div>`;
     messagesDiv.appendChild(confirmBubble);
+    renderMessageWithDelay(confirmBubble, 200);
+    triggerSuccessPulse(confirmBubble);
+    triggerHaptic('success');
+    showToast(`Task "${taskData.title}" added! 📝`, 'success', 2000);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
     // Refresh tasks sidebar
@@ -3254,6 +3502,8 @@ async function completeTask(event, taskId) {
     event.stopPropagation();
   }
   try {
+    triggerHaptic('success');
+
     const response = await fetch(`/api/tasks/${taskId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -3261,6 +3511,12 @@ async function completeTask(event, taskId) {
     });
 
     if (response.ok) {
+      // Find and animate the task element
+      const taskElement = document.querySelector(`[data-task-id="${taskId}"]`);
+      if (taskElement) {
+        celebrateCompletion(taskElement);
+      }
+
       await loadSidebarData();
       const task = tasksCache.find(t => t.id === taskId);
       if (task) {
@@ -3270,15 +3526,18 @@ async function completeTask(event, taskId) {
       const messagesDiv = document.getElementById('chatMessages');
       const bubble = document.createElement('div');
       bubble.className = 'message assistant';
-      bubble.innerHTML = `<div class="message-bubble">✓ Task completed!</div>`;
+      bubble.innerHTML = `<div class="message-bubble">✓ Task completed! Excellent work.</div>`;
       messagesDiv.appendChild(bubble);
+      renderMessageWithDelay(bubble, 100);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+      showToast('Task completed! Keep it up! 🎯', 'success', 2000);
     } else {
-      alert('Failed to complete task');
+      showToast('Failed to complete task', 'error');
     }
   } catch (e) {
     console.error('Error completing task:', e);
-    alert('Error completing task');
+    showToast('Error completing task', 'error');
   }
 }
 
@@ -4282,6 +4541,195 @@ const lastChat = JSON.parse(localStorage.getItem('chatHistories') || '[]')[0];
 if (lastChat && lastChat.messages && lastChat.messages.length > 0) {
   conversationHistory = lastChat.messages;
   renderChatMessages();
+}
+
+// ── Enhanced UX Functions ──
+
+// Toast notification system
+function showToast(message, type = 'info', duration = 3000) {
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+
+  const icons = {
+    success: '✓',
+    error: '✕',
+    info: 'ℹ'
+  };
+
+  toast.innerHTML = `<span class="toast-icon">${icons[type]}</span><span>${message}</span>`;
+  document.body.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add('closing');
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
+// Task completion with celebration
+function celebrateCompletion(element) {
+  element.classList.add('completing');
+  setTimeout(() => {
+    element.classList.add('completed');
+    showToast('Task completed! 🎉', 'success', 2000);
+  }, 200);
+}
+
+// Button loading state
+function setButtonLoading(button, isLoading) {
+  if (isLoading) {
+    button.disabled = true;
+    const originalText = button.textContent;
+    button.dataset.originalText = originalText;
+    button.innerHTML = '<span class="loading-spinner"></span>';
+  } else {
+    button.disabled = false;
+    button.textContent = button.dataset.originalText || 'Submit';
+  }
+}
+
+// Enhanced form submission feedback
+function handleFormSubmit(form, onSubmit) {
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) setButtonLoading(submitBtn, true);
+
+    try {
+      await onSubmit();
+    } catch (error) {
+      showToast(error.message || 'An error occurred', 'error');
+    } finally {
+      if (submitBtn) setButtonLoading(submitBtn, false);
+    }
+  });
+}
+
+// Success pulse animation
+function triggerSuccessPulse(element) {
+  element.classList.add('success-state');
+  setTimeout(() => element.classList.remove('success-state'), 600);
+}
+
+// Smooth scroll with easing
+function smoothScrollTo(element, duration = 300) {
+  const target = element.offsetTop;
+  const start = window.scrollY;
+  const distance = target - start;
+  const startTime = performance.now();
+
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : (t - 1) * (2 * t - 2) * (2 * t - 2) + 1;
+  }
+
+  function scroll(currentTime) {
+    const elapsed = currentTime - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const ease = easeInOutCubic(progress);
+    window.scrollY = start + distance * ease;
+
+    if (progress < 1) {
+      requestAnimationFrame(scroll);
+    }
+  }
+
+  requestAnimationFrame(scroll);
+}
+
+// Loading skeleton placeholder
+function createLoadingSkeleton(count = 3) {
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    html += `<div class="loading-skeleton" style="height: 16px; margin-bottom: 12px; border-radius: var(--r-sm);"></div>`;
+  }
+  return html;
+}
+
+// Debounce helper for input events
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
+// Throttle helper for scroll/resize events
+function throttle(func, limit) {
+  let inThrottle;
+  return function(...args) {
+    if (!inThrottle) {
+      func.apply(this, args);
+      inThrottle = true;
+      setTimeout(() => inThrottle = false, limit);
+    }
+  };
+}
+
+// Add haptic feedback (if supported)
+function triggerHaptic(pattern = 'light') {
+  if (navigator.vibrate) {
+    const patterns = {
+      light: [10],
+      medium: [30],
+      heavy: [50],
+      success: [50, 30, 50],
+      error: [100, 30, 100]
+    };
+    navigator.vibrate(patterns[pattern] || [10]);
+  }
+}
+
+// Enhanced chat message rendering with delay
+function renderMessageWithDelay(messageElement, delay = 0) {
+  messageElement.style.opacity = '0';
+  messageElement.style.transform = 'translateY(10px) scale(0.95)';
+
+  setTimeout(() => {
+    messageElement.style.animation = 'slideInMessage 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards';
+  }, delay);
+}
+
+// Network error handler with retry
+async function fetchWithRetry(url, options = {}, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response;
+    } catch (error) {
+      if (i === retries - 1) {
+        showToast('Connection error. Please try again.', 'error');
+        throw error;
+      }
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+    }
+  }
+}
+
+// Keyboard shortcuts for power users
+document.addEventListener('keydown', (e) => {
+  // Cmd/Ctrl + K for quick search (future enhancement)
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+    e.preventDefault();
+    // Implement quick search here
+  }
+  // Escape to close modals
+  if (e.key === 'Escape') {
+    closeSettingsModal();
+    closeChatHistory();
+    closeCalendarModal();
+  }
+});
+
+// Prefetch critical data
+if ('requestIdleCallback' in window) {
+  requestIdleCallback(() => {
+    loadSidebarData().catch(e => console.error('Prefetch failed:', e));
+  });
 }
 </script>
 
