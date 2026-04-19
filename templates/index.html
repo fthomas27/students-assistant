@@ -2361,7 +2361,9 @@ async function viewProject(title, description) {
 
 async function openProjectDetailsModal(projectId) {
   try {
+    console.log('openProjectDetailsModal called for project', projectId);
     closeProjectDetailsModal();
+    await new Promise(resolve => setTimeout(resolve, 50));
     const project = projectsCache.find(p => p.id === projectId);
     const notesRes = await fetch(`/api/projects/${projectId}/notes`);
     const tasksRes = await fetch(`/api/projects/${projectId}/tasks`);
@@ -2466,9 +2468,18 @@ async function openProjectDetailsModal(projectId) {
 }
 
 function closeProjectDetailsModal() {
-  const modal = document.getElementById('projectDetailsModal');
-  if (modal) {
+  console.log('closeProjectDetailsModal called');
+  const modals = document.querySelectorAll('[id*="projectDetailsModal"], [id*="projectModal"]');
+  console.log('Found', modals.length, 'modals to close');
+  modals.forEach(modal => {
+    console.log('Removing modal:', modal.id);
+    modal.style.display = 'none';
     modal.remove();
+  });
+  const legacyModal = document.getElementById('projectDetailsModal');
+  if (legacyModal) {
+    console.log('Removing legacy modal');
+    legacyModal.remove();
   }
 }
 
@@ -4626,6 +4637,7 @@ document.addEventListener('keydown', (e) => {
   }
   // Escape to close modals
   if (e.key === 'Escape') {
+    closeProjectDetailsModal();
     closeSettingsModal();
     closeChatHistory();
     closeCalendarModal();
