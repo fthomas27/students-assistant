@@ -233,8 +233,6 @@ def fetch_day_calendar_events(d, days_ahead=30):
 
 def get_db():
     url = os.environ.get("DATABASE_URL", "")
-    if not url:
-        raise ValueError("DATABASE_URL environment variable not set")
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
     return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1645,12 +1643,9 @@ ORDER BY la.attempted_at DESC LIMIT 200""")
             r["attempted_at"] = r["attempted_at"].isoformat() if r["attempted_at"] else None
 
         return jsonify({"attempts": rows})
-    except (ValueError, psycopg2.OperationalError) as e:
-        log.warning(f"Database connection error in login attempts: {e}")
-        return jsonify({"error": "Database connection failed. Please check system configuration.", "attempts": []}), 500
     except Exception as e:
         log.exception("Error fetching login attempts")
-        return jsonify({"error": str(e), "attempts": []}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/admin/suspicious-activity")
@@ -1687,12 +1682,9 @@ FROM login_lockouts ORDER BY created_at DESC LIMIT 50""")
             "suspicious_ips": suspicious_ips,
             "active_lockouts": lockouts
         })
-    except (ValueError, psycopg2.OperationalError) as e:
-        log.warning(f"Database connection error in suspicious activity: {e}")
-        return jsonify({"error": "Database connection failed. Please check system configuration.", "suspicious_ips": [], "active_lockouts": []}), 500
     except Exception as e:
         log.exception("Error fetching suspicious activity")
-        return jsonify({"error": str(e), "suspicious_ips": [], "active_lockouts": []}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/admin/claude-usage")
@@ -1728,7 +1720,7 @@ def api_admin_claude_usage():
         })
     except Exception as e:
         log.exception("Error fetching Claude usage")
-        return jsonify({"error": str(e), "tokens_used": 0, "tokens_limit": 1000000, "percent_used": 0}), 500
+        return jsonify({"error": str(e), "tokens_used": 0, "tokens_limit": 1000000}), 500
 
 
 @app.route("/api/lockdown-status")
@@ -1814,12 +1806,9 @@ def api_admin_blocked_ips():
         return jsonify({
             "blocked_ips": [{"ip": row["ip_address"], "name": row["ip_name"], "blocked_at": row["blocked_at"].isoformat() if row["blocked_at"] else None, "reason": row["reason"]} for row in blocked]
         })
-    except (ValueError, psycopg2.OperationalError) as e:
-        log.warning(f"Database connection error in blocked IPs: {e}")
-        return jsonify({"error": "Database connection failed. Please check system configuration.", "blocked_ips": []}), 500
     except Exception as e:
         log.exception("Error getting blocked IPs")
-        return jsonify({"error": str(e), "blocked_ips": []}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/admin/block-ip", methods=["POST"])
