@@ -2520,14 +2520,16 @@ async function addProjectTask(projectId) {
       body: JSON.stringify({ title: title, status: 'pending' })
     });
 
+    const data = await response.json();
     if (response.ok) {
       await openProjectDetailsModal(projectId);
     } else {
-      alert('Failed to add task');
+      console.error('Failed to add task:', data);
+      alert('Failed to add task: ' + (data.error || 'Unknown error'));
     }
   } catch (e) {
     console.error('Error adding task:', e);
-    alert('Error adding task');
+    alert('Error adding task: ' + e.message);
   }
 }
 
