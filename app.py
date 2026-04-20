@@ -180,8 +180,30 @@ def _build_day_type_cache():
 _DAY_TYPE_CACHE = _build_day_type_cache()
 
 
+def _get_day_type_from_ical(d):
+    """Check the official Red/White day iCal feeds for a specific date."""
+    day_start = datetime(d.year, d.month, d.day, tzinfo=TZ)
+    day_end = day_start + timedelta(days=1)
+    try:
+        red_cal = fetch_ical(RED_DAY_ICAL_URL)
+        if red_cal and recurring_ical_events.of(red_cal).between(day_start, day_end):
+            return "red"
+        white_cal = fetch_ical(WHITE_DAY_ICAL_URL)
+        if white_cal and recurring_ical_events.of(white_cal).between(day_start, day_end):
+            return "white"
+    except Exception:
+        pass
+    return None
+
+
 def get_day_type(d):
-    """Return 'red', 'white', or None for non-school days. O(1) lookup."""
+    """Return 'red', 'white', or None for non-school days.
+    Checks official iCal feeds first; falls back to alternating-pattern cache."""
+    if not is_school_day(d):
+        return None
+    live = _get_day_type_from_ical(d)
+    if live:
+        return live
     return _DAY_TYPE_CACHE.get(d)
 
 
