@@ -3938,14 +3938,14 @@ def api_plan_my_day_generate():
             except Exception as e:
                 log.warning(f"Could not fetch assignments for plan: {e}")
 
-            # Get incomplete tasks due within 14 days
+            # Get incomplete tasks due within 3 days (today's plan, not a week-out todo)
             cur.execute("""
                 SELECT id, title, due_date, urgency FROM tasks
                 WHERE completed = FALSE
                 AND (due_date IS NULL OR due_date <= %s)
                 ORDER BY urgency DESC, due_date ASC
-                LIMIT 20
-            """, (today + timedelta(days=14),))
+                LIMIT 15
+            """, (today + timedelta(days=3),))
 
             urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
             for task_row in cur.fetchall():
@@ -3977,23 +3977,25 @@ def api_plan_my_day_generate():
                 log.warning(f"Could not fetch sports calendar for plan: {e}")
 
             for event in personal_events:
-                if event["date"] == today.isoformat() and not event.get("all_day"):
+                if event["date"] == today.isoformat():
                     calendar_events.append({
                         "type": "calendar",
                         "id": "",
                         "title": event["title"],
-                        "start_display": event.get("start_display", ""),
-                        "end_display": event.get("end_display", ""),
+                        "start_display": "All Day" if event.get("all_day") else event.get("start_display", ""),
+                        "end_display": "" if event.get("all_day") else event.get("end_display", ""),
+                        "all_day": event.get("all_day", False),
                         "source": "personal"
                     })
             for event in sports_events:
-                if event["date"] == today.isoformat() and not event.get("all_day"):
+                if event["date"] == today.isoformat():
                     calendar_events.append({
                         "type": "calendar",
                         "id": "",
                         "title": event["title"] + " [SPORTS]",
-                        "start_display": event.get("start_display", ""),
-                        "end_display": event.get("end_display", ""),
+                        "start_display": "All Day" if event.get("all_day") else event.get("start_display", ""),
+                        "end_display": "" if event.get("all_day") else event.get("end_display", ""),
+                        "all_day": event.get("all_day", False),
                         "source": "sports"
                     })
 
@@ -4023,7 +4025,7 @@ def api_plan_my_day_generate():
                     })
 
                 for e in personal_events + sports_events:
-                    if e["date"] == today.isoformat() and not e.get("all_day"):
+                    if e["date"] == today.isoformat() and not e.get("all_day") and e.get("start_iso"):
                         try:
                             es = datetime.fromisoformat(e["start_iso"])
                             ee = datetime.fromisoformat(e.get("end_iso") or e["start_iso"])
@@ -4076,10 +4078,13 @@ def api_plan_my_day_generate():
                 return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
 
             client = anthropic.Anthropic(api_key=api_key)
-            cal_block_lines = "\n".join(
-                "- %s: %s – %s" % (e["title"], e.get("start_display", "?"), e.get("end_display", "?"))
-                for e in calendar_events
-            ) or "None (no school or calendar events today)"
+            def _fmt_cal(e):
+                if e.get("all_day"):
+                    return "- %s: All Day" % e["title"]
+                return "- %s: %s – %s" % (e["title"], e.get("start_display", "?"), e.get("end_display", "?"))
+
+            cal_block_lines = "\n".join(_fmt_cal(e) for e in calendar_events) \
+                or "None (no school or calendar events today)"
 
             free_window_lines = "\n".join(
                 "- %s – %s (%d min)" % (w["start"], w["end"], w["minutes"])
@@ -4126,6 +4131,11 @@ Rules:
                 )
                 track_api_usage(message)
                 response_text = message.content[0].text if message.content else "[]"
+                # Strip markdown code fences Claude sometimes wraps around JSON
+                response_text = response_text.strip()
+                if response_text.startswith("```"):
+                    response_text = response_text.split("\n", 1)[-1]
+                    response_text = response_text.rsplit("```", 1)[0].strip()
                 scheduled_items = json.loads(response_text)
             except Exception as e:
                 log.warning(f"Claude plan generation failed: {e}")
