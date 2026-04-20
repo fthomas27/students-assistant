@@ -4083,8 +4083,8 @@ def api_plan_my_day_generate():
                     return "- %s: All Day" % e["title"]
                 return "- %s: %s – %s" % (e["title"], e.get("start_display", "?"), e.get("end_display", "?"))
 
-            cal_block_lines = "\n".join(_fmt_cal(e) for e in calendar_events) \
-                or "None (no school or calendar events today)"
+            cal_block_lines = ("\n".join(_fmt_cal(e) for e in calendar_events)
+                or "None (no school or calendar events today)")
 
             free_window_lines = "\n".join(
                 "- %s – %s (%d min)" % (w["start"], w["end"], w["minutes"])
