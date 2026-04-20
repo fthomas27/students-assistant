@@ -730,13 +730,6 @@ def generate_briefing(force=False):
         cur.execute("SELECT title, urgency FROM tasks WHERE completed = FALSE ORDER BY urgency DESC, created_at ASC LIMIT 5")
         tasks = [dict(r) for r in cur.fetchall()]
 
-        # Get stale projects
-        cur.execute("""
-SELECT title, last_checkin, checkin_interval_days FROM projects
-WHERE status = 'active' AND (last_checkin IS NULL OR
-    NOW() - last_checkin > make_interval(days => checkin_interval_days))
-LIMIT 3""")
-        stale_projects = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
 
@@ -810,7 +803,6 @@ LIMIT 3""")
             for e in events
         ]) or "- No calendar events today."
         tasks_text = "\n".join(["- [%s] %s" % (t["urgency"], t["title"]) for t in tasks]) or "- No pending tasks."
-        stale_text = "\n".join(["- %s (overdue check-in)" % p["title"] for p in stale_projects]) or "- None."
 
         # Get school schedule for today to recommend homework time
         school_hrs = get_school_hours(today)
@@ -840,7 +832,6 @@ LIMIT 3""")
             "REFERENCE — Larger / longer homework (papers, projects, big estimates, not already listed above):\n%s\n\n"
             "Today's calendar events:\n%s\n\n"
             "Pending tasks:\n%s\n\n"
-            "Projects needing check-in:\n%s\n\n"
             "Compose a sophisticated daily briefing using EXACTLY these four markdown sections with ## headings (spell each heading exactly):\n\n"
             "## Priorities for Today:\n"
             "• Present the most critical priorities first. Combine OVERDUE WORK and DUE-TODAY WORK from the reference (not quiz/test).\n"
@@ -858,7 +849,7 @@ LIMIT 3""")
             "• Then add EVERY line from REFERENCE Quizzes/tests exactly as given (each ⚠️ line is its own bullet).\n"
             "• If no events and no quiz lines, one bullet: No scheduled calendar entries or assessments flagged.\n\n"
             "## Upcoming Commitments:\n"
-            "• Bullets from REFERENCE Larger/longer; major assignments, projects, and significant work not already covered above.\n"
+            "• Bullets from REFERENCE Larger/longer; major assignments and significant work not already covered above.\n"
             "• If none, one bullet: No additional major commitments flagged.\n\n"
             "Guidelines: NEVER categorize a quiz/test as routine homework under ## Priorities for Today. "
             "Assessments **due today or overdue** appear exclusively under ## Schedule as the provided ⚠️ indicators. "
@@ -870,7 +861,7 @@ LIMIT 3""")
             lines_overdue_work, lines_today_work, quiz_test_block,
             lines_qt_study,
             lines_good_time, lines_big,
-            events_text, tasks_text, stale_text,
+            events_text, tasks_text,
         )
 
         try:
