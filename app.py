@@ -3872,24 +3872,21 @@ def api_plan_my_day_generate():
                 # Delete old plan
                 cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
 
-            # Fetch assignments, tasks, projects, and calendar events
+            # Fetch assignments, tasks, and calendar events
             assignments = []
             tasks = []
-            projects = []
-            calendar_events = []
+            calendar_events = []  # fixed blocks shown in the schedule
 
-            # Get assignments due today (fetch from Canvas calendar, not via HTTP)
+            # Get assignments due today
             try:
                 cal = fetch_ical(CANVAS_ICAL_URL)
                 if cal:
-                    # Reuse existing cursor instead of opening new connection
                     cur.execute("SELECT DISTINCT assignment_title FROM completions")
                     completed_titles = set(r["assignment_title"] for r in cur.fetchall())
                     cur.execute("SELECT uid, minutes FROM assignment_estimates")
                     custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
 
                     all_asgn = parse_canvas_assignments(cal)
-                    # Batch load class averages to avoid N+1 queries
                     class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
                     class_avg_cache = get_class_averages_batch(class_names)
 
@@ -3919,8 +3916,7 @@ def api_plan_my_day_generate():
             except Exception as e:
                 log.warning(f"Could not fetch assignments for plan: {e}")
 
-            # Get all incomplete tasks (not just due today), limit to avoid huge prompts
-            # Only include tasks due within the next 14 days or urgent tasks
+            # Get incomplete tasks due within 14 days
             cur.execute("""
                 SELECT id, title, due_date, urgency FROM tasks
                 WHERE completed = FALSE
@@ -3933,51 +3929,55 @@ def api_plan_my_day_generate():
             for task_row in cur.fetchall():
                 due_date = task_row.get("due_date")
                 urgency = task_row.get("urgency", "medium")
-                est_mins = urgency_mins.get(urgency, 20)
-
                 tasks.append({
                     "type": "task",
                     "id": str(task_row["id"]),
                     "title": task_row["title"],
                     "due_date": str(due_date) if due_date else None,
                     "urgency": urgency,
-                    "estimated_minutes": est_mins
+                    "estimated_minutes": urgency_mins.get(urgency, 20)
                 })
 
-            # Get all active projects (fetch directly from database, not via HTTP)
-            try:
-                cur.execute("SELECT id, title FROM projects WHERE status = 'active' ORDER BY created_at DESC LIMIT 10")
-                for p in cur.fetchall():
-                    projects.append({
-                        "type": "project",
-                        "id": str(p["id"]),
-                        "title": p["title"],
-                        "estimated_minutes": 45
-                    })
-            except Exception as e:
-                log.warning(f"Could not fetch projects for plan: {e}")
-
-            # Get calendar events for today
-            personal_cal = None
+            # Fetch personal and sports calendar events for today
             personal_events = []
+            sports_events = []
             try:
                 personal_cal = fetch_ical(PERSONAL_ICAL_URL)
                 if personal_cal:
                     personal_events = parse_calendar_events(personal_cal, days_ahead=1)
-                    for event in personal_events:
-                        if event["date"] == today.isoformat() and not event.get("all_day"):
-                            calendar_events.append({
-                                "type": "calendar",
-                                "id": event.get("uid", ""),
-                                "title": event["title"],
-                                "start_time": event.get("start_iso", ""),
-                                "end_time": event.get("end_iso", "")
-                            })
             except Exception as e:
-                log.warning(f"Could not fetch calendar for plan: {e}")
+                log.warning(f"Could not fetch personal calendar for plan: {e}")
+            try:
+                sports_cal = fetch_ical(SPORTS_ICAL_URL)
+                if sports_cal:
+                    sports_events = parse_calendar_events(sports_cal, days_ahead=1)
+            except Exception as e:
+                log.warning(f"Could not fetch sports calendar for plan: {e}")
 
-            # Get free time windows (compute directly, not via HTTP)
+            for event in personal_events:
+                if event["date"] == today.isoformat() and not event.get("all_day"):
+                    calendar_events.append({
+                        "type": "calendar",
+                        "id": event.get("uid", ""),
+                        "title": event["title"],
+                        "start_time": event.get("start_iso", ""),
+                        "end_time": event.get("end_iso", ""),
+                        "source": "personal"
+                    })
+            for event in sports_events:
+                if event["date"] == today.isoformat() and not event.get("all_day"):
+                    calendar_events.append({
+                        "type": "calendar",
+                        "id": event.get("uid", ""),
+                        "title": event["title"],
+                        "start_time": event.get("start_iso", ""),
+                        "end_time": event.get("end_iso", ""),
+                        "source": "sports"
+                    })
+
+            # Compute free windows from school hours + personal + sports
             free_windows = []
+            school_block_label = None
             try:
                 now_local = datetime.now(TZ)
                 dtype = get_day_type(today)
@@ -3986,28 +3986,26 @@ def api_plan_my_day_generate():
                 busy = []
                 if school_hours:
                     sh, sm, eh, em = school_hours
+                    school_block_label = f"School ({dtype.title()} day)"
                     busy.append({
                         "start": now_local.replace(hour=sh, minute=sm, second=0, microsecond=0),
                         "end": now_local.replace(hour=eh, minute=em, second=0, microsecond=0),
-                        "label": f"School ({dtype.title()} day)"
+                        "label": school_block_label
                     })
 
-                # Reuse personal calendar events from above fetch
-                for e in personal_events:
-                        if e["date"] == today.isoformat() and not e.get("all_day"):
-                            try:
-                                es = datetime.fromisoformat(e["start_iso"])
-                                ee_str = e.get("end_iso") or e["start_iso"]
-                                ee = datetime.fromisoformat(ee_str)
-                                if es.tzinfo is None:
-                                    es = es.replace(tzinfo=TZ)
-                                if ee.tzinfo is None:
-                                    ee = ee.replace(tzinfo=TZ)
-                                busy.append({"start": es, "end": ee, "label": e["title"]})
-                            except Exception:
-                                pass
+                for e in personal_events + sports_events:
+                    if e["date"] == today.isoformat() and not e.get("all_day"):
+                        try:
+                            es = datetime.fromisoformat(e["start_iso"])
+                            ee = datetime.fromisoformat(e.get("end_iso") or e["start_iso"])
+                            if es.tzinfo is None:
+                                es = es.replace(tzinfo=TZ)
+                            if ee.tzinfo is None:
+                                ee = ee.replace(tzinfo=TZ)
+                            busy.append({"start": es, "end": ee, "label": e["title"]})
+                        except Exception:
+                            pass
 
-                # Merge and find free windows
                 busy.sort(key=lambda x: x["start"])
                 merged = []
                 for b in busy:
@@ -4049,42 +4047,37 @@ def api_plan_my_day_generate():
                 return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
 
             client = anthropic.Anthropic(api_key=api_key)
-            schedule_prompt = f"""You are Jarvis, an exceptionally sophisticated temporal planner. Orchestrate an optimal daily schedule for today ({today}).
+            schedule_prompt = f"""You are Jarvis, building a complete daily schedule for today ({today}).
 
-Available time windows (free slots permitting work):
-{json.dumps(free_windows, indent=2)}
+STEP 1 — FIXED CALENDAR BLOCKS (anchor these first, they are immovable):
+{json.dumps(calendar_events, indent=2) if calendar_events else "None"}
 
-ITEMS REQUIRING SCHEDULING (select the most strategically valuable within available capacity):
-- Assignments due TODAY (MUST be incorporated):
-{json.dumps(assignments, indent=2)}
+STEP 2 — FREE TIME WINDOWS (gaps between fixed blocks and school, available for work or rest):
+{json.dumps(free_windows, indent=2) if free_windows else "No free windows found."}
 
-- Tasks to accomplish (sequenced by urgency and due date):
-{json.dumps(tasks, indent=2)}
+STEP 3 — WORK TO SCHEDULE into the free windows:
+Assignments due TODAY (must all be included):
+{json.dumps(assignments, indent=2) if assignments else "None"}
 
-- Active projects (to be addressed as temporal availability permits):
-{json.dumps(projects, indent=2)}
+Tasks (schedule by urgency and due date, estimate realistic durations from the title):
+{json.dumps(tasks, indent=2) if tasks else "None"}
 
-Fixed calendar commitments (immovable, pre-established):
-{json.dumps(calendar_events, indent=2)}
+STEP 4 — Fill remaining gaps with explicit free time / break blocks.
 
-Deliver your response as a JSON array of scheduled items. Each entry shall include:
-- item_type: "assignment", "task", "project", or "calendar"
-- item_id: the original ID
-- item_title: the title
-- scheduled_start_time: "HH:MM" format (24-hour)
-- scheduled_end_time: "HH:MM" format (24-hour)
+Return a JSON array covering the FULL day in chronological order. Include every block: fixed calendar events, work sessions, AND free time. Each item:
+- item_type: "calendar", "assignment", "task", or "free_time"
+- item_id: original ID (use "" for free_time blocks)
+- item_title: descriptive title (e.g. "Free Time", "Break", or the event/task name)
+- scheduled_start_time: "HH:MM" 24-hour
+- scheduled_end_time: "HH:MM" 24-hour
 
-SCHEDULING PROTOCOLS:
-1. All assignments due today MUST be incorporated
-2. Integrate high/critical urgency tasks that approach their due dates
-3. Allocate remaining capacity to medium/low urgency tasks and project work
-4. Maintain absolute respect for all fixed calendar commitments (do not encroach)
-5. Schedule exclusively within available free windows
-6. Front-load the day with high-urgency items and those approaching due dates
-7. Consolidate similar work when logically defensible
-8. Should capacity prove insufficient, apply this hierarchy: assignments > critical tasks > high tasks > projects
-
-Provide ONLY a valid JSON array response—no markdown, no supplementary explanation."""
+Rules:
+1. All assignments due today MUST appear
+2. Never schedule work inside a fixed calendar block
+3. Prioritize: assignments > critical/high tasks > medium/low tasks
+4. Use realistic time estimates based on the task title, not just urgency
+5. Leave breathing room — do not pack every minute with work
+6. Return ONLY a valid JSON array, no markdown or explanation."""
 
             try:
                 message = client.messages.create(
@@ -4099,19 +4092,27 @@ Provide ONLY a valid JSON array response—no markdown, no supplementary explana
                 log.warning(f"Claude plan generation failed: {e}")
                 # Fallback: create a simple schedule
                 scheduled_items = []
-                current_hour = 15  # Start at 3 PM
+                # Start after school or at 3 PM
+                start_min = 15 * 60
+                if free_windows:
+                    try:
+                        from datetime import datetime as _dt
+                        t = _dt.strptime(free_windows[0]["start"], "%I:%M %p")
+                        start_min = t.hour * 60 + t.minute
+                    except Exception:
+                        pass
+                cursor_min = start_min
                 for item in assignments + tasks:
                     estimated_mins = item.get("estimated_minutes", 30)
-                    start_min = current_hour * 60
-                    end_min = start_min + estimated_mins
+                    end_min = cursor_min + estimated_mins
                     scheduled_items.append({
                         "item_type": item["type"],
                         "item_id": item["id"],
                         "item_title": item["title"],
-                        "scheduled_start_time": f"{current_hour:02d}:00",
+                        "scheduled_start_time": f"{cursor_min // 60:02d}:{cursor_min % 60:02d}",
                         "scheduled_end_time": f"{end_min // 60:02d}:{end_min % 60:02d}"
                     })
-                    current_hour = end_min // 60
+                    cursor_min = end_min
 
             # Insert plan into database
             cur.execute(
