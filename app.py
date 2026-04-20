@@ -3958,26 +3958,25 @@ def api_plan_my_day_generate():
                 if event["date"] == today.isoformat() and not event.get("all_day"):
                     calendar_events.append({
                         "type": "calendar",
-                        "id": event.get("uid", ""),
+                        "id": "",
                         "title": event["title"],
-                        "start_time": event.get("start_iso", ""),
-                        "end_time": event.get("end_iso", ""),
+                        "start_display": event.get("start_display", ""),
+                        "end_display": event.get("end_display", ""),
                         "source": "personal"
                     })
             for event in sports_events:
                 if event["date"] == today.isoformat() and not event.get("all_day"):
                     calendar_events.append({
                         "type": "calendar",
-                        "id": event.get("uid", ""),
-                        "title": event["title"],
-                        "start_time": event.get("start_iso", ""),
-                        "end_time": event.get("end_iso", ""),
+                        "id": "",
+                        "title": event["title"] + " [SPORTS]",
+                        "start_display": event.get("start_display", ""),
+                        "end_display": event.get("end_display", ""),
                         "source": "sports"
                     })
 
             # Compute free windows from school hours + personal + sports
             free_windows = []
-            school_block_label = None
             try:
                 now_local = datetime.now(TZ)
                 dtype = get_day_type(today)
@@ -3986,11 +3985,19 @@ def api_plan_my_day_generate():
                 busy = []
                 if school_hours:
                     sh, sm, eh, em = school_hours
-                    school_block_label = f"School ({dtype.title()} day)"
+                    school_start_str = "%d:%02d %s" % (sh % 12 or 12, sm, "AM" if sh < 12 else "PM")
+                    school_end_str = "%d:%02d %s" % (eh % 12 or 12, em, "AM" if eh < 12 else "PM")
+                    calendar_events.insert(0, {
+                        "type": "calendar",
+                        "id": "school",
+                        "title": "School (%s day)" % dtype.title(),
+                        "start_display": school_start_str,
+                        "end_display": school_end_str,
+                        "source": "school"
+                    })
                     busy.append({
                         "start": now_local.replace(hour=sh, minute=sm, second=0, microsecond=0),
                         "end": now_local.replace(hour=eh, minute=em, second=0, microsecond=0),
-                        "label": school_block_label
                     })
 
                 for e in personal_events + sports_events:
@@ -4002,7 +4009,7 @@ def api_plan_my_day_generate():
                                 es = es.replace(tzinfo=TZ)
                             if ee.tzinfo is None:
                                 ee = ee.replace(tzinfo=TZ)
-                            busy.append({"start": es, "end": ee, "label": e["title"]})
+                            busy.append({"start": es, "end": ee})
                         except Exception:
                             pass
 
@@ -4047,13 +4054,23 @@ def api_plan_my_day_generate():
                 return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
 
             client = anthropic.Anthropic(api_key=api_key)
+            cal_block_lines = "\n".join(
+                "- %s: %s – %s" % (e["title"], e.get("start_display", "?"), e.get("end_display", "?"))
+                for e in calendar_events
+            ) or "None (no school or calendar events today)"
+
+            free_window_lines = "\n".join(
+                "- %s – %s (%d min)" % (w["start"], w["end"], w["minutes"])
+                for w in free_windows
+            ) or "No free windows found — check calendar configuration."
+
             schedule_prompt = f"""You are Jarvis, building a complete daily schedule for today ({today}).
 
-STEP 1 — FIXED CALENDAR BLOCKS (anchor these first, they are immovable):
-{json.dumps(calendar_events, indent=2) if calendar_events else "None"}
+STEP 1 — FIXED CALENDAR BLOCKS (immovable — never schedule anything during these):
+{cal_block_lines}
 
-STEP 2 — FREE TIME WINDOWS (gaps between fixed blocks and school, available for work or rest):
-{json.dumps(free_windows, indent=2) if free_windows else "No free windows found."}
+STEP 2 — FREE WINDOWS available for work and rest (gaps between the fixed blocks above):
+{free_window_lines}
 
 STEP 3 — WORK TO SCHEDULE into the free windows:
 Assignments due TODAY (must all be included):
