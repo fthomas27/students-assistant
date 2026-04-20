@@ -4121,7 +4121,8 @@ Rules:
 3. Prioritize: assignments > critical/high tasks > medium/low tasks
 4. Use realistic time estimates based on the task title, not just urgency
 5. Leave breathing room — do not pack every minute with work
-6. Return ONLY a valid JSON array, no markdown or explanation."""
+6. Lunch breaks: {"On Fridays, add a 30-45 min lunch break immediately after school ends." if today.weekday() == 4 else "Do NOT add a lunch break — lunch happens at school on regular school days."}
+7. Return ONLY a valid JSON array, no markdown or explanation."""
 
             try:
                 message = client.messages.create(
