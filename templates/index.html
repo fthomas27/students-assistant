@@ -2502,7 +2502,6 @@ async function openProjectDetailsModal(projectId) {
     html += '</div>';
 
     document.getElementById('projectDetailsContent').innerHTML = html;
-    const modal = document.getElementById('projectDetailsModal');
     modal.dataset.projectId = projectId;
     modal.classList.add('visible');
     document.getElementById('projectDetailsBackdrop').classList.add('visible');
