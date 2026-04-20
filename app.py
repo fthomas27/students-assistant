@@ -4133,9 +4133,10 @@ Rules:
                 response_text = message.content[0].text if message.content else "[]"
                 # Strip markdown code fences Claude sometimes wraps around JSON
                 response_text = response_text.strip()
-                if response_text.startswith("```"):
-                    response_text = response_text.split("\n", 1)[-1]
-                    response_text = response_text.rsplit("```", 1)[0].strip()
+                if response_text.startswith("```") and response_text.endswith("```"):
+                    response_text = response_text[3:-3].strip()
+                    if response_text.startswith("json"):
+                        response_text = response_text[4:].strip()
                 scheduled_items = json.loads(response_text)
             except Exception as e:
                 log.warning(f"Claude plan generation failed: {e}")
