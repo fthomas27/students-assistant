@@ -1837,7 +1837,7 @@ margin-bottom: 0;
 <div id="planSection" class="section-content">
 <div id="planContent"></div>
 <div style="display: flex; gap: 6px; margin-top: 8px;">
-<button onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--accent); background: var(--accent); border-radius: var(--r-sm); cursor: pointer; color: white; transition: background 0.15s; font-weight: 600;">Generate</button>
+<button id="generatePlanBtn" onclick="generatePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--accent); background: var(--accent); border-radius: var(--r-sm); cursor: pointer; color: white; transition: background 0.15s; font-weight: 600;">Generate</button>
 <button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
 </div>
 </div>
@@ -2985,6 +2985,11 @@ function renderPlan(planData) {
 }
 
 async function generatePlan() {
+  const btn = document.getElementById('generatePlanBtn');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Generating…';
+  btn.style.opacity = '0.7';
   try {
     const response = await fetch('/api/plan-my-day/generate', {
       method: 'POST',
@@ -2993,7 +2998,6 @@ async function generatePlan() {
     });
 
     if (response.ok) {
-      // Reload plan
       const planResp = await fetch('/api/plan-my-day');
       if (planResp.ok) {
         const planData = await planResp.json();
@@ -3011,6 +3015,10 @@ async function generatePlan() {
   } catch (e) {
     console.error('Failed to generate plan:', e);
     alert('Failed to generate plan: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+    btn.style.opacity = '';
   }
 }
 
