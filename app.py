@@ -3142,19 +3142,26 @@ def api_task_suggestions():
         existing_text = "; ".join(list(existing_task_titles)[:10]) or "None"
 
         # Prompt Claude to suggest tasks
-        prompt = f"""Conduct a thorough analysis of the following items and propose 1-3 strategically relevant NEW tasks.
+        prompt = f"""You are a smart student assistant. Analyze the following and suggest 1-3 genuinely useful NEW tasks — but ONLY if they represent real action items the student would actually benefit from.
 
-CRITERIA - Suggestions should meet all of the following conditions:
-- The assignment or event has not yet been completed or resolved
-- It does not currently exist within the existing task inventory
-- The commitment falls within a 14-day window from the present date
+STRICT RULES:
+- Only suggest a task if it requires real preparation, study, or effort beyond just showing up
+- Do NOT suggest tasks for routine events (sports games, social outings, lunch, etc.) unless there's a specific preparation needed
+- Do NOT suggest tasks that already exist in the existing task list
+- Do NOT suggest tasks for assignments that are already tracked as assignments
+- Only suggest tasks that fall within a 14-day window
+- If nothing genuinely warrants a new task, return an empty array []
+- Max 2 suggestions; quality over quantity
+
+Good task examples: "Study for AP Chem test", "Draft essay outline for English class", "Prep notes for project presentation"
+Bad task examples: "Attend soccer game", "Go to dentist appointment", "Show up for lunch"
 
 Pending assignments: {asgn_text}
 Upcoming calendar events: {event_text}
 Existing tasks: {existing_text}
 
-Return a valid JSON array exclusively (no markdown blocks, no explanatory prose):
-[{{"title": "...", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "reason": "..."}}]"""
+Return ONLY a valid JSON array (no markdown, no explanation):
+[{{"title": "...", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "reason": "one sentence why this is needed"}}]"""
 
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
@@ -3803,7 +3810,40 @@ ORDER BY pn.created_at DESC LIMIT 6""")
         track_api_usage(message)
         content = message.content[0].text if message.content else ""
 
-        return jsonify({"content": content})
+        # Extract and process [TASK_ACTION: {...}] server-side
+        import re as _re
+        task_created = False
+        task_match = _re.search(r'\[TASK_ACTION:\s*(\{.*\})\]', content, _re.DOTALL)
+        if task_match:
+            try:
+                raw_json = task_match.group(1)
+                # Strip any bold markers Claude might add
+                raw_json = raw_json.replace('**', '')
+                task_data = json.loads(raw_json)
+                t_title = str(task_data.get("title", "")).strip()[:300]
+                if t_title:
+                    t_urgency = str(task_data.get("urgency", "low")).lower()
+                    if t_urgency not in ("high", "medium", "low"):
+                        t_urgency = "low"
+                    t_due = task_data.get("due_date") or None
+                    t_notes = str(task_data.get("notes", ""))[:2000]
+                    _conn = get_db()
+                    _cur = _conn.cursor()
+                    _cur.execute(
+                        "INSERT INTO tasks (title, notes, urgency, due_date) VALUES (%s, %s, %s, %s)",
+                        (t_title, t_notes, t_urgency, t_due)
+                    )
+                    _conn.commit()
+                    _cur.close()
+                    _conn.close()
+                    task_created = True
+                    log.info(f"/api/chat: created task '{t_title}' urgency={t_urgency}")
+            except Exception as te:
+                log.warning(f"/api/chat: task creation failed: {te}")
+            # Always strip the token from displayed content
+            content = _re.sub(r'\s*\[TASK_ACTION:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+
+        return jsonify({"content": content, "task_created": task_created})
     except Exception:
         log.exception("/api/chat failed")
         return jsonify({"error": "Failed to reach AI. Check server logs."}), 500
