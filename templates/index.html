@@ -4701,6 +4701,10 @@ setInterval(updateClock, 60000);
 loadSidebarData();
 loadProjects();
 
+// Open the Tasks sidebar by default on load
+document.getElementById('sidebarCol1').classList.add('open');
+document.getElementById('sidebarBackdrop').classList.add('visible');
+
 // Load and display task suggestions after a brief delay (non-blocking)
 setTimeout(() => {
   loadAndDisplaySuggestions().catch(e => console.error('Failed to load suggestions:', e));
