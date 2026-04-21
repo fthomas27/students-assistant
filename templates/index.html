@@ -3361,18 +3361,19 @@ TASK CREATION CAPABILITY:
 When user asks to create, add, make, or schedule a task:
 1. Understand what needs to be done
 2. Ask about urgency (high=ASAP, medium=this week, low=flexible) and due date if not mentioned
-3. Check assignments and calendar context to suggest due dates if relevant
-4. Once you have enough info, output the task in this format:
-   [TASK_ACTION: {"title": "EXACT_TITLE", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "notes": ""}]
-5. Keep the response natural - the [TASK_ACTION: ...] block will be processed automatically
+3. Once you have enough info, include this EXACT block on its own line at the end of your response:
+[TASK_ACTION: {"title": "EXACT_TITLE", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "notes": ""}]
+4. The server automatically creates the task from that block — you do NOT need to explain it or confirm it separately
+5. Just say something natural like "Done — I've added that to your task list."
 
-IMPORTANT TASK RULES:
-- title: Required, descriptive, max 300 characters
-- urgency: Choose one: high (due within 24h), medium (due within 1 week), low (flexible)
-- due_date: Use YYYY-MM-DD format only. Ask user if unclear. Can be null if no deadline.
-- notes: Optional detail (max 2000 chars) - explain why task matters if helpful
-- Only output ONE [TASK_ACTION] block per response
-- Do NOT create [TASK_ACTION] unless user explicitly asks for a task
+CRITICAL TASK RULES:
+- The [TASK_ACTION: ...] block must contain VALID JSON — NO bold, NO markdown inside it
+- title: descriptive, max 300 chars
+- urgency: exactly one of: high, medium, low
+- due_date: YYYY-MM-DD or null
+- notes: optional plain text, max 200 chars
+- Only ONE [TASK_ACTION] block per response
+- NEVER output [TASK_ACTION] unless the user explicitly asked to add a task
 
 You have access to the user's assignments, tasks, projects, and calendar. Use this context to give personalized, relevant advice.`
       })
@@ -3381,28 +3382,18 @@ You have access to the user's assignments, tasks, projects, and calendar. Use th
     const data = await response.json();
     const assistantMessage = data.content || 'Sorry, I encountered an error.';
 
-    // Check for task creation action in response
-    const taskActionMatch = assistantMessage.match(/\[TASK_ACTION:\s*({.*})\]/s);
-    let displayMessage = assistantMessage;
-
-    if (taskActionMatch) {
-      try {
-        const taskData = JSON.parse(taskActionMatch[1]);
-
-        // Remove [TASK_ACTION: ...] from display message (greedy to capture full JSON object)
-        displayMessage = assistantMessage.replace(/\[TASK_ACTION:\s*{.*}\]/s, '').trim();
-
-        // Create the task
-        await createTaskFromChat(taskData, loadingBubble);
-      } catch (e) {
-        console.error('Failed to parse or create task:', e);
-        // Still display message even if task creation fails
-      }
+    // If server created a task, refresh tasks sidebar
+    if (data.task_created) {
+      tasksCache = [];
+      fetch('/api/tasks').then(r => r.ok ? r.json() : null).then(d => {
+        if (d) { tasksCache = d.tasks || []; renderTasks(); }
+      }).catch(() => {});
+      showToast('Task added to your list!', 'success', 2000);
     }
 
-    loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(displayMessage)}</div>`;
+    loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(assistantMessage)}</div>`;
     renderMessageWithDelay(loadingBubble);
-    conversationHistory.push({ role: 'assistant', content: displayMessage });
+    conversationHistory.push({ role: 'assistant', content: assistantMessage });
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
     // Save chat to history
@@ -4720,12 +4711,7 @@ setTimeout(() => {
   loadAndDisplaySuggestions().catch(e => console.error('Failed to load suggestions:', e));
 }, 2000);
 
-// Restore last chat if available
-const lastChat = JSON.parse(localStorage.getItem('chatHistories') || '[]')[0];
-if (lastChat && lastChat.messages && lastChat.messages.length > 0) {
-  conversationHistory = lastChat.messages;
-  renderChatMessages();
-}
+// Always start with a fresh chat on page load
 
 // ── Enhanced UX Functions ──
 
