@@ -660,12 +660,41 @@ justify-content: flex-end;
 
 .message-bubble {
 max-width: 85%;
-padding: 10px 14px;
+padding: 12px 16px;
 border-radius: var(--r);
-font-size: 14px;
-line-height: 1.5;
+font-size: 16px;
+line-height: 1.65;
 word-wrap: break-word;
 }
+
+.plan-chat-card {
+display: flex;
+align-items: center;
+gap: 12px;
+padding: 10px 12px;
+background: var(--surface2);
+border-radius: var(--r-sm);
+margin-bottom: 6px;
+cursor: pointer;
+transition: background 0.15s, transform 0.15s;
+border-left: 3px solid var(--accent);
+}
+.plan-chat-card:hover { background: var(--surface); transform: translateX(3px); }
+.plan-chat-card[data-type="task"]     { border-left-color: var(--amber); }
+.plan-chat-card[data-type="calendar"] { border-left-color: var(--purple); }
+.plan-chat-card[data-type="free_time"]{ border-left-color: var(--border); }
+.plan-chat-time {
+font-size: 11px;
+font-weight: 700;
+color: var(--accent);
+white-space: nowrap;
+min-width: 90px;
+}
+.plan-chat-card[data-type="task"]     .plan-chat-time { color: var(--amber); }
+.plan-chat-card[data-type="calendar"] .plan-chat-time { color: var(--purple); }
+.plan-chat-card[data-type="free_time"].plan-chat-time { color: var(--text3); }
+.plan-chat-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.plan-chat-meta  { font-size: 11px; color: var(--text3); margin-top: 2px; }
 
 .message.user .message-bubble {
 background: var(--accent);
@@ -782,6 +811,7 @@ font-size: 13px;
 
 .message-bubble {
 max-width: 90%;
+font-size: 16px;
 }
 
 .chat-input {
@@ -3106,80 +3136,61 @@ async function deletePlan() {
 
 function displayPlanInChat(planData) {
   const messagesDiv = document.getElementById('chatMessages');
-  if (messagesDiv.querySelector('.empty-state')) {
-    messagesDiv.innerHTML = '';
-  }
+  if (messagesDiv.querySelector('.empty-state')) messagesDiv.innerHTML = '';
 
-  // AI message summarizing the plan
-  const summaryBubble = document.createElement('div');
-  summaryBubble.className = 'message assistant';
-  const itemCount = planData.items ? planData.items.length : 0;
-  summaryBubble.innerHTML = `<div class="message-bubble">I've created your daily schedule! You have ${itemCount} items scheduled for today. Here's your optimized timeline with breaks included:</div>`;
-  messagesDiv.appendChild(summaryBubble);
-
-  if (!planData.items || planData.items.length === 0) {
-    const emptyBubble = document.createElement('div');
-    emptyBubble.className = 'message assistant';
-    emptyBubble.innerHTML = `<div class="message-bubble">No items scheduled for today. Great job staying on top of things! 🎉</div>`;
-    messagesDiv.appendChild(emptyBubble);
+  const items = planData.items || [];
+  if (items.length === 0) {
+    const b = document.createElement('div');
+    b.className = 'message assistant';
+    b.innerHTML = `<div class="message-bubble">**Your schedule is clear today.** Nothing scheduled — excellent position to be in.</div>`;
+    messagesDiv.appendChild(b);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     return;
   }
 
-  // Calendar timeline
-  const timelineBubble = document.createElement('div');
-  timelineBubble.className = 'message assistant';
+  // Count by type for the header summary
+  const counts = { assignment: 0, task: 0, calendar: 0, free_time: 0 };
+  items.forEach(i => { if (counts[i.item_type] !== undefined) counts[i.item_type]++; });
+  const parts = [];
+  if (counts.assignment) parts.push(`**${counts.assignment}** assignment${counts.assignment > 1 ? 's' : ''}`);
+  if (counts.task)       parts.push(`**${counts.task}** task${counts.task > 1 ? 's' : ''}`);
+  if (counts.calendar)   parts.push(`**${counts.calendar}** event${counts.calendar > 1 ? 's' : ''}`);
+  if (counts.free_time)  parts.push(`**${counts.free_time}** free block${counts.free_time > 1 ? 's' : ''}`);
 
-  let timelineHTML = '<div class="message-bubble"><div class="calendar-timeline">';
+  const intro = document.createElement('div');
+  intro.className = 'message assistant';
+  intro.innerHTML = `<div class="message-bubble">## Your Schedule for Today\nHere's your day — ${parts.join(', ')}. Tap any item for details.</div>`;
+  intro.querySelector('.message-bubble').innerHTML =
+    formatMessage(`## Your Schedule for Today\nHere's your day — ${parts.join(', ')}. Tap any item for details.`);
+  messagesDiv.appendChild(intro);
 
-  // Group items by hour
-  const hourMap = {};
-  planData.items.forEach(item => {
-    const hour = item.scheduled_start_time.split(':')[0];
-    if (!hourMap[hour]) hourMap[hour] = [];
-    hourMap[hour].push(item);
-  });
+  // One bubble with all the cards
+  const cardsBubble = document.createElement('div');
+  cardsBubble.className = 'message assistant';
 
-  // Display timeline
-  for (let h = 7; h < 22; h++) {
-    const hourStr = h.toString().padStart(2, '0');
-    const displayHour = h > 12 ? h - 12 : h;
-    const ampm = h >= 12 ? 'PM' : 'AM';
+  const typeIcon = { assignment: '📝', task: '✓', calendar: '📅', free_time: '⏱' };
+  const typeLabel = { assignment: 'Assignment', task: 'Task', calendar: 'Event', free_time: 'Free Time' };
 
-    timelineHTML += `<div class="timeline-row">
-      <div class="timeline-time">${displayHour}:00 ${ampm}</div>
-      <div class="timeline-content">`;
+  const cardsHTML = items.map((item, idx) => {
+    const start = to12Hour(item.scheduled_start_time);
+    const end   = to12Hour(item.scheduled_end_time);
+    const icon  = typeIcon[item.item_type] || '•';
+    const label = typeLabel[item.item_type] || item.item_type;
+    const meta  = [label, item.estimated_minutes ? `${item.estimated_minutes} min` : null]
+                    .filter(Boolean).join(' · ');
+    return `
+      <div class="plan-chat-card" data-type="${item.item_type}" onclick="showPlanItemDetail(${idx})">
+        <div class="plan-chat-time">${start}<br>${end}</div>
+        <div style="flex:1;min-width:0;">
+          <div class="plan-chat-title">${icon} ${escapeHtml(item.item_title)}</div>
+          <div class="plan-chat-meta">${meta}</div>
+        </div>
+        <div style="color:var(--text3);font-size:14px;">›</div>
+      </div>`;
+  }).join('');
 
-    if (hourMap[hourStr]) {
-      hourMap[hourStr].forEach(item => {
-        const typeEmoji = item.item_type === 'assignment' ? '📝' :
-                         item.item_type === 'task' ? '✓' :
-                         item.item_type === 'calendar' ? '📅' : '⏱';
-        const typeLabel = item.item_type.charAt(0).toUpperCase() + item.item_type.slice(1);
-        timelineHTML += `<div class="timeline-item">[${item.scheduled_start_time}] ${typeEmoji} ${item.item_title}</div>`;
-      });
-    }
-
-    timelineHTML += `</div></div>`;
-  }
-
-  timelineHTML += '</div>';
-
-  // Add breakdown list
-  timelineHTML += '<div style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;"><strong>Detailed Breakdown:</strong><ul style="margin: 8px 0; padding-left: 20px;">';
-  planData.items.forEach(item => {
-    const typeEmoji = item.item_type === 'assignment' ? '📝' :
-                     item.item_type === 'task' ? '✓' :
-                     item.item_type === 'calendar' ? '📅' : '⏱';
-    const duration = item.estimated_minutes ? `${item.estimated_minutes} min` : 'TBD';
-    timelineHTML += `<li>${item.scheduled_start_time}-${item.scheduled_end_time}: ${typeEmoji} ${item.item_title} (${duration})</li>`;
-  });
-  timelineHTML += '</ul></div>';
-
-  timelineHTML += '</div>';
-  timelineBubble.innerHTML = timelineHTML;
-  messagesDiv.appendChild(timelineBubble);
-
+  cardsBubble.innerHTML = `<div class="message-bubble" style="padding:10px 12px;">${cardsHTML}</div>`;
+  messagesDiv.appendChild(cardsBubble);
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
@@ -3424,12 +3435,13 @@ function formatMessage(text) {
   html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
   html = html.replace(/_(.*?)_/g, '<em>$1</em>');
 
-  // Handle lists (- or *)
-  html = html.replace(/^[\-\*] (.*?)$/gm, '<li style="margin-left: 20px; color: var(--text2);">$1</li>');
-  html = html.replace(/(<li[^>]*>.*?<\/li>)/s, '<ul style="list-style: none; padding: 0;">$1</ul>');
+  // Handle bullet lists — wrap all consecutive li runs in one ul
+  html = html.replace(/^[\-\*] (.*?)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>[\s\S]*?<\/li>)(\n<li>[\s\S]*?<\/li>)*/g, (m) =>
+    `<ul style="list-style:disc;padding-left:22px;margin:6px 0;">${m}</ul>`);
 
   // Handle numbered lists
-  html = html.replace(/^\d+\. (.*?)$/gm, '<li style="margin-left: 20px; color: var(--text2);">$1</li>');
+  html = html.replace(/^\d+\. (.*?)$/gm, '<li>$1</li>');
 
   // Handle line breaks
   html = html.replace(/\n/g, '<br>');
