@@ -3803,46 +3803,6 @@ ORDER BY pn.created_at DESC LIMIT 6""")
         track_api_usage(message)
         content = message.content[0].text if message.content else ""
 
-        # Self-check: Have Claude review its response for accuracy
-        try:
-            check_prompt = f"""Review your previous response for accuracy and clarity.
-Consider:
-- Are facts correct and up-to-date?
-- Is the information relevant to what was asked?
-- Are there any contradictions or errors?
-- Is the tone appropriate for this student?
-
-If you spot any issues, provide a corrected version. Otherwise, confirm the response is good.
-Your review should be concise - just point out any issues or confirm it's accurate."""
-
-            check_messages = messages + [
-                {"role": "assistant", "content": content},
-                {"role": "user", "content": check_prompt}
-            ]
-            check_kwargs = {"model": "claude-sonnet-4-6", "max_tokens": 300, "messages": check_messages}
-            if system_prompt:
-                check_kwargs["system"] = system_prompt
-            check_message = client.messages.create(**check_kwargs)
-            track_api_usage(check_message)
-            check_content = check_message.content[0].text if check_message.content else ""
-
-            # If the check found issues and provided corrections, use the corrected version
-            if "correct" in check_content.lower() or "fix" in check_content.lower() or "should be" in check_content.lower():
-                # Extract the corrected response if provided
-                if "```" in check_content:
-                    # If there's code block, use it
-                    import re
-                    match = re.search(r"```(?:\w+)?\n(.*?)```", check_content, re.DOTALL)
-                    if match:
-                        content = match.group(1).strip()
-                elif "corrected:" in check_content.lower() or "here's" in check_content.lower():
-                    # Otherwise use the whole response as correction
-                    content = check_content
-        except Exception as e:
-            # If self-check fails, just use the original response
-            log.warning(f"Self-check failed: {e}")
-            pass
-
         return jsonify({"content": content})
     except Exception:
         log.exception("/api/chat failed")

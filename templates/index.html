@@ -3389,8 +3389,8 @@ You have access to the user's assignments, tasks, projects, and calendar. Use th
       try {
         const taskData = JSON.parse(taskActionMatch[1]);
 
-        // Remove [TASK_ACTION: ...] from display message
-        displayMessage = assistantMessage.replace(/\[TASK_ACTION:\s*{.*?}\]/s, '').trim();
+        // Remove [TASK_ACTION: ...] from display message (greedy to capture full JSON object)
+        displayMessage = assistantMessage.replace(/\[TASK_ACTION:\s*{.*}\]/s, '').trim();
 
         // Create the task
         await createTaskFromChat(taskData, loadingBubble);
@@ -3496,8 +3496,18 @@ async function createTaskFromChat(taskData, loadingBubble) {
     showToast(`Task "${taskData.title}" added! 📝`, 'success', 2000);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
-    // Refresh tasks sidebar
-    await loadSidebarData();
+    // Directly refresh tasks list without full sidebar reload
+    tasksCache = [];
+    try {
+      const tasksResp = await fetch('/api/tasks');
+      if (tasksResp.ok) {
+        const tasksData = await tasksResp.json();
+        tasksCache = tasksData.tasks || [];
+        renderTasks();
+      }
+    } catch (te) {
+      console.error('Failed to refresh tasks:', te);
+    }
 
     // Add to conversation history for continuity
     conversationHistory.push({
