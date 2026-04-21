@@ -3424,10 +3424,10 @@ function escapeHtml(text) {
 function formatMessage(text) {
   let html = escapeHtml(text);
 
-  // Handle headers
-  html = html.replace(/^### (.*?)$/gm, '<h3 style="font-size: 16px; font-weight: 600; margin: 12px 0 8px 0; color: var(--accent);">$1</h3>');
-  html = html.replace(/^## (.*?)$/gm, '<h2 style="font-size: 18px; font-weight: 700; margin: 16px 0 10px 0; color: var(--accent);">$1</h2>');
-  html = html.replace(/^# (.*?)$/gm, '<h1 style="font-size: 20px; font-weight: 700; margin: 18px 0 12px 0; color: var(--accent);">$1</h1>');
+  // Handle headers — sizes deliberately large so they stand out from 16px body text
+  html = html.replace(/^### (.*?)$/gm, '<h3 style="font-size:18px;font-weight:700;margin:14px 0 6px 0;color:var(--text);">$1</h3>');
+  html = html.replace(/^## (.*?)$/gm,  '<h2 style="font-size:22px;font-weight:800;margin:18px 0 8px 0;color:var(--text);border-bottom:2px solid var(--accent);padding-bottom:4px;">$1</h2>');
+  html = html.replace(/^# (.*?)$/gm,   '<h1 style="font-size:26px;font-weight:800;margin:20px 0 10px 0;color:var(--accent);">$1</h1>');
 
   // Handle bold and italic
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
