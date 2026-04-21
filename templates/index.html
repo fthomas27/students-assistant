@@ -2874,10 +2874,14 @@ function renderCalendar() {
     const isSports = e.source === 'sports';
     const icon = isSports ? '⚽' : '📅';
     const badge = isSports ? '<span style="display: inline-block; background: var(--purple); color: white; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-left: 4px; font-weight: 600;">SPORTS</span>' : '';
+    const d = new Date(e.start_iso);
+    const timeOnly = e.all_day ? 'All Day' : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    const dateOnly = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     return `
-      <div class="sidebar-item" ${isSports ? 'style="border-left: 3px solid var(--purple);"' : ''}>
+      <div class="sidebar-item" style="cursor:pointer;${isSports ? 'border-left:3px solid var(--purple);' : ''}"
+           onclick="openCalendarModalOnDate(${d.getFullYear()},${d.getMonth()},${d.getDate()})">
         <div class="sidebar-item-title">${icon} ${e.title || 'Event'}${badge}</div>
-        <div class="sidebar-item-meta">${formatEventTime(e.start_iso)}</div>
+        <div class="sidebar-item-meta">${dateOnly} · ${timeOnly}</div>
       </div>
     `;
   }).join('');
@@ -2913,14 +2917,18 @@ function renderPlan(planData) {
     return;
   }
 
+  currentPlanItems = planData.items;
+
   const itemsHtml = planData.items.map((item, idx) => {
     const icon = item.item_type === 'assignment' ? '📝' :
                  item.item_type === 'task' ? '✓' :
                  item.item_type === 'calendar' ? '📅' : '⏱';
+    const startFmt = to12Hour(item.scheduled_start_time);
+    const endFmt   = to12Hour(item.scheduled_end_time);
 
     return `
-      <div class="plan-item" draggable="true" data-item-id="${item.id}" data-order="${idx}">
-        <div class="plan-item-time">${item.scheduled_start_time} – ${item.scheduled_end_time}</div>
+      <div class="plan-item" draggable="true" data-item-id="${item.id}" data-order="${idx}" data-plan-idx="${idx}">
+        <div class="plan-item-time">${startFmt} – ${endFmt}</div>
         <div class="plan-item-title">${icon} ${item.item_title}</div>
       </div>
     `;
@@ -2980,8 +2988,59 @@ function renderPlan(planData) {
         }
       }
     });
+    // Click to show details
+    item.addEventListener('click', (e) => {
+      if (!item.classList.contains('dragging')) {
+        const idx = parseInt(item.dataset.planIdx);
+        showPlanItemDetail(idx);
+      }
+    });
   });
   updateSidebarStats();
+}
+
+let currentPlanItems = [];
+
+function showPlanItemDetail(idx) {
+  const item = currentPlanItems[idx];
+  if (!item) return;
+  const modal = document.getElementById('eventDetailModal');
+  const backdrop = document.getElementById('eventDetailBackdrop');
+
+  const typeLabel = item.item_type === 'assignment' ? 'Assignment' :
+                    item.item_type === 'task' ? 'Task' :
+                    item.item_type === 'calendar' ? 'Event' : 'Free Time';
+  const icon = item.item_type === 'assignment' ? '📝' :
+               item.item_type === 'task' ? '✓' :
+               item.item_type === 'calendar' ? '📅' : '⏱';
+
+  document.getElementById('eventDetailTitle').textContent = `${icon} ${item.item_title}`;
+
+  const startFmt = to12Hour(item.scheduled_start_time);
+  const endFmt   = to12Hour(item.scheduled_end_time);
+  const mins = item.estimated_minutes;
+
+  let body = `
+    <div class="event-detail-item">
+      <div class="event-detail-label"><span class="event-detail-icon">🏷</span>Type</div>
+      <div class="event-detail-value">${typeLabel}</div>
+    </div>
+    <div class="event-detail-item">
+      <div class="event-detail-label"><span class="event-detail-icon">🕐</span>Time</div>
+      <div class="event-detail-value">${startFmt} – ${endFmt}</div>
+    </div>`;
+
+  if (mins) {
+    body += `
+    <div class="event-detail-item">
+      <div class="event-detail-label"><span class="event-detail-icon">⏱</span>Duration</div>
+      <div class="event-detail-value">${mins} min</div>
+    </div>`;
+  }
+
+  document.getElementById('eventDetailBody').innerHTML = body;
+  modal.classList.add('visible');
+  backdrop.classList.add('visible');
 }
 
 async function generatePlan() {
@@ -3194,6 +3253,28 @@ function formatEventTime(startStr) {
   const d = new Date(startStr);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
          d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+const SCHOOL_SCHEDULES = {
+  red: [
+    { name: "TA",      start: "7:35 AM",  end: "9:01 AM"  },
+    { name: "English", start: "9:07 AM",  end: "10:41 AM" },
+    { name: "Lunch",   start: "10:41 AM", end: "11:21 AM" },
+    { name: "History", start: "11:27 AM", end: "12:53 PM" },
+  ],
+  white: [
+    { name: "Calculus",         start: "7:35 AM",  end: "9:01 AM"  },
+    { name: "Spanish",          start: "9:07 AM",  end: "10:41 AM" },
+    { name: "Lunch",            start: "10:41 AM", end: "11:21 AM" },
+    { name: "Investing",        start: "11:27 AM", end: "12:53 PM" },
+    { name: "Entrepreneurship", start: "12:59 PM", end: "2:25 PM"  },
+  ]
+};
+
+function to12Hour(t) {
+  if (!t) return '';
+  const [h, m] = t.split(':').map(Number);
+  return `${h % 12 || 12}:${m.toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
 }
 
 const chatInput = document.getElementById('chatInput');
@@ -4322,6 +4403,16 @@ function openCalendarModal() {
   showCalendarEvents(calendarCurrentDate.getDate(), calendarCurrentDate.getMonth(), calendarCurrentDate.getFullYear(), todayEvents);
 }
 
+function openCalendarModalOnDate(year, month, day) {
+  closeProjectDetailsModal();
+  calendarCurrentDate = new Date(year, month, day);
+  document.getElementById('calendarModal').classList.add('visible');
+  document.getElementById('calendarBackdrop').classList.add('visible');
+  renderCalendarModal();
+  const dateKey = `${year}-${month}-${day}`;
+  showCalendarEvents(day, month, year, calendarEventsByDate[dateKey] || []);
+}
+
 function closeCalendarModal() {
   const modal = document.getElementById('calendarModal');
   const backdrop = document.getElementById('calendarBackdrop');
@@ -4424,34 +4515,57 @@ function renderCalendarModal() {
   }
 }
 
-function showCalendarEvents(day, month, year, events) {
+async function showCalendarEvents(day, month, year, events) {
   const eventsList = document.getElementById('calendarEventsList');
   const dateStr = new Date(year, month, day).toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric'
+    weekday: 'long', month: 'long', day: 'numeric'
   });
-
-  if (events.length === 0) {
-    eventsList.innerHTML = `<div style="text-align: center; color: var(--text3); padding: 20px;">No events on ${dateStr}</div>`;
-    return;
-  }
+  const isoDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
   currentDayEvents = events.sort((a, b) => new Date(a.start_iso) - new Date(b.start_iso));
-  eventsList.innerHTML = `<div style="font-size: 12px; color: var(--text2); margin-bottom: 12px; font-weight: 600;">${dateStr}</div>` +
-    currentDayEvents.map((e, idx) => {
-      const eventDate = new Date(e.start_iso);
-      const timeStr = eventDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+
+  let html = `<div style="font-size:12px;color:var(--text2);margin-bottom:12px;font-weight:600;">${dateStr}</div>`;
+
+  // School schedule block
+  try {
+    const resp = await fetch(`/api/day-info?date=${isoDate}`);
+    if (resp.ok) {
+      const info = await resp.json();
+      if (info.is_school_day) {
+        const schedule = SCHOOL_SCHEDULES[info.day_type] || [];
+        const label = info.day_type === 'red' ? '🔴 Red Day' : '⚪ White Day';
+        html += `
+          <div style="background:var(--surface2);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:10px;border-left:3px solid var(--accent);">
+            <div style="font-weight:600;font-size:12px;color:var(--accent);margin-bottom:6px;">🏫 School — ${label}</div>
+            <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${info.school_start} – ${info.school_end}</div>
+            ${schedule.map(p => `
+              <div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);">
+                <span style="color:var(--text);font-weight:500;">${p.name}</span>
+                <span style="color:var(--text3);">${p.start} – ${p.end}</span>
+              </div>`).join('')}
+          </div>`;
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  if (currentDayEvents.length === 0) {
+    html += `<div style="text-align:center;color:var(--text3);padding:12px 0;">No personal or sports events</div>`;
+  } else {
+    html += currentDayEvents.map((e, idx) => {
+      const d = new Date(e.start_iso);
+      const timeStr = e.all_day ? 'All Day' : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
       const isSports = e.source === 'sports';
       const icon = isSports ? '⚽' : '📅';
-      const badge = isSports ? ' <span style="display: inline-block; background: var(--purple); color: white; font-size: 9px; padding: 2px 5px; border-radius: 3px; margin-left: 6px; font-weight: 600;">SPORTS</span>' : '';
+      const badge = isSports ? ' <span style="display:inline-block;background:var(--purple);color:white;font-size:9px;padding:2px 5px;border-radius:3px;margin-left:6px;font-weight:600;">SPORTS</span>' : '';
       return `
-        <div class="calendar-event-item" onclick="showEventDetail(${idx})" ${isSports ? 'style="border-left: 3px solid var(--purple);"' : ''}>
+        <div class="calendar-event-item" onclick="showEventDetail(${idx})" ${isSports ? 'style="border-left:3px solid var(--purple);"' : ''}>
           <div class="calendar-event-title">${icon} ${escapeHtml(e.title)}${badge}</div>
           <div class="calendar-event-time">${timeStr}</div>
-        </div>
-      `;
+        </div>`;
     }).join('');
+  }
+
+  eventsList.innerHTML = html;
 }
 
 function showEventDetail(eventIdx) {
