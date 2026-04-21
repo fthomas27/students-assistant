@@ -213,10 +213,11 @@ def get_school_hours(d):
     if dtype is None:
         return None
     dow = d.weekday()  # 0=Mon, 4=Fri
-    if dow == 4:  # Friday
-        return (7, 30, 10, 25) if dtype == "red" else (7, 30, 11, 30)
+    if dow == 4:  # Friday early release
+        return (7, 35, 10, 25) if dtype == "red" else (7, 35, 11, 30)
     else:  # Mon-Thu
-        return (7, 30, 11, 53) if dtype == "red" else (7, 30, 14, 25)
+        # Red day ends after History (12:53), White day ends after Entrepreneurship (14:25)
+        return (7, 35, 12, 53) if dtype == "red" else (7, 35, 14, 25)
 
 
 def get_day_calendar_url(d):
@@ -1886,6 +1887,23 @@ ON CONFLICT (uid) DO UPDATE SET minutes = EXCLUDED.minutes, updated_at = NOW()
     cur.close()
     conn.close()
     return jsonify({"status": "ok", "minutes": minutes})
+
+
+@app.route("/api/day-info")
+def api_day_info():
+    date_str = request.args.get("date", "")
+    try:
+        d = date.fromisoformat(date_str)
+    except Exception:
+        return jsonify({"error": "invalid date"}), 400
+    dtype = get_day_type(d)
+    hours = get_school_hours(d)
+    result = {"date": date_str, "day_type": dtype, "is_school_day": dtype is not None}
+    if hours:
+        sh, sm, eh, em = hours
+        result["school_start"] = "%d:%02d %s" % (sh % 12 or 12, sm, "AM" if sh < 12 else "PM")
+        result["school_end"] = "%d:%02d %s" % (eh % 12 or 12, em, "AM" if eh < 12 else "PM")
+    return jsonify(result)
 
 
 @app.route("/api/calendar")
