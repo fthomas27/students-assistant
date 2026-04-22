@@ -22,6 +22,10 @@ from icalendar import Calendar
 import recurring_ical_events
 from apscheduler.schedulers.background import BackgroundScheduler
 import anthropic
+try:
+    import feedparser
+except ImportError:
+    feedparser = None
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
@@ -41,6 +45,7 @@ AVERAGE_USER = os.environ.get("AVERAGE_USER", "user").strip()
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin").strip()
 PARENT_USER = os.environ.get("PARENT_USER", "PARENT_USER").strip()
 PARENT_PASSWORD = os.environ.get("PARENT_PASSWORD", "PARENT_PASSWORD").strip()
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -286,6 +291,9 @@ def init_db():
         ("lockdown_state", "CREATE TABLE IF NOT EXISTS lockdown_state (id INT PRIMARY KEY DEFAULT 1, is_locked_down BOOLEAN NOT NULL DEFAULT FALSE, activated_at TIMESTAMPTZ, activated_by TEXT, CHECK (id = 1))"),
         ("blocked_ips", "CREATE TABLE IF NOT EXISTS blocked_ips (id SERIAL PRIMARY KEY, ip_address TEXT UNIQUE NOT NULL, ip_name TEXT DEFAULT '', blocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), blocked_by TEXT NOT NULL DEFAULT 'admin', reason TEXT DEFAULT '')"),
         ("ip_names", "CREATE TABLE IF NOT EXISTS ip_names (ip_address TEXT PRIMARY KEY, ip_name TEXT NOT NULL, tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("stock_transactions", "CREATE TABLE IF NOT EXISTS stock_transactions (id SERIAL PRIMARY KEY, symbol VARCHAR(16) NOT NULL, action VARCHAR(4) NOT NULL CHECK (action IN ('buy','sell')), quantity NUMERIC(14,6) NOT NULL, price NUMERIC(14,4) NOT NULL, transaction_date DATE NOT NULL, notes TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("stock_transactions_idx", "CREATE INDEX IF NOT EXISTS idx_stock_tx_symbol ON stock_transactions(symbol)"),
+        ("outlook_news_cache", "CREATE TABLE IF NOT EXISTS outlook_news_cache (url_hash TEXT PRIMARY KEY, synthesis TEXT NOT NULL, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
     ]
 
     for table_name, create_sql in tables:
@@ -520,6 +528,398 @@ def fetch_ical(url):
     finally:
         with _ical_cache_lock:
             _ical_inflight.pop(url, None)  # Clean up the inflight marker
+
+
+# ── Simple TTL cache for JSON-returning external fetches ─────────────────────
+_simple_cache = {}  # key -> (monotonic_time, value)
+_simple_cache_lock = threading.Lock()
+
+
+def _cache_get(key, ttl):
+    with _simple_cache_lock:
+        entry = _simple_cache.get(key)
+        if entry and (time.monotonic() - entry[0] < ttl):
+            return entry[1]
+    return None
+
+
+def _cache_set(key, value):
+    with _simple_cache_lock:
+        _simple_cache[key] = (time.monotonic(), value)
+
+
+# Park City, UT
+PARK_CITY_LAT = 40.6461
+PARK_CITY_LON = -111.4980
+
+# Weather code → short description (subset of WMO codes)
+_WEATHER_CODES = {
+    0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Freezing fog",
+    51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle",
+    61: "Light rain", 63: "Rain", 65: "Heavy rain",
+    71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains",
+    80: "Rain showers", 81: "Heavy showers", 82: "Violent showers",
+    85: "Snow showers", 86: "Heavy snow showers",
+    95: "Thunderstorm", 96: "Thunderstorm w/ hail", 99: "Severe thunderstorm",
+}
+
+
+def fetch_weather():
+    """Park City weather via Open-Meteo. Returns a small dict or None."""
+    cached = _cache_get("weather:park_city", 1800)  # 30 min
+    if cached is not None:
+        return cached
+    try:
+        url = (
+            "https://api.open-meteo.com/v1/forecast"
+            "?latitude=%s&longitude=%s"
+            "&current=temperature_2m,weather_code,wind_speed_10m,apparent_temperature"
+            "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+            "&forecast_days=7"
+            "&temperature_unit=fahrenheit&wind_speed_unit=mph"
+            "&timezone=America/Denver"
+        ) % (PARK_CITY_LAT, PARK_CITY_LON)
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        j = resp.json()
+        cur = j.get("current", {}) or {}
+        daily = j.get("daily", {}) or {}
+        code = int(cur.get("weather_code", 0) or 0)
+        out = {
+            "current_f": round(float(cur.get("temperature_2m", 0) or 0)),
+            "feels_like_f": round(float(cur.get("apparent_temperature", 0) or 0)),
+            "wind_mph": round(float(cur.get("wind_speed_10m", 0) or 0)),
+            "code": code,
+            "description": _WEATHER_CODES.get(code, "—"),
+            "daily": [],
+        }
+        days = daily.get("time", []) or []
+        for i, d in enumerate(days[:7]):
+            try:
+                dcode = int((daily.get("weather_code") or [0])[i])
+            except Exception:
+                dcode = 0
+            out["daily"].append({
+                "date": d,
+                "hi_f": round(float((daily.get("temperature_2m_max") or [0])[i])),
+                "lo_f": round(float((daily.get("temperature_2m_min") or [0])[i])),
+                "code": dcode,
+                "description": _WEATHER_CODES.get(dcode, "—"),
+                "precip_pct": int((daily.get("precipitation_probability_max") or [0])[i] or 0),
+            })
+        _cache_set("weather:park_city", out)
+        return out
+    except Exception as e:
+        log.warning("Open-Meteo fetch failed: %s", e)
+        return None
+
+
+def fetch_finnhub_quote(symbol):
+    """Returns {price, prev_close, day_change_pct} or None."""
+    if not FINNHUB_API_KEY or not symbol:
+        return None
+    key = "finnhub:quote:" + symbol.upper()
+    cached = _cache_get(key, 300)  # 5 min
+    if cached is not None:
+        return cached
+    try:
+        url = "https://finnhub.io/api/v1/quote?symbol=%s&token=%s" % (symbol.upper(), FINNHUB_API_KEY)
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        j = resp.json() or {}
+        price = float(j.get("c") or 0)
+        prev_close = float(j.get("pc") or 0)
+        if price <= 0:
+            return None
+        change_pct = ((price - prev_close) / prev_close * 100.0) if prev_close else 0.0
+        out = {
+            "price": round(price, 4),
+            "prev_close": round(prev_close, 4),
+            "day_change_pct": round(change_pct, 2),
+            "day_change": round(price - prev_close, 4),
+        }
+        _cache_set(key, out)
+        return out
+    except Exception as e:
+        log.warning("Finnhub quote failed for %s: %s", symbol, e)
+        return None
+
+
+def fetch_stock_history(symbol, range_key="1mo"):
+    """Daily closes for a chart. Tries Yahoo chart endpoint (no key).
+    Returns [{date, close}] or []."""
+    if not symbol:
+        return []
+    valid_ranges = {"5d", "1mo", "3mo", "6mo", "1y"}
+    if range_key not in valid_ranges:
+        range_key = "1mo"
+    key = "yahoo:chart:%s:%s" % (symbol.upper(), range_key)
+    cached = _cache_get(key, 600)  # 10 min
+    if cached is not None:
+        return cached
+    try:
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=1d" % (
+            symbol.upper(), range_key
+        )
+        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        j = resp.json() or {}
+        result = (j.get("chart") or {}).get("result") or []
+        if not result:
+            return []
+        r = result[0]
+        timestamps = r.get("timestamp") or []
+        closes = (((r.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or []
+        out = []
+        for ts, cl in zip(timestamps, closes):
+            if cl is None:
+                continue
+            d = datetime.fromtimestamp(ts, tz=ZoneInfo("UTC")).astimezone(TZ).date()
+            out.append({"date": d.isoformat(), "close": round(float(cl), 4)})
+        _cache_set(key, out)
+        return out
+    except Exception as e:
+        log.warning("Yahoo chart failed for %s: %s", symbol, e)
+        return []
+
+
+# News feeds: right-leaning national + Park City local
+_NEWS_NATIONAL_FEEDS = [
+    ("Fox News", "https://moxie.foxnews.com/google-publisher/latest.xml"),
+    ("New York Post", "https://nypost.com/feed/"),
+    ("Washington Examiner", "https://www.washingtonexaminer.com/tag/news.rss"),
+    ("Daily Wire", "https://www.dailywire.com/feeds/rss.xml"),
+]
+_NEWS_LOCAL_FEEDS = [
+    ("Park Record", "https://www.parkrecord.com/news/feed/"),
+    ("TownLift", "https://townlift.com/feed/"),
+]
+
+
+def _parse_feed_stdlib(outlet, url):
+    """Minimal RSS/Atom parser using stdlib only (fallback when feedparser is unavailable)."""
+    import xml.etree.ElementTree as ET
+    import re as _re
+    try:
+        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 Jarvis Student AI"})
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except Exception as e:
+        log.warning("stdlib RSS fetch failed for %s: %s", url, e)
+        return []
+
+    def _text(elem, tag, ns=""):
+        if elem is None:
+            return ""
+        for child in elem:
+            stripped = child.tag.split("}", 1)[-1]
+            if stripped == tag:
+                return (child.text or "").strip()
+        return ""
+
+    items = []
+    # RSS <channel><item>
+    channel = None
+    for child in root:
+        if child.tag.split("}", 1)[-1] == "channel":
+            channel = child
+            break
+    candidates = []
+    if channel is not None:
+        for c in channel:
+            if c.tag.split("}", 1)[-1] == "item":
+                candidates.append(c)
+    # Atom <entry>
+    if not candidates:
+        for c in root:
+            if c.tag.split("}", 1)[-1] == "entry":
+                candidates.append(c)
+
+    for entry in candidates[:8]:
+        title = _text(entry, "title")
+        link = _text(entry, "link")
+        if not link:
+            # Atom <link href="...">
+            for c in entry:
+                if c.tag.split("}", 1)[-1] == "link":
+                    link = (c.get("href") or c.text or "").strip()
+                    if link:
+                        break
+        summary_raw = _text(entry, "description") or _text(entry, "summary")
+        summary = _re.sub(r"<[^>]+>", "", summary_raw)[:400].strip()
+        published = _text(entry, "pubDate") or _text(entry, "published") or _text(entry, "updated")
+        if title and link:
+            items.append({
+                "title": title,
+                "outlet": outlet,
+                "url": link,
+                "summary": summary,
+                "published": published,
+            })
+    return items
+
+
+def _parse_feed(outlet, url):
+    """Return list of {title, outlet, url, summary, published} from one feed."""
+    key = "rss:" + url
+    cached = _cache_get(key, 900)  # 15 min
+    if cached is not None:
+        return cached
+    items = []
+    if feedparser is not None:
+        try:
+            parsed = feedparser.parse(url, agent="Mozilla/5.0 Jarvis Student AI")
+            for entry in (parsed.entries or [])[:8]:
+                title = (entry.get("title") or "").strip()
+                link = (entry.get("link") or "").strip()
+                summary_raw = (entry.get("summary") or entry.get("description") or "").strip()
+                import re as _re
+                summary = _re.sub(r"<[^>]+>", "", summary_raw)[:400].strip()
+                published = entry.get("published") or entry.get("updated") or ""
+                if title and link:
+                    items.append({
+                        "title": title,
+                        "outlet": outlet,
+                        "url": link,
+                        "summary": summary,
+                        "published": published,
+                    })
+        except Exception as e:
+            log.warning("feedparser failed for %s: %s — falling back to stdlib", url, e)
+            items = []
+    if not items:
+        items = _parse_feed_stdlib(outlet, url)
+    _cache_set(key, items)
+    return items
+
+
+def fetch_news(bucket="national", limit=3):
+    feeds = _NEWS_NATIONAL_FEEDS if bucket == "national" else _NEWS_LOCAL_FEEDS
+    all_items = []
+    for outlet, url in feeds:
+        all_items.extend(_parse_feed(outlet, url))
+    # Round-robin across outlets so no single feed dominates
+    by_outlet = {}
+    for item in all_items:
+        by_outlet.setdefault(item["outlet"], []).append(item)
+    out = []
+    i = 0
+    while len(out) < limit and any(by_outlet.values()):
+        for outlet in list(by_outlet.keys()):
+            lst = by_outlet.get(outlet) or []
+            if not lst:
+                continue
+            out.append(lst.pop(0))
+            if len(out) >= limit:
+                break
+        i += 1
+        if i > 20:
+            break
+    return out
+
+
+def fetch_quote_of_day():
+    """ZenQuotes (no key). 24h cache."""
+    cached = _cache_get("zenquotes:today", 24 * 3600)
+    if cached is not None:
+        return cached
+    try:
+        resp = requests.get("https://zenquotes.io/api/today", timeout=10)
+        resp.raise_for_status()
+        j = resp.json() or []
+        if isinstance(j, list) and j:
+            q = j[0]
+            out = {"text": (q.get("q") or "").strip(), "author": (q.get("a") or "Unknown").strip()}
+            if out["text"]:
+                _cache_set("zenquotes:today", out)
+                return out
+    except Exception as e:
+        log.warning("ZenQuotes failed: %s", e)
+    return {
+        "text": "The best way to predict the future is to invent it.",
+        "author": "Alan Kay",
+    }
+
+
+# ── Stock portfolio helpers ──────────────────────────────────────────────────
+
+def _compute_portfolio():
+    """Aggregate stock_transactions into current holdings.
+    Returns {symbol: {qty, avg_cost, total_cost}}."""
+    conn = get_db()
+    cur = conn.cursor()
+    holdings = {}
+    try:
+        cur.execute(
+            "SELECT symbol, action, quantity, price FROM stock_transactions "
+            "ORDER BY transaction_date ASC, id ASC"
+        )
+        for r in cur.fetchall():
+            sym = (r["symbol"] or "").upper()
+            qty = float(r["quantity"])
+            price = float(r["price"])
+            h = holdings.setdefault(sym, {"qty": 0.0, "total_cost": 0.0})
+            if r["action"] == "buy":
+                h["qty"] += qty
+                h["total_cost"] += qty * price
+            else:  # sell — reduce qty and cost-basis proportionally
+                if h["qty"] > 0:
+                    cost_per_share = h["total_cost"] / h["qty"]
+                    removed = min(qty, h["qty"])
+                    h["qty"] -= removed
+                    h["total_cost"] -= removed * cost_per_share
+        out = {}
+        for sym, h in holdings.items():
+            if h["qty"] <= 1e-9:
+                continue
+            avg = h["total_cost"] / h["qty"] if h["qty"] > 0 else 0.0
+            out[sym] = {
+                "qty": round(h["qty"], 6),
+                "avg_cost": round(avg, 4),
+                "total_cost": round(h["total_cost"], 2),
+            }
+        return out
+    finally:
+        cur.close()
+        conn.close()
+
+
+def build_portfolio_snapshot():
+    """Enrich holdings with live prices. Returns {holdings, total_value, total_day_change, total_day_change_pct}."""
+    holdings = _compute_portfolio()
+    rows = []
+    total_value = 0.0
+    total_prev = 0.0
+    for sym, h in holdings.items():
+        quote = fetch_finnhub_quote(sym) or {}
+        price = quote.get("price") or h["avg_cost"]
+        prev = quote.get("prev_close") or price
+        value = h["qty"] * price
+        prev_value = h["qty"] * prev
+        total_value += value
+        total_prev += prev_value
+        unrealized = value - h["total_cost"]
+        unrealized_pct = (unrealized / h["total_cost"] * 100.0) if h["total_cost"] > 0 else 0.0
+        rows.append({
+            "symbol": sym,
+            "qty": h["qty"],
+            "avg_cost": h["avg_cost"],
+            "current_price": round(float(price), 4),
+            "day_change_pct": quote.get("day_change_pct"),
+            "value": round(value, 2),
+            "unrealized_pl": round(unrealized, 2),
+            "unrealized_pct": round(unrealized_pct, 2),
+        })
+    rows.sort(key=lambda r: r["value"], reverse=True)
+    total_day_change = total_value - total_prev
+    total_day_change_pct = (total_day_change / total_prev * 100.0) if total_prev > 0 else 0.0
+    return {
+        "holdings": rows,
+        "total_value": round(total_value, 2),
+        "total_day_change": round(total_day_change, 2),
+        "total_day_change_pct": round(total_day_change_pct, 2),
+    }
 
 
 def parse_canvas_assignments(cal):
@@ -3704,6 +4104,11 @@ def api_chat():
             "Be analytical, anticipatory, and discreet: volunteer relevant information before it is requested, "
             "but never lecture or moralise. If something is overdue or amiss, note it plainly and suggest the next sensible move. "
             "Never break character, never refer to yourself as an AI model, and do not use emoji unless the student does first. "
+            "SCOPE — you are a full general-purpose assistant, not limited to scheduling. Answer any reasonable question: homework help across every subject "
+            "(math with worked steps, science, history, English, foreign languages, computer science with runnable code), writing and editing, "
+            "research and explanations from your own knowledge, advice, conversation, sports and fitness talk, recommendations, jokes. "
+            "Never refuse with 'I can only help with your schedule' — you are the student's full assistant. Decline only genuinely harmful or illegal requests. "
+            "When the personal data injected below is relevant, use it; when a question is general, answer from your own knowledge without pretending the system lacks context. "
             "Reference this authoritative date in all temporal reasoning — employ it whenever the student references 'today' or 'tomorrow' "
             "and in all comparisons to assignment due dates: %s. Current local time (Utah): %s. "
             "DUE-DATE PRESENTATION — when you mention any assignment or task due date, always render it in the long human-readable form, "
@@ -3716,6 +4121,17 @@ def api_chat():
             "Use - bullet points for any list of 2+ items. "
             "Vary text size deliberately — short answers may have one ## header, long answers must have multiple. "
             "Never write more than two sentences in a row without a header, bullet, or bold term breaking it up. "
+            "STOCK TRANSACTIONS — when the student tells you they bought or sold a stock (e.g. 'I bought 10 AAPL at $175', 'sold 5 TSLA at 240'), "
+            "silently append a single token at the very end of your reply using this exact grammar: "
+            "[STOCK_ACTION: {\"action\":\"buy\"|\"sell\",\"symbol\":\"AAPL\",\"quantity\":10,\"price\":175.50,\"date\":\"YYYY-MM-DD\",\"notes\":\"\"}]. "
+            "Use today's date if none is given. Still speak naturally in the rest of the reply (e.g. 'Noted, sir. 10 shares of **AAPL** at **$175.00** logged.'). "
+            "If the student asks how their stocks are doing, summarize the holdings provided in context and invite them to open the **Morning Outlook** for the chart. "
+            "TASK COMPLETION — when the student says a task is done, completed, finished, handled, or anything equivalent, append "
+            "[TASK_COMPLETE: {\"id\": <id>}] at the very end of your reply. Use the id from the Pending tasks list injected below. "
+            "If the id is ambiguous (e.g. only a fuzzy title was given), ask one clarifying question before emitting the token. "
+            "Speak naturally in the rest of the reply (e.g. 'Very good, sir — marked **Chemistry homework** as complete.'). "
+            "TASK REMOVAL — when the student says to delete, remove, cancel, scrap, or discard a task, append "
+            "[TASK_DELETE: {\"id\": <id>}]. Same disambiguation rules apply. Only one TASK_COMPLETE or TASK_DELETE per reply, and never when the student did not ask. "
         ) % (now_chat.strftime("%A, %B %d, %Y"), now_chat.strftime("%-I:%M %p %Z")) + system_prompt
 
         # Inject school schedule context
@@ -3782,7 +4198,7 @@ def api_chat():
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "SELECT title, urgency, notes FROM tasks WHERE completed = FALSE "
+                "SELECT id, title, urgency, notes FROM tasks WHERE completed = FALSE "
                 "ORDER BY urgency DESC, created_at ASC LIMIT 10"
             )
             tasks = [dict(r) for r in cur.fetchall()]
@@ -3801,10 +4217,10 @@ ORDER BY pn.created_at DESC LIMIT 6""")
             conn.close()
             if tasks:
                 tasks_text = "; ".join(
-                    "[%s] %s%s" % (t["urgency"], t["title"], (" — " + t["notes"][:80]) if t["notes"] else "")
+                    "id=%d [%s] %s%s" % (t["id"], t["urgency"], t["title"], (" — " + (t["notes"] or "")[:80]) if t["notes"] else "")
                     for t in tasks
                 )
-                system_prompt += " Pending tasks: " + tasks_text + "."
+                system_prompt += " Pending tasks (include id when invoking TASK_COMPLETE or TASK_DELETE): " + tasks_text + "."
             if proj_tasks:
                 pt_text = "; ".join(
                     "%s (project: %s, assigned: %s, status: %s)" % (t["task"], t["project"], t["assignee"] or "unassigned", t["status"])
@@ -3816,6 +4232,22 @@ ORDER BY pn.created_at DESC LIMIT 6""")
                 system_prompt += " Recent project notes: " + pn_text + "."
         except Exception:
             log.warning("/api/chat could not fetch tasks for context")
+
+        # Inject stock portfolio snapshot (current holdings only — no live prices to keep it cheap)
+        try:
+            port = _compute_portfolio()
+            if port:
+                h_text = "; ".join(
+                    "%s qty=%s avg_cost=$%.2f" % (sym, h["qty"], h["avg_cost"])
+                    for sym, h in port.items()
+                )
+                system_prompt += (
+                    " Student's current stock holdings (from recorded transactions): " + h_text + "."
+                )
+            else:
+                system_prompt += " Student has no recorded stock holdings yet."
+        except Exception:
+            log.warning("/api/chat could not load portfolio for context")
 
         client = anthropic.Anthropic(api_key=api_key)
         kwargs = {"model": "claude-sonnet-4-6", "max_tokens": 1024, "messages": messages}
@@ -3858,7 +4290,131 @@ ORDER BY pn.created_at DESC LIMIT 6""")
             # Always strip the token from displayed content
             content = _re.sub(r'\s*\[TASK_ACTION:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
 
-        return jsonify({"content": content, "task_created": task_created})
+        # Extract and process [STOCK_ACTION: {...}] server-side
+        stock_recorded = False
+        stock_match = _re.search(r'\[STOCK_ACTION:\s*(\{.*?\})\]', content, _re.DOTALL)
+        if stock_match:
+            try:
+                raw_json = stock_match.group(1).replace('**', '')
+                sdata = json.loads(raw_json)
+                symbol = str(sdata.get("symbol", "")).strip().upper()[:16]
+                action = str(sdata.get("action", "")).strip().lower()
+                qty = float(sdata.get("quantity", 0) or 0)
+                price = float(sdata.get("price", 0) or 0)
+                tx_date = sdata.get("date") or datetime.now(TZ).date().isoformat()
+                notes = str(sdata.get("notes", ""))[:500]
+                if symbol and action in ("buy", "sell") and qty > 0 and price > 0:
+                    _conn = get_db()
+                    _cur = _conn.cursor()
+                    _cur.execute(
+                        "INSERT INTO stock_transactions (symbol, action, quantity, price, transaction_date, notes) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        (symbol, action, qty, price, tx_date, notes)
+                    )
+                    _conn.commit()
+                    _cur.close()
+                    _conn.close()
+                    stock_recorded = True
+                    log.info(f"/api/chat: recorded stock {action} {qty} {symbol} @ {price}")
+            except Exception as se:
+                log.warning(f"/api/chat: stock action parse failed: {se}")
+            content = _re.sub(r'\s*\[STOCK_ACTION:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+
+        def _resolve_task_target(data):
+            """Return a task id from {id} or {title}. Returns (id, title) or (None, None)."""
+            _c = get_db()
+            _cu = _c.cursor()
+            try:
+                tid = data.get("id")
+                if tid is not None:
+                    try:
+                        tid = int(tid)
+                    except Exception:
+                        tid = None
+                if tid:
+                    _cu.execute("SELECT id, title FROM tasks WHERE id=%s", (tid,))
+                    r = _cu.fetchone()
+                    if r:
+                        return r["id"], r["title"]
+                title = str(data.get("title", "")).strip()
+                if title:
+                    _cu.execute(
+                        "SELECT id, title FROM tasks WHERE completed=FALSE AND LOWER(title)=LOWER(%s) LIMIT 2",
+                        (title,)
+                    )
+                    rows = _cu.fetchall()
+                    if len(rows) == 1:
+                        return rows[0]["id"], rows[0]["title"]
+                    _cu.execute(
+                        "SELECT id, title FROM tasks WHERE completed=FALSE AND LOWER(title) LIKE LOWER(%s) LIMIT 2",
+                        ("%" + title + "%",)
+                    )
+                    rows = _cu.fetchall()
+                    if len(rows) == 1:
+                        return rows[0]["id"], rows[0]["title"]
+            finally:
+                _cu.close()
+                _c.close()
+            return None, None
+
+        # Extract and process [TASK_COMPLETE: {...}] server-side
+        task_completed = False
+        completed_title = None
+        comp_match = _re.search(r'\[TASK_COMPLETE:\s*(\{.*?\})\]', content, _re.DOTALL)
+        if comp_match:
+            try:
+                raw_json = comp_match.group(1).replace('**', '')
+                cdata = json.loads(raw_json)
+                tid, ttitle = _resolve_task_target(cdata)
+                if tid:
+                    _c = get_db()
+                    _cu = _c.cursor()
+                    _cu.execute(
+                        "UPDATE tasks SET completed=TRUE, completed_at=NOW() WHERE id=%s AND completed=FALSE",
+                        (tid,)
+                    )
+                    _c.commit()
+                    _cu.close()
+                    _c.close()
+                    task_completed = True
+                    completed_title = ttitle
+                    log.info(f"/api/chat: completed task id={tid} '{ttitle}'")
+            except Exception as e:
+                log.warning(f"/api/chat: task complete failed: {e}")
+            content = _re.sub(r'\s*\[TASK_COMPLETE:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+
+        # Extract and process [TASK_DELETE: {...}] server-side
+        task_deleted = False
+        deleted_title = None
+        del_match = _re.search(r'\[TASK_DELETE:\s*(\{.*?\})\]', content, _re.DOTALL)
+        if del_match:
+            try:
+                raw_json = del_match.group(1).replace('**', '')
+                ddata = json.loads(raw_json)
+                tid, ttitle = _resolve_task_target(ddata)
+                if tid:
+                    _c = get_db()
+                    _cu = _c.cursor()
+                    _cu.execute("DELETE FROM tasks WHERE id=%s", (tid,))
+                    _c.commit()
+                    _cu.close()
+                    _c.close()
+                    task_deleted = True
+                    deleted_title = ttitle
+                    log.info(f"/api/chat: deleted task id={tid} '{ttitle}'")
+            except Exception as e:
+                log.warning(f"/api/chat: task delete failed: {e}")
+            content = _re.sub(r'\s*\[TASK_DELETE:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+
+        return jsonify({
+            "content": content,
+            "task_created": task_created,
+            "stock_recorded": stock_recorded,
+            "task_completed": task_completed,
+            "completed_title": completed_title,
+            "task_deleted": task_deleted,
+            "deleted_title": deleted_title,
+        })
     except Exception:
         log.exception("/api/chat failed")
         return jsonify({"error": "Failed to reach AI. Check server logs."}), 500
@@ -4369,6 +4925,286 @@ def api_plan_my_day_delete():
             return jsonify({"status": "ok"})
     except Exception as e:
         log.exception("Error deleting daily plan")
+        return jsonify({"error": str(e)}), 500
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DAILY OUTLOOK + STOCKS
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/stocks/transaction", methods=["POST"])
+def api_stocks_transaction():
+    data = request.get_json(force=True) or {}
+    try:
+        symbol = str(data.get("symbol", "")).strip().upper()[:16]
+        action = str(data.get("action", "")).strip().lower()
+        qty = float(data.get("quantity", 0) or 0)
+        price = float(data.get("price", 0) or 0)
+        tx_date = data.get("transaction_date") or datetime.now(TZ).date().isoformat()
+        notes = str(data.get("notes", ""))[:500]
+        if not symbol or action not in ("buy", "sell") or qty <= 0 or price <= 0:
+            return jsonify({"error": "Invalid transaction data"}), 400
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO stock_transactions (symbol, action, quantity, price, transaction_date, notes) "
+            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (symbol, action, qty, price, tx_date, notes)
+        )
+        new_id = cur.fetchone()["id"]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "ok", "id": new_id})
+    except Exception as e:
+        log.exception("stock transaction insert failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stocks/transactions", methods=["GET"])
+def api_stocks_transactions_list():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, symbol, action, quantity, price, transaction_date, notes, created_at "
+            "FROM stock_transactions ORDER BY transaction_date DESC, id DESC LIMIT 100"
+        )
+        rows = [{
+            "id": r["id"],
+            "symbol": r["symbol"],
+            "action": r["action"],
+            "quantity": float(r["quantity"]),
+            "price": float(r["price"]),
+            "transaction_date": r["transaction_date"].isoformat() if r["transaction_date"] else None,
+            "notes": r["notes"] or "",
+        } for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return jsonify({"transactions": rows})
+    except Exception as e:
+        log.exception("stock transaction list failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stocks/transaction/<int:tx_id>", methods=["DELETE"])
+def api_stocks_transaction_delete(tx_id):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM stock_transactions WHERE id = %s", (tx_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stocks/portfolio", methods=["GET"])
+def api_stocks_portfolio():
+    try:
+        return jsonify(build_portfolio_snapshot())
+    except Exception as e:
+        log.exception("portfolio fetch failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stocks/history", methods=["GET"])
+def api_stocks_history():
+    symbol = request.args.get("symbol", "").strip().upper()
+    range_key = request.args.get("range", "1mo").strip()
+    if not symbol:
+        return jsonify({"error": "symbol required"}), 400
+    return jsonify({"symbol": symbol, "range": range_key, "points": fetch_stock_history(symbol, range_key)})
+
+
+@app.route("/api/daily-outlook", methods=["POST"])
+def api_daily_outlook():
+    """Assemble the Morning Outlook payload in one call."""
+    today = datetime.now(TZ).date()
+    payload = {
+        "generated_at": datetime.now(TZ).isoformat(),
+        "assignments_events": {"assignments": [], "events": []},
+        "tasks": [],
+        "stocks": None,
+        "weather": None,
+        "quote": None,
+        "news": {"national": [], "local": []},
+    }
+
+    # Assignments due today + completed-title filter
+    try:
+        cal = fetch_ical(CANVAS_ICAL_URL)
+        if cal:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT assignment_title FROM completions")
+            done = set(r["assignment_title"] for r in cur.fetchall())
+            cur.close()
+            conn.close()
+            for a in parse_canvas_assignments(cal):
+                if a["title"] in done:
+                    continue
+                due_iso = a.get("due_iso", "")
+                if not due_iso:
+                    continue
+                try:
+                    d = datetime.fromisoformat(due_iso.replace("Z", "+00:00")).astimezone(TZ).date()
+                except Exception:
+                    continue
+                if d == today:
+                    payload["assignments_events"]["assignments"].append({
+                        "title": a.get("title", ""),
+                        "class_name": a.get("class_name", ""),
+                        "due_display": a.get("due_display", ""),
+                        "due_iso": a.get("due_iso", ""),
+                    })
+    except Exception as e:
+        log.warning("outlook: assignments failed: %s", e)
+
+    # Personal + sports calendar events for today
+    try:
+        today_iso = today.isoformat()
+        for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports")):
+            c = fetch_ical(url)
+            if not c:
+                continue
+            for e in parse_calendar_events(c, days_ahead=1):
+                if e.get("date") == today_iso:
+                    payload["assignments_events"]["events"].append({
+                        "title": e.get("title", ""),
+                        "start_display": "All Day" if e.get("all_day") else e.get("start_display", ""),
+                        "end_display": "" if e.get("all_day") else e.get("end_display", ""),
+                        "all_day": e.get("all_day", False),
+                        "source": tag,
+                    })
+    except Exception as e:
+        log.warning("outlook: events failed: %s", e)
+
+    # Tasks due today (or overdue + today)
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, title, urgency, due_date, notes FROM tasks "
+            "WHERE completed = FALSE AND (due_date IS NULL OR due_date <= %s) "
+            "ORDER BY urgency DESC, due_date ASC NULLS LAST LIMIT 10",
+            (today,)
+        )
+        for r in cur.fetchall():
+            payload["tasks"].append({
+                "id": r["id"],
+                "title": r["title"],
+                "urgency": r["urgency"],
+                "due_date": r["due_date"].isoformat() if r["due_date"] else None,
+                "notes": (r["notes"] or "")[:300],
+            })
+        cur.close()
+        conn.close()
+    except Exception as e:
+        log.warning("outlook: tasks failed: %s", e)
+
+    # Stocks
+    try:
+        payload["stocks"] = build_portfolio_snapshot()
+    except Exception as e:
+        log.warning("outlook: stocks failed: %s", e)
+
+    # Weather
+    try:
+        payload["weather"] = fetch_weather()
+    except Exception as e:
+        log.warning("outlook: weather failed: %s", e)
+
+    # Quote
+    try:
+        payload["quote"] = fetch_quote_of_day()
+    except Exception as e:
+        log.warning("outlook: quote failed: %s", e)
+
+    # News
+    try:
+        payload["news"]["national"] = fetch_news("national", limit=3)
+        payload["news"]["local"] = fetch_news("local", limit=3)
+    except Exception as e:
+        log.warning("outlook: news failed: %s", e)
+
+    return jsonify(payload)
+
+
+@app.route("/api/outlook/news-detail", methods=["POST"])
+def api_outlook_news_detail():
+    """Claude synthesis of 'other angles / how other outlets are framing this'."""
+    data = request.get_json(force=True) or {}
+    title = str(data.get("title", "")).strip()
+    outlet = str(data.get("outlet", "")).strip()
+    url = str(data.get("url", "")).strip()
+    summary = str(data.get("summary", "")).strip()
+    if not title:
+        return jsonify({"error": "title required"}), 400
+
+    url_hash = hashlib.sha256((url or title).encode("utf-8")).hexdigest()[:32]
+
+    # Check cache
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT synthesis, generated_at FROM outlook_news_cache WHERE url_hash = %s", (url_hash,))
+        row = cur.fetchone()
+        if row and row["generated_at"]:
+            age = datetime.now(TZ) - row["generated_at"].astimezone(TZ)
+            if age.total_seconds() < 6 * 3600:
+                cur.close()
+                conn.close()
+                return jsonify({"synthesis": row["synthesis"], "cached": True})
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"synthesis": "_(Claude synthesis unavailable — API key not configured.)_"}), 200
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        prompt = (
+            "A news story was just surfaced to the student in their Morning Outlook:\n\n"
+            f"Headline: {title}\n"
+            f"Outlet: {outlet}\n"
+            f"URL: {url}\n"
+            f"Summary: {summary}\n\n"
+            "Compose a concise synthesis titled '## Other Angles' that covers:\n"
+            "- Broader context the summary omits (1-2 bullets)\n"
+            "- How other major outlets across the spectrum are likely framing or covering the same story, naming specific outlets where possible\n"
+            "- Any factual caveats or ongoing developments worth noting\n\n"
+            "Stay factual, name outlets explicitly, flag uncertainty plainly, and avoid editorialising. Keep under 200 words. Use markdown (## header, - bullets, **bold** for outlet names)."
+        )
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        track_api_usage(message)
+        synthesis = message.content[0].text if message.content else ""
+        if synthesis:
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO outlook_news_cache (url_hash, synthesis) VALUES (%s, %s) "
+                    "ON CONFLICT (url_hash) DO UPDATE SET synthesis = EXCLUDED.synthesis, generated_at = NOW()",
+                    (url_hash, synthesis)
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as ce:
+                log.warning("news-detail cache insert failed: %s", ce)
+        return jsonify({"synthesis": synthesis, "cached": False})
+    except Exception as e:
+        log.exception("news-detail synthesis failed")
         return jsonify({"error": str(e)}), 500
 
 

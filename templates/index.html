@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -695,6 +696,99 @@ min-width: 90px;
 .plan-chat-card[data-type="free_time"].plan-chat-time { color: var(--text3); }
 .plan-chat-title { font-size: 14px; font-weight: 600; color: var(--text); }
 .plan-chat-meta  { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+.outlook-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.outlook-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s, border-color 0.15s;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+}
+.outlook-card:hover { background: var(--surface); transform: translateY(-2px); }
+.outlook-card[data-kind="stocks"]   { border-left-color: #5cb85c; }
+.outlook-card[data-kind="weather"]  { border-left-color: #4fb3f6; }
+.outlook-card[data-kind="news"]     { border-left-color: var(--purple); }
+.outlook-card[data-kind="tasks"]    { border-left-color: var(--amber); }
+.outlook-card[data-kind="quote"]    { border-left-color: var(--accent); }
+.outlook-card[data-kind="cal"]      { border-left-color: #e06c75; }
+.outlook-card h4 {
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0 0 6px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.outlook-card .outlook-primary { font-size: 20px; font-weight: 600; color: var(--text); }
+.outlook-card .outlook-body { font-size: 13px; color: var(--text2); line-height: 1.4; }
+.outlook-card .outlook-meta { font-size: 11px; color: var(--text3); margin-top: auto; padding-top: 6px; }
+.outlook-card .outlook-item { font-size: 12px; color: var(--text2); margin: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.outlook-card .outlook-item strong { color: var(--text); }
+.outlook-pct-up   { color: #5cb85c; font-weight: 600; }
+.outlook-pct-down { color: #e06c75; font-weight: 600; }
+.outlook-quote-text { font-style: italic; font-size: 14px; color: var(--text); line-height: 1.4; }
+.outlook-quote-author { font-size: 11px; color: var(--text3); margin-top: 6px; text-align: right; }
+
+.outlook-modal-section { margin: 12px 0; }
+.outlook-modal-section h3 { font-size: 14px; color: var(--text); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.3px; }
+.outlook-news-item {
+  padding: 10px 12px;
+  background: var(--surface2);
+  border-radius: var(--r-sm);
+  margin-bottom: 8px;
+  border-left: 3px solid var(--purple);
+}
+.outlook-news-item .title { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.outlook-news-item .outlet { font-size: 11px; color: var(--text3); }
+.outlook-news-item .summary { font-size: 12px; color: var(--text2); margin-top: 4px; line-height: 1.4; }
+.outlook-news-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.outlook-btn {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.outlook-btn:hover { background: var(--surface2); }
+.outlook-holdings-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.outlook-holdings-table th { text-align: left; padding: 6px 8px; color: var(--text3); border-bottom: 1px solid var(--border); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+.outlook-holdings-table td { padding: 8px; border-bottom: 1px solid var(--border); color: var(--text2); }
+.outlook-holdings-table td.sym { color: var(--text); font-weight: 600; }
+#outlook-chart-wrap { background: var(--surface2); padding: 12px; border-radius: var(--r-sm); margin-top: 8px; }
+
+.stock-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  background: var(--surface);
+  border: 1px solid #5cb85c;
+  border-left: 3px solid #5cb85c;
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  z-index: 10000;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  animation: slideInToast 0.3s ease-out;
+}
+@keyframes slideInToast { from { transform: translateX(120%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
 .message.user .message-bubble {
 background: var(--accent);
@@ -1930,6 +2024,7 @@ margin-bottom: 0;
 <div class="empty-state-icon">💬</div>
 <div class="empty-state-text">Hey! Ask me anything about your assignments, tasks, projects, or calendar.</div>
 <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 20px;">
+<button onclick="generateDailyOutlook()" class="quick-action-btn">🌅 Morning Outlook</button>
 <button onclick="suggestMessage('What assignments are due soon?')" class="quick-action-btn">Assignments</button>
 <button onclick="suggestMessage('What tasks do I need to do?')" class="quick-action-btn">My tasks</button>
 <button onclick="suggestMessage('What do I have today?')" class="quick-action-btn">Today</button>
@@ -3194,6 +3289,343 @@ function displayPlanInChat(planData) {
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
+// ── Daily Outlook ───────────────────────────────────────────────────────────
+let _lastOutlook = null;
+
+function showStockToast(msg) {
+  const t = document.createElement('div');
+  t.className = 'stock-toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; }, 2200);
+  setTimeout(() => { t.remove(); }, 2600);
+}
+
+async function generateDailyOutlook() {
+  const messagesDiv = document.getElementById('chatMessages');
+  if (messagesDiv.querySelector('.empty-state')) {
+    messagesDiv.innerHTML = '';
+  }
+  const loading = document.createElement('div');
+  loading.className = 'message assistant';
+  loading.innerHTML = `<div class="message-bubble">Composing your Morning Outlook…</div>`;
+  messagesDiv.appendChild(loading);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+  try {
+    const resp = await fetch('/api/daily-outlook', { method: 'POST' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    _lastOutlook = data;
+    loading.remove();
+    displayOutlookInChat(data);
+  } catch (e) {
+    console.error('Outlook error:', e);
+    loading.innerHTML = `<div class="message-bubble" style="color: var(--red);">Unable to assemble the outlook, sir. ${escapeHtml(String(e))}</div>`;
+  }
+}
+
+function _pctHtml(pct) {
+  if (pct === null || pct === undefined || isNaN(pct)) return '<span class="outlook-body">—</span>';
+  const cls = pct >= 0 ? 'outlook-pct-up' : 'outlook-pct-down';
+  const arrow = pct >= 0 ? '▲' : '▼';
+  return `<span class="${cls}">${arrow} ${Math.abs(pct).toFixed(2)}%</span>`;
+}
+
+function displayOutlookInChat(data) {
+  const messagesDiv = document.getElementById('chatMessages');
+
+  const intro = document.createElement('div');
+  intro.className = 'message assistant';
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  intro.innerHTML = `<div class="message-bubble">${formatMessage(`## Morning Outlook\n${dateStr} — a civilised summary of the day ahead, sir. Tap any card for detail.`)}</div>`;
+  messagesDiv.appendChild(intro);
+
+  const ae = data.assignments_events || {};
+  const asgnCount = (ae.assignments || []).length;
+  const eventCount = (ae.events || []).length;
+  const calBody = (asgnCount + eventCount) > 0
+    ? `<div class="outlook-primary">${asgnCount + eventCount}</div>
+       <div class="outlook-body">${asgnCount} assignment${asgnCount !== 1 ? 's' : ''}, ${eventCount} event${eventCount !== 1 ? 's' : ''}</div>
+       ${(ae.assignments || []).slice(0, 2).map(a => `<div class="outlook-item">📝 <strong>${escapeHtml(a.title)}</strong></div>`).join('')}
+       ${(ae.events || []).slice(0, 2).map(e => `<div class="outlook-item">📅 <strong>${escapeHtml(e.title)}</strong>${e.all_day ? '' : ' · ' + escapeHtml(e.start_display || '')}</div>`).join('')}`
+    : `<div class="outlook-body">A pristine calendar today.</div>`;
+
+  const tasks = data.tasks || [];
+  const taskBody = tasks.length > 0
+    ? `<div class="outlook-primary">${tasks.length}</div>
+       <div class="outlook-body">open task${tasks.length !== 1 ? 's' : ''}</div>
+       ${tasks.slice(0, 3).map(t => `<div class="outlook-item">• <strong>${escapeHtml(t.title)}</strong></div>`).join('')}`
+    : `<div class="outlook-body">No outstanding tasks, sir.</div>`;
+
+  const stocks = data.stocks || {};
+  const holdings = stocks.holdings || [];
+  const totalVal = stocks.total_value || 0;
+  const stockBody = holdings.length > 0
+    ? `<div class="outlook-primary">$${totalVal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+       <div class="outlook-body">${_pctHtml(stocks.total_day_change_pct)} today</div>
+       ${holdings.slice(0, 3).map(h => `<div class="outlook-item"><strong>${escapeHtml(h.symbol)}</strong> ${h.qty} @ $${h.current_price.toFixed(2)} ${_pctHtml(h.day_change_pct)}</div>`).join('')}`
+    : `<div class="outlook-body">No holdings logged. Tell me when you buy or sell and I shall keep the books.</div>`;
+
+  const wx = data.weather || {};
+  const wxBody = wx.current_f !== undefined
+    ? `<div class="outlook-primary">${wx.current_f}°F</div>
+       <div class="outlook-body">${escapeHtml(wx.description || '')} · feels ${wx.feels_like_f}° · wind ${wx.wind_mph} mph</div>
+       ${(wx.daily && wx.daily[0]) ? `<div class="outlook-item">Today: <strong>${wx.daily[0].hi_f}°/${wx.daily[0].lo_f}°</strong> · ${wx.daily[0].precip_pct}% precip</div>` : ''}`
+    : `<div class="outlook-body">Weather service unavailable.</div>`;
+
+  const q = data.quote || {};
+  const quoteBody = q.text
+    ? `<div class="outlook-quote-text">"${escapeHtml(q.text)}"</div>
+       <div class="outlook-quote-author">— ${escapeHtml(q.author || 'Unknown')}</div>`
+    : `<div class="outlook-body">—</div>`;
+
+  const news = data.news || {};
+  const allNews = [...(news.national || []), ...(news.local || [])];
+  const newsBody = allNews.length > 0
+    ? `<div class="outlook-primary">${allNews.length}</div>
+       <div class="outlook-body">headlines queued</div>
+       ${allNews.slice(0, 3).map(n => `<div class="outlook-item">📰 <strong>${escapeHtml(n.outlet)}</strong>: ${escapeHtml((n.title || '').slice(0, 60))}${n.title && n.title.length > 60 ? '…' : ''}</div>`).join('')}`
+    : `<div class="outlook-body">News feeds quiet.</div>`;
+
+  const gridBubble = document.createElement('div');
+  gridBubble.className = 'message assistant';
+  gridBubble.innerHTML = `
+    <div class="message-bubble" style="padding:12px;">
+      <div class="outlook-grid">
+        <div class="outlook-card" data-kind="cal" onclick="openOutlookCardDetail('cal')">
+          <h4>📅 Today</h4>
+          ${calBody}
+        </div>
+        <div class="outlook-card" data-kind="tasks" onclick="openOutlookCardDetail('tasks')">
+          <h4>✓ Tasks</h4>
+          ${taskBody}
+        </div>
+        <div class="outlook-card" data-kind="stocks" onclick="openOutlookCardDetail('stocks')">
+          <h4>📈 Portfolio</h4>
+          ${stockBody}
+        </div>
+        <div class="outlook-card" data-kind="weather" onclick="openOutlookCardDetail('weather')">
+          <h4>🌤 Weather</h4>
+          ${wxBody}
+        </div>
+        <div class="outlook-card" data-kind="quote" onclick="openOutlookCardDetail('quote')">
+          <h4>✨ Motivation</h4>
+          ${quoteBody}
+        </div>
+        <div class="outlook-card" data-kind="news" onclick="openOutlookCardDetail('news')">
+          <h4>📰 News</h4>
+          ${newsBody}
+        </div>
+      </div>
+    </div>`;
+  messagesDiv.appendChild(gridBubble);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function _outlookModalShell(title, bodyHtml) {
+  const existing = document.getElementById('outlook-modal');
+  if (existing) existing.remove();
+  const m = document.createElement('div');
+  m.id = 'outlook-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  m.innerHTML = `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:20px;max-width:640px;width:100%;max-height:85vh;overflow-y:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="font-size:18px;color:var(--text);">${title}</h2>
+        <button onclick="document.getElementById('outlook-modal').remove()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;">✕</button>
+      </div>
+      <div id="outlook-modal-body">${bodyHtml}</div>
+    </div>`;
+  document.body.appendChild(m);
+}
+
+function openOutlookCardDetail(kind) {
+  if (!_lastOutlook) return;
+  const d = _lastOutlook;
+
+  if (kind === 'cal') {
+    const ae = d.assignments_events || {};
+    const rows = [];
+    (ae.assignments || []).forEach(a => {
+      rows.push(`<div class="outlook-news-item" style="border-left-color:#e06c75;">
+        <div class="title">📝 ${escapeHtml(a.title)}</div>
+        <div class="outlet">${escapeHtml(a.class_name || '')}</div>
+        <div class="summary">Due: ${escapeHtml(formatDueDateLong(a.due_iso))}</div>
+      </div>`);
+    });
+    (ae.events || []).forEach(e => {
+      const time = e.all_day ? 'All Day' : `${escapeHtml(e.start_display || '')}${e.end_display ? ' – ' + escapeHtml(e.end_display) : ''}`;
+      const badge = e.source === 'sports' ? ' [SPORTS]' : '';
+      rows.push(`<div class="outlook-news-item" style="border-left-color:var(--purple);">
+        <div class="title">📅 ${escapeHtml(e.title)}${badge}</div>
+        <div class="outlet">${time}</div>
+      </div>`);
+    });
+    _outlookModalShell("Today's Assignments & Events", rows.join('') || '<div class="outlook-body">Nothing on the books, sir.</div>');
+    return;
+  }
+
+  if (kind === 'tasks') {
+    const rows = (d.tasks || []).map(t => `
+      <div class="outlook-news-item" style="border-left-color:var(--amber);">
+        <div class="title">[${escapeHtml(t.urgency || 'low')}] ${escapeHtml(t.title)}</div>
+        ${t.due_date ? `<div class="outlet">Due: ${escapeHtml(t.due_date)}</div>` : ''}
+        ${t.notes ? `<div class="summary">${escapeHtml(t.notes)}</div>` : ''}
+      </div>`).join('');
+    _outlookModalShell('Open Tasks', rows || '<div class="outlook-body">No open tasks. Exemplary.</div>');
+    return;
+  }
+
+  if (kind === 'stocks') {
+    const s = d.stocks || {};
+    const holdings = s.holdings || [];
+    const head = `
+      <div class="outlook-primary">$${(s.total_value || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+      <div class="outlook-body" style="margin-bottom:12px;">${_pctHtml(s.total_day_change_pct)} today · ${holdings.length} position${holdings.length !== 1 ? 's' : ''}</div>`;
+    const table = holdings.length > 0 ? `
+      <table class="outlook-holdings-table">
+        <thead><tr><th>Sym</th><th>Qty</th><th>Avg</th><th>Last</th><th>Day</th><th>Value</th><th>P/L</th></tr></thead>
+        <tbody>
+          ${holdings.map(h => `<tr>
+            <td class="sym">${escapeHtml(h.symbol)}</td>
+            <td>${h.qty}</td>
+            <td>$${h.avg_cost.toFixed(2)}</td>
+            <td>$${h.current_price.toFixed(2)}</td>
+            <td>${_pctHtml(h.day_change_pct)}</td>
+            <td>$${h.value.toFixed(2)}</td>
+            <td>${_pctHtml(h.unrealized_pct)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <div id="outlook-chart-wrap"><canvas id="outlook-stock-chart" height="160"></canvas></div>
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
+        ${holdings.map(h => `<button class="outlook-btn" onclick="loadStockChart('${escapeHtml(h.symbol)}')">${escapeHtml(h.symbol)}</button>`).join('')}
+      </div>
+      <div class="outlook-body" style="margin-top:10px;font-size:11px;">Log a trade via chat: "I bought 10 AAPL at $175" or "sold 5 TSLA at $240".</div>
+    ` : `<div class="outlook-body">No holdings yet. Tell me in chat when you buy or sell and I shall keep the books.</div>`;
+    _outlookModalShell('Portfolio', head + table);
+    if (holdings.length > 0) {
+      loadStockChart(holdings[0].symbol);
+    }
+    return;
+  }
+
+  if (kind === 'weather') {
+    const w = d.weather || {};
+    const daily = w.daily || [];
+    const cur = `
+      <div class="outlook-primary">${w.current_f}°F</div>
+      <div class="outlook-body" style="margin-bottom:12px;">${escapeHtml(w.description || '')} · feels ${w.feels_like_f}° · wind ${w.wind_mph} mph</div>`;
+    const week = daily.length > 0 ? `
+      <h3 style="font-size:13px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;">7-Day</h3>
+      ${daily.map(d => `
+        <div class="outlook-news-item" style="border-left-color:#4fb3f6;display:flex;justify-content:space-between;align-items:center;">
+          <div><strong>${escapeHtml(d.date)}</strong> · ${escapeHtml(d.description)}</div>
+          <div>${d.hi_f}° / ${d.lo_f}° · ${d.precip_pct}%</div>
+        </div>`).join('')}` : '';
+    _outlookModalShell('Park City Weather', cur + week);
+    return;
+  }
+
+  if (kind === 'quote') {
+    const q = d.quote || {};
+    _outlookModalShell('Daily Motivation', `
+      <div class="outlook-quote-text" style="font-size:18px;">"${escapeHtml(q.text || '')}"</div>
+      <div class="outlook-quote-author" style="font-size:13px;">— ${escapeHtml(q.author || 'Unknown')}</div>`);
+    return;
+  }
+
+  if (kind === 'news') {
+    const n = d.news || {};
+    const render = (items) => items.map((item, idx) => `
+      <div class="outlook-news-item" data-news-idx="${idx}">
+        <div class="title">${escapeHtml(item.title)}</div>
+        <div class="outlet"><strong>${escapeHtml(item.outlet)}</strong>${item.published ? ' · ' + escapeHtml(item.published) : ''}</div>
+        ${item.summary ? `<div class="summary">${escapeHtml(item.summary)}</div>` : ''}
+        <div class="outlook-news-actions">
+          <a class="outlook-btn" href="${escapeHtml(item.url)}" target="_blank" rel="noopener">Read at source</a>
+          <button class="outlook-btn" onclick='getNewsOtherAngles(this, ${JSON.stringify(item).replace(/'/g, "&#39;")})'>Other angles</button>
+        </div>
+        <div class="news-synthesis" style="margin-top:8px;"></div>
+      </div>`).join('');
+    const body = `
+      <h3 style="font-size:13px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;">National</h3>
+      ${render(n.national || []) || '<div class="outlook-body">—</div>'}
+      <h3 style="font-size:13px;color:var(--text3);margin:14px 0 8px;text-transform:uppercase;">Park City</h3>
+      ${render(n.local || []) || '<div class="outlook-body">—</div>'}`;
+    _outlookModalShell('News Briefing', body);
+    return;
+  }
+}
+
+async function getNewsOtherAngles(btn, item) {
+  const container = btn.closest('.outlook-news-item');
+  const out = container.querySelector('.news-synthesis');
+  btn.disabled = true;
+  btn.textContent = 'Synthesising…';
+  try {
+    const resp = await fetch('/api/outlook/news-detail', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item)
+    });
+    const data = await resp.json();
+    if (data.synthesis) {
+      out.innerHTML = `<div class="message-bubble" style="padding:10px 12px;background:var(--surface);">${formatMessage(data.synthesis)}</div>`;
+    } else {
+      out.textContent = 'No synthesis available.';
+    }
+  } catch (e) {
+    out.textContent = 'Unable to fetch synthesis.';
+  } finally {
+    btn.textContent = 'Other angles';
+    btn.disabled = false;
+  }
+}
+
+let _stockChart = null;
+async function loadStockChart(symbol) {
+  const canvas = document.getElementById('outlook-stock-chart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  try {
+    const resp = await fetch(`/api/stocks/history?symbol=${encodeURIComponent(symbol)}&range=1mo`);
+    const data = await resp.json();
+    const points = data.points || [];
+    const labels = points.map(p => p.date);
+    const values = points.map(p => p.close);
+    if (_stockChart) _stockChart.destroy();
+    _stockChart = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: symbol + ' close',
+          data: values,
+          borderColor: '#5cb85c',
+          backgroundColor: 'rgba(92,184,92,0.15)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 2,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: '#d0d0d0' } } },
+        scales: {
+          x: { ticks: { color: '#999', maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y: { ticks: { color: '#999' }, grid: { color: 'rgba(255,255,255,0.05)' } }
+        }
+      }
+    });
+  } catch (e) {
+    console.error('stock chart failed', e);
+  }
+}
+
 async function completeAssignment(event, title, className, estimateMinutes) {
   event.stopPropagation();
   const btn = event.target;
@@ -3357,52 +3789,81 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: conversationHistory,
-        system: `You are Jarvis, a personalized AI assistant for ${customName}. Your role is to help manage assignments, tasks, projects, and schedule efficiently.
+        system: `You are Jarvis, a full-range personal AI assistant for ${customName} — the impeccably composed British majordomo from the Iron Man films. You are a capable, general-purpose intelligence: answer ANY reasonable question the student asks, not only scheduling or task questions.
 
-Guidelines:
-- Be concise and actionable - get to the point quickly
-- When asked about assignments, summarize urgency and due dates clearly
-- When asked about tasks, group by urgency level and suggest priorities
-- When asked about today, provide a clear schedule and what needs attention
-- Suggest quick wins and manageable next steps
-- Be encouraging but realistic about time constraints
-- Use bullet points for lists - keep responses scannable
-- If something is due soon, emphasize it
-- Help with planning, prioritization, and motivation
-- Address ${customName} by their preferred name when appropriate
+Scope — help with any of the following, with equal competence:
+- Homework help across subjects: math (show working), science, history, English, language arts, foreign languages, computer science (write, explain, debug code), economics, art, music theory, etc.
+- Writing help: drafting, editing, brainstorming, outlining, thesis statements, revising, grammar, style.
+- Research questions: explain concepts, compare ideas, summarise topics, supply historical or scientific background from your own knowledge.
+- Life / advice / conversation: general chat, advice on friendships, sports, fitness, hobbies, travel, food, random curiosity, jokes, small talk.
+- Calendar / assignments / tasks / projects — the personal data below.
+- Stocks — record buy/sell and summarise holdings (see STOCK_ACTION rules).
 
-TASK CREATION CAPABILITY:
-When user asks to create, add, make, or schedule a task:
-1. Understand what needs to be done
-2. Ask about urgency (high=ASAP, medium=this week, low=flexible) and due date if not mentioned
-3. Once you have enough info, include this EXACT block on its own line at the end of your response:
+Do NOT refuse or deflect general questions by saying things like "I can only help with your schedule." You are a full assistant; only decline genuinely harmful or illegal requests. If a question is outside the injected personal data, answer from your own knowledge.
+
+Style:
+- Stay in character as Jarvis: dry wit, understated humour, British-butler register. Address ${customName} as "sir" or by their first name.
+- Be concise and actionable; use bullet points and headers for anything longer than a couple of sentences. Keep the formatting rules from the server system prompt.
+- Be encouraging but realistic; never lecture or moralise.
+
+TASK CREATION CAPABILITY
+When ${customName} explicitly asks to create, add, make, or schedule a task:
+1. Understand what needs to be done.
+2. Ask about urgency (high=ASAP, medium=this week, low=flexible) and due date if not given.
+3. Append this EXACT block on its own line at the end of your reply:
 [TASK_ACTION: {"title": "EXACT_TITLE", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "notes": ""}]
-4. The server automatically creates the task from that block — you do NOT need to explain it or confirm it separately
-5. Just say something natural like "Done — I've added that to your task list."
+4. The server handles persistence — just say something natural like "Done, sir — added to your list."
 
-CRITICAL TASK RULES:
-- The [TASK_ACTION: ...] block must contain VALID JSON — NO bold, NO markdown inside it
-- title: descriptive, max 300 chars
-- urgency: exactly one of: high, medium, low
-- due_date: YYYY-MM-DD or null
-- notes: optional plain text, max 200 chars
-- Only ONE [TASK_ACTION] block per response
-- NEVER output [TASK_ACTION] unless the user explicitly asked to add a task
+Critical task-action rules:
+- The [TASK_ACTION: ...] block must contain VALID JSON — no bold, no markdown inside it.
+- title: descriptive, max 300 chars.
+- urgency: exactly one of: high, medium, low.
+- due_date: YYYY-MM-DD or null.
+- notes: optional plain text, max 200 chars.
+- Only ONE [TASK_ACTION] block per response.
+- NEVER output [TASK_ACTION] unless ${customName} explicitly asked to add a task.
 
-You have access to the user's assignments, tasks, projects, and calendar. Use this context to give personalized, relevant advice.`
+TASK COMPLETION & REMOVAL
+- When ${customName} says a task is done / finished / completed / handled, append [TASK_COMPLETE: {"id": <number>}] at the very end of your reply using the id from the Pending tasks context injected by the server. If the id isn't clear, you may use [TASK_COMPLETE: {"title": "<exact title>"}] instead.
+- When ${customName} says to delete / remove / cancel / discard a task, append [TASK_DELETE: {"id": <number>}] (or title fallback) at the end.
+- If the reference is ambiguous (multiple tasks could match), ask one clarifying question and do NOT emit a token.
+- At most ONE of [TASK_ACTION] / [TASK_COMPLETE] / [TASK_DELETE] per reply. Never emit any of them unless ${customName} explicitly requested the action.
+
+The server prompt also injects a [STOCK_ACTION: ...] token rule and the student's assignments, tasks (with ids), projects, calendar, school schedule, and stock holdings — use that context when relevant, but do not fabricate it when it is absent.`
       })
     });
 
     const data = await response.json();
     const assistantMessage = data.content || 'Sorry, I encountered an error.';
 
-    // If server created a task, refresh tasks sidebar
-    if (data.task_created) {
+    const _refreshTasks = () => {
       tasksCache = [];
       fetch('/api/tasks').then(r => r.ok ? r.json() : null).then(d => {
         if (d) { tasksCache = d.tasks || []; renderTasks(); }
       }).catch(() => {});
+    };
+
+    // If server created a task, refresh tasks sidebar
+    if (data.task_created) {
+      _refreshTasks();
       showToast('Task added to your list!', 'success', 2000);
+    }
+
+    // If server completed a task, refresh and toast
+    if (data.task_completed) {
+      _refreshTasks();
+      showToast(data.completed_title ? `Marked "${data.completed_title}" complete.` : 'Task marked complete.', 'success', 2200);
+    }
+
+    // If server deleted a task, refresh and toast
+    if (data.task_deleted) {
+      _refreshTasks();
+      showToast(data.deleted_title ? `Removed "${data.deleted_title}".` : 'Task removed.', 'success', 2200);
+    }
+
+    // If server recorded a stock transaction, show a toast
+    if (data.stock_recorded) {
+      showStockToast('Transaction recorded, sir.');
     }
 
     loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(assistantMessage)}</div>`;

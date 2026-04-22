@@ -7,3 +7,4 @@ requests
 pytz
 psycopg2-binary
 gunicorn
+feedparser>=6.0
