@@ -35,7 +35,7 @@ app.config.update(
     PREFERRED_URL_SCHEME='https'
 )
 
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "finn2025").strip()
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin-change-me").strip()
 AVERAGE_USER = os.environ.get("AVERAGE_USER", "user").strip()
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin").strip()
@@ -563,7 +563,7 @@ def parse_canvas_assignments(cal):
             "description": description[:1000],
             "teacher": teacher,
             "due_iso": due_val.astimezone(TZ).isoformat(),
-            "due_display": due_val.astimezone(TZ).strftime("%a %b %-d at %-I:%M %p"),
+            "due_display": due_val.astimezone(TZ).strftime("%A, %B %-d, %Y, at %-I:%M %p (%Z)"),
             "urgency": urgency
         })
     assignments.sort(key=lambda x: x["due_iso"])
@@ -841,9 +841,13 @@ def generate_briefing(force=False):
             schedule_note = "No school today."
 
         prompt = (
-            "You are Jarvis, the exceptionally capable and sophisticated AI assistant for %s, a high school student in Park City, Utah. "
-            "You communicate with intelligence, wit, and refined professionalism. Address the student with respect. "
-            "Provide analytical insights while maintaining an air of composed competence.\n\n"
+            "You are Jarvis — the impeccably composed British AI majordomo from the Iron Man films — "
+            "serving %s, a high school student in Park City, Utah. "
+            "Speak with dry wit, understated humour, and effortless articulacy, as Jarvis speaks to Tony Stark. "
+            "Address the student as 'sir' or by their first name. Use elevated, slightly formal vocabulary "
+            "('Very good, sir.', 'If I may,', 'Might I suggest'). Remain measured and unflappable even when "
+            "delivering bad news. No emoji beyond what is specified below. Never break character. "
+            "When you mention any due date, render it in the long form, e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)' — never a raw ISO timestamp.\n\n"
             "Current time: %s\n"
             "School schedule note: %s\n\n"
             "REFERENCE — Overdue work (NOT quiz/test — never put quizzes/tests in Needs section):\n%s\n\n"
@@ -967,7 +971,10 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         now_str = datetime.now(TZ).strftime("%A, %B %-d at %-I:%M %p")
 
         prompt = (
-            "You are Jarvis, a distinguished AI assistant providing an evening debrief for %s, a high school student in Park City, Utah.\n"
+            "You are Jarvis — the impeccably composed British AI majordomo from the Iron Man films — "
+            "delivering the evening debrief for %s, a high school student in Park City, Utah. "
+            "Speak with dry wit, understated humour, and effortless articulacy. Address the student as 'sir' or by their first name. "
+            "Remain measured and unflappable. Render any due date in long form (e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)'), never a raw ISO timestamp.\n"
             "Current time: %s (evening debrief)\n\n"
             "TODAY'S ACCOMPLISHMENTS:\n%s\n\n"
             "PRODUCTIVITY METRICS:\n%s\n\n"
@@ -1310,7 +1317,7 @@ def login():
         else:
             expected_password = APP_PASSWORD
 
-        if secrets.compare_digest(password.strip(), expected_password):
+        if expected_password and secrets.compare_digest(password.strip(), expected_password):
             if is_locked_down:
                 return jsonify({
                     "is_locked_down": True,
@@ -1367,7 +1374,7 @@ def login():
             sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
             env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
             log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, is_parent={is_parent}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, received_hash={sc_hash}, env_hash={env_hash}")
-            if secrets.compare_digest(password.strip(), expected_password) and secrets.compare_digest(security_code.strip(), security_code_env):
+            if expected_password and secrets.compare_digest(password.strip(), expected_password) and secrets.compare_digest(security_code.strip(), security_code_env):
                 record_login_attempt(ip_addr, True, username)
                 session.permanent = True
                 if is_admin:
@@ -1450,7 +1457,7 @@ def admin():
             return jsonify({"status": "ok", "redirect": "/admin"})
 
         # Check if app password
-        if secrets.compare_digest(password.strip(), APP_PASSWORD):
+        if APP_PASSWORD and secrets.compare_digest(password.strip(), APP_PASSWORD):
             if is_locked_down:
                 return jsonify({
                     "is_locked_down": True,
@@ -1494,7 +1501,7 @@ def admin():
                 return jsonify({"status": "ok", "redirect": "/admin"})
 
             # Check app password with security code
-            if password.strip() == APP_PASSWORD and security_code.strip() == security_code_env:
+            if APP_PASSWORD and password.strip() == APP_PASSWORD and security_code.strip() == security_code_env:
                 record_login_attempt(ip_addr, True, "user")
                 session.permanent = True
                 session["authenticated"] = True
@@ -3690,9 +3697,17 @@ def api_chat():
     try:
         now_chat = datetime.now(TZ)
         system_prompt = (
-            "You are Jarvis, a refined and exceptionally capable AI assistant. You communicate with intelligence, wit, and professional sophistication. "
-            "Reference this authoritative date in all temporal reasoning—employ it whenever the student references 'today' or 'tomorrow' "
+            "You are Jarvis — the same Jarvis that serves Tony Stark in the Iron Man films: a highly intelligent, impeccably composed British AI majordomo. "
+            "You speak with dry wit, understated humour, and effortless articulacy. Address the student as 'sir' or by their first name when known. "
+            "Use elevated, slightly formal vocabulary (e.g. 'Very good, sir.', 'If I may,', 'Shall I proceed?', 'Might I suggest', 'As you wish'). "
+            "Keep a measured, unflappable tone even when delivering bad news — mild irony is welcome; theatrics are not. "
+            "Be analytical, anticipatory, and discreet: volunteer relevant information before it is requested, "
+            "but never lecture or moralise. If something is overdue or amiss, note it plainly and suggest the next sensible move. "
+            "Never break character, never refer to yourself as an AI model, and do not use emoji unless the student does first. "
+            "Reference this authoritative date in all temporal reasoning — employ it whenever the student references 'today' or 'tomorrow' "
             "and in all comparisons to assignment due dates: %s. Current local time (Utah): %s. "
+            "DUE-DATE PRESENTATION — when you mention any assignment or task due date, always render it in the long human-readable form, "
+            "e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)'. Never surface a raw ISO timestamp like '2026-04-21T17:59:00-06:00' to the student. "
             "FORMATTING RULES — mandatory, no exceptions: "
             "Use **bold** for every important term, name, assignment title, date, and key fact. "
             "Use # for a single top-level title when answering a broad question. "
@@ -3924,6 +3939,7 @@ def api_plan_my_day_generate():
             assignments = []
             tasks = []
             calendar_events = []  # fixed blocks shown in the schedule
+            school_assignments = []  # assignments due during school hours
 
             # Get assignments due today
             try:
@@ -3938,6 +3954,19 @@ def api_plan_my_day_generate():
                     class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
                     class_avg_cache = get_class_averages_batch(class_names)
 
+                    # Pre-compute today's school hours so we can bucket in-school
+                    # assignments under the school block instead of scheduling them.
+                    today_school_hours = get_school_hours(today)
+                    school_start_dt = school_end_dt = None
+                    if today_school_hours:
+                        sh, sm, eh, em = today_school_hours
+                        day_start = datetime.now(TZ).replace(
+                            year=today.year, month=today.month, day=today.day,
+                            second=0, microsecond=0,
+                        )
+                        school_start_dt = day_start.replace(hour=sh, minute=sm)
+                        school_end_dt = day_start.replace(hour=eh, minute=em)
+
                     for a in all_asgn:
                         if a["title"] in completed_titles:
                             continue
@@ -3945,20 +3974,29 @@ def api_plan_my_day_generate():
                         if due_iso:
                             try:
                                 due_dt = datetime.fromisoformat(due_iso.replace("Z", "+00:00"))
-                                due_date = due_dt.astimezone(TZ).date()
+                                due_local = due_dt.astimezone(TZ)
+                                due_date = due_local.date()
                                 if due_date == today:
                                     uid = a.get("uid", "")
                                     if uid in custom_estimates:
                                         est_mins = custom_estimates[uid]
                                     else:
                                         est_mins = estimate_assignment(a.get("title", ""), a.get("class_name", ""), class_avg_cache=class_avg_cache)
-                                    assignments.append({
+                                    item = {
                                         "type": "assignment",
                                         "id": uid,
                                         "title": a.get("title", ""),
                                         "class": a.get("class_name", ""),
                                         "estimated_minutes": int(est_mins)
-                                    })
+                                    }
+                                    in_school = (
+                                        school_start_dt is not None
+                                        and school_start_dt <= due_local <= school_end_dt
+                                    )
+                                    if in_school:
+                                        school_assignments.append(item)
+                                    else:
+                                        assignments.append(item)
                             except Exception:
                                 pass
             except Exception as e:
@@ -4037,13 +4075,21 @@ def api_plan_my_day_generate():
                     sh, sm, eh, em = school_hours
                     school_start_str = "%d:%02d %s" % (sh % 12 or 12, sm, "AM" if sh < 12 else "PM")
                     school_end_str = "%d:%02d %s" % (eh % 12 or 12, em, "AM" if eh < 12 else "PM")
+                    school_title = "School (%s day)" % dtype.title()
+                    if school_assignments:
+                        turn_in_list = ", ".join(
+                            "%s [%s]" % (sa["title"], sa["class"]) if sa.get("class") else sa["title"]
+                            for sa in school_assignments
+                        )
+                        school_title += " — due during school: " + turn_in_list
                     calendar_events.insert(0, {
                         "type": "calendar",
                         "id": "school",
-                        "title": "School (%s day)" % dtype.title(),
+                        "title": school_title,
                         "start_display": school_start_str,
                         "end_display": school_end_str,
-                        "source": "school"
+                        "source": "school",
+                        "school_assignments": school_assignments,
                     })
                     busy.append({
                         "start": now_local.replace(hour=sh, minute=sm, second=0, microsecond=0),
@@ -4117,7 +4163,12 @@ def api_plan_my_day_generate():
                 for w in free_windows
             ) or "No free windows found — check calendar configuration."
 
-            schedule_prompt = f"""You are Jarvis, building a complete daily schedule for today ({today}).
+            in_school_block_lines = "\n".join(
+                "- %s [%s] (~%d min)" % (sa["title"], sa.get("class", ""), sa.get("estimated_minutes", 0))
+                for sa in school_assignments
+            ) or "None"
+
+            schedule_prompt = f"""You are Jarvis, sir's exceptionally capable AI, building the complete daily schedule for today ({today}).
 
 STEP 1 — FIXED CALENDAR BLOCKS (immovable — never schedule anything during these):
 {cal_block_lines}
@@ -4125,14 +4176,17 @@ STEP 1 — FIXED CALENDAR BLOCKS (immovable — never schedule anything during t
 STEP 2 — FREE WINDOWS available for work and rest (gaps between the fixed blocks above):
 {free_window_lines}
 
-STEP 3 — WORK TO SCHEDULE into the free windows:
-Assignments due TODAY (must all be included):
+STEP 3 — ASSIGNMENTS DUE DURING SCHOOL HOURS (already handled inside the School block — do NOT create separate work sessions for these; they stay attached to the School calendar block):
+{in_school_block_lines}
+
+STEP 4 — WORK TO SCHEDULE into the free windows (assignments due AFTER school hours today):
+Assignments to schedule (must all be included):
 {json.dumps(assignments, indent=2) if assignments else "None"}
 
 Tasks (schedule by urgency and due date, estimate realistic durations from the title):
 {json.dumps(tasks, indent=2) if tasks else "None"}
 
-STEP 4 — Fill remaining gaps with explicit free time / break blocks.
+STEP 5 — Fill remaining gaps with explicit free time / break blocks.
 
 Return a JSON array covering the FULL day in chronological order. Include every block: fixed calendar events, work sessions, AND free time. Each item:
 - item_type: "calendar", "assignment", "task", or "free_time"
@@ -4142,13 +4196,14 @@ Return a JSON array covering the FULL day in chronological order. Include every 
 - scheduled_end_time: "HH:MM" 24-hour
 
 Rules:
-1. All assignments due today MUST appear
-2. Never schedule work inside a fixed calendar block
-3. Prioritize: assignments > critical/high tasks > medium/low tasks
-4. Use realistic time estimates based on the task title, not just urgency
-5. Leave breathing room — do not pack every minute with work
-6. Lunch breaks: {"On Fridays, add a 30-45 min lunch break immediately after school ends." if today.weekday() == 4 else "Do NOT add a lunch break — lunch happens at school on regular school days."}
-7. Return ONLY a valid JSON array, no markdown or explanation."""
+1. All assignments from STEP 4 MUST appear as their own scheduled blocks
+2. Assignments from STEP 3 must NOT appear as separate blocks — they are already subsumed under the School calendar block
+3. Never schedule work inside a fixed calendar block
+4. Prioritize: assignments > critical/high tasks > medium/low tasks
+5. Use realistic time estimates based on the task title, not just urgency
+6. Leave breathing room — do not pack every minute with work
+7. Lunch breaks: {"On Fridays, add a 30-45 min lunch break immediately after school ends." if today.weekday() == 4 else "Do NOT add a lunch break — lunch happens at school on regular school days."}
+8. Return ONLY a valid JSON array, no markdown or explanation."""
 
             try:
                 message = client.messages.create(

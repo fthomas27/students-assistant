@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Finn</title>
+<title>Jarvis Student AI</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -2708,7 +2708,7 @@ function viewAssignment(title, className, dueDate, estimateMinutes) {
     <div class="message-bubble">
       <strong>📝 ${escapeHtml(title)}</strong><br/>
       <strong>Class:</strong> ${escapeHtml(className || 'N/A')}<br/>
-      <strong>Due:</strong> ${escapeHtml(dueDate || 'No due date')}<br/>
+      <strong>Due:</strong> ${escapeHtml(formatDueDateLong(dueDate))}<br/>
       <strong>Estimated Time:</strong> ${estimateMinutes} minutes
     </div>
   `;
@@ -3257,6 +3257,20 @@ function formatDate(dateStr) {
   if (days > 0 && days < 7) return `In ${days} days`;
 
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function formatDueDateLong(dateStr) {
+  if (!dateStr) return 'No due date';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  const datePart = d.toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+  });
+  const timePart = d.toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true
+  });
+  const tzPart = d.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+  return `${datePart}, at ${timePart} (${tzPart})`;
 }
 
 function formatEventTime(startStr) {
