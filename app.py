@@ -4104,6 +4104,11 @@ def api_chat():
             "Be analytical, anticipatory, and discreet: volunteer relevant information before it is requested, "
             "but never lecture or moralise. If something is overdue or amiss, note it plainly and suggest the next sensible move. "
             "Never break character, never refer to yourself as an AI model, and do not use emoji unless the student does first. "
+            "SCOPE — you are a full general-purpose assistant, not limited to scheduling. Answer any reasonable question: homework help across every subject "
+            "(math with worked steps, science, history, English, foreign languages, computer science with runnable code), writing and editing, "
+            "research and explanations from your own knowledge, advice, conversation, sports and fitness talk, recommendations, jokes. "
+            "Never refuse with 'I can only help with your schedule' — you are the student's full assistant. Decline only genuinely harmful or illegal requests. "
+            "When the personal data injected below is relevant, use it; when a question is general, answer from your own knowledge without pretending the system lacks context. "
             "Reference this authoritative date in all temporal reasoning — employ it whenever the student references 'today' or 'tomorrow' "
             "and in all comparisons to assignment due dates: %s. Current local time (Utah): %s. "
             "DUE-DATE PRESENTATION — when you mention any assignment or task due date, always render it in the long human-readable form, "
@@ -4121,6 +4126,12 @@ def api_chat():
             "[STOCK_ACTION: {\"action\":\"buy\"|\"sell\",\"symbol\":\"AAPL\",\"quantity\":10,\"price\":175.50,\"date\":\"YYYY-MM-DD\",\"notes\":\"\"}]. "
             "Use today's date if none is given. Still speak naturally in the rest of the reply (e.g. 'Noted, sir. 10 shares of **AAPL** at **$175.00** logged.'). "
             "If the student asks how their stocks are doing, summarize the holdings provided in context and invite them to open the **Morning Outlook** for the chart. "
+            "TASK COMPLETION — when the student says a task is done, completed, finished, handled, or anything equivalent, append "
+            "[TASK_COMPLETE: {\"id\": <id>}] at the very end of your reply. Use the id from the Pending tasks list injected below. "
+            "If the id is ambiguous (e.g. only a fuzzy title was given), ask one clarifying question before emitting the token. "
+            "Speak naturally in the rest of the reply (e.g. 'Very good, sir — marked **Chemistry homework** as complete.'). "
+            "TASK REMOVAL — when the student says to delete, remove, cancel, scrap, or discard a task, append "
+            "[TASK_DELETE: {\"id\": <id>}]. Same disambiguation rules apply. Only one TASK_COMPLETE or TASK_DELETE per reply, and never when the student did not ask. "
         ) % (now_chat.strftime("%A, %B %d, %Y"), now_chat.strftime("%-I:%M %p %Z")) + system_prompt
 
         # Inject school schedule context
@@ -4187,7 +4198,7 @@ def api_chat():
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "SELECT title, urgency, notes FROM tasks WHERE completed = FALSE "
+                "SELECT id, title, urgency, notes FROM tasks WHERE completed = FALSE "
                 "ORDER BY urgency DESC, created_at ASC LIMIT 10"
             )
             tasks = [dict(r) for r in cur.fetchall()]
@@ -4206,10 +4217,10 @@ ORDER BY pn.created_at DESC LIMIT 6""")
             conn.close()
             if tasks:
                 tasks_text = "; ".join(
-                    "[%s] %s%s" % (t["urgency"], t["title"], (" — " + t["notes"][:80]) if t["notes"] else "")
+                    "id=%d [%s] %s%s" % (t["id"], t["urgency"], t["title"], (" — " + (t["notes"] or "")[:80]) if t["notes"] else "")
                     for t in tasks
                 )
-                system_prompt += " Pending tasks: " + tasks_text + "."
+                system_prompt += " Pending tasks (include id when invoking TASK_COMPLETE or TASK_DELETE): " + tasks_text + "."
             if proj_tasks:
                 pt_text = "; ".join(
                     "%s (project: %s, assigned: %s, status: %s)" % (t["task"], t["project"], t["assignee"] or "unassigned", t["status"])
@@ -4309,7 +4320,101 @@ ORDER BY pn.created_at DESC LIMIT 6""")
                 log.warning(f"/api/chat: stock action parse failed: {se}")
             content = _re.sub(r'\s*\[STOCK_ACTION:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
 
-        return jsonify({"content": content, "task_created": task_created, "stock_recorded": stock_recorded})
+        def _resolve_task_target(data):
+            """Return a task id from {id} or {title}. Returns (id, title) or (None, None)."""
+            _c = get_db()
+            _cu = _c.cursor()
+            try:
+                tid = data.get("id")
+                if tid is not None:
+                    try:
+                        tid = int(tid)
+                    except Exception:
+                        tid = None
+                if tid:
+                    _cu.execute("SELECT id, title FROM tasks WHERE id=%s", (tid,))
+                    r = _cu.fetchone()
+                    if r:
+                        return r["id"], r["title"]
+                title = str(data.get("title", "")).strip()
+                if title:
+                    _cu.execute(
+                        "SELECT id, title FROM tasks WHERE completed=FALSE AND LOWER(title)=LOWER(%s) LIMIT 2",
+                        (title,)
+                    )
+                    rows = _cu.fetchall()
+                    if len(rows) == 1:
+                        return rows[0]["id"], rows[0]["title"]
+                    _cu.execute(
+                        "SELECT id, title FROM tasks WHERE completed=FALSE AND LOWER(title) LIKE LOWER(%s) LIMIT 2",
+                        ("%" + title + "%",)
+                    )
+                    rows = _cu.fetchall()
+                    if len(rows) == 1:
+                        return rows[0]["id"], rows[0]["title"]
+            finally:
+                _cu.close()
+                _c.close()
+            return None, None
+
+        # Extract and process [TASK_COMPLETE: {...}] server-side
+        task_completed = False
+        completed_title = None
+        comp_match = _re.search(r'\[TASK_COMPLETE:\s*(\{.*?\})\]', content, _re.DOTALL)
+        if comp_match:
+            try:
+                raw_json = comp_match.group(1).replace('**', '')
+                cdata = json.loads(raw_json)
+                tid, ttitle = _resolve_task_target(cdata)
+                if tid:
+                    _c = get_db()
+                    _cu = _c.cursor()
+                    _cu.execute(
+                        "UPDATE tasks SET completed=TRUE, completed_at=NOW() WHERE id=%s AND completed=FALSE",
+                        (tid,)
+                    )
+                    _c.commit()
+                    _cu.close()
+                    _c.close()
+                    task_completed = True
+                    completed_title = ttitle
+                    log.info(f"/api/chat: completed task id={tid} '{ttitle}'")
+            except Exception as e:
+                log.warning(f"/api/chat: task complete failed: {e}")
+            content = _re.sub(r'\s*\[TASK_COMPLETE:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+
+        # Extract and process [TASK_DELETE: {...}] server-side
+        task_deleted = False
+        deleted_title = None
+        del_match = _re.search(r'\[TASK_DELETE:\s*(\{.*?\})\]', content, _re.DOTALL)
+        if del_match:
+            try:
+                raw_json = del_match.group(1).replace('**', '')
+                ddata = json.loads(raw_json)
+                tid, ttitle = _resolve_task_target(ddata)
+                if tid:
+                    _c = get_db()
+                    _cu = _c.cursor()
+                    _cu.execute("DELETE FROM tasks WHERE id=%s", (tid,))
+                    _c.commit()
+                    _cu.close()
+                    _c.close()
+                    task_deleted = True
+                    deleted_title = ttitle
+                    log.info(f"/api/chat: deleted task id={tid} '{ttitle}'")
+            except Exception as e:
+                log.warning(f"/api/chat: task delete failed: {e}")
+            content = _re.sub(r'\s*\[TASK_DELETE:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+
+        return jsonify({
+            "content": content,
+            "task_created": task_created,
+            "stock_recorded": stock_recorded,
+            "task_completed": task_completed,
+            "completed_title": completed_title,
+            "task_deleted": task_deleted,
+            "deleted_title": deleted_title,
+        })
     except Exception:
         log.exception("/api/chat failed")
         return jsonify({"error": "Failed to reach AI. Check server logs."}), 500
