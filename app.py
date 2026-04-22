@@ -293,7 +293,10 @@ def init_db():
         ("ip_names", "CREATE TABLE IF NOT EXISTS ip_names (ip_address TEXT PRIMARY KEY, ip_name TEXT NOT NULL, tracked_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("stock_transactions", "CREATE TABLE IF NOT EXISTS stock_transactions (id SERIAL PRIMARY KEY, symbol VARCHAR(16) NOT NULL, action VARCHAR(4) NOT NULL CHECK (action IN ('buy','sell')), quantity NUMERIC(14,6) NOT NULL, price NUMERIC(14,4) NOT NULL, transaction_date DATE NOT NULL, notes TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("stock_transactions_idx", "CREATE INDEX IF NOT EXISTS idx_stock_tx_symbol ON stock_transactions(symbol)"),
+        ("stock_notes", "CREATE TABLE IF NOT EXISTS stock_notes (symbol VARCHAR(16) PRIMARY KEY, thesis TEXT NOT NULL DEFAULT '', exit_criteria TEXT NOT NULL DEFAULT '', target_price NUMERIC(14,4), stop_loss NUMERIC(14,4), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("outlook_news_cache", "CREATE TABLE IF NOT EXISTS outlook_news_cache (url_hash TEXT PRIMARY KEY, synthesis TEXT NOT NULL, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("news_preferences", "CREATE TABLE IF NOT EXISTS news_preferences (url_hash TEXT PRIMARY KEY, url TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', outlet TEXT NOT NULL DEFAULT '', rating INT NOT NULL, keywords TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("news_preferences_outlet_idx", "CREATE INDEX IF NOT EXISTS idx_news_pref_outlet ON news_preferences(outlet)"),
     ]
 
     for table_name, create_sql in tables:
@@ -684,6 +687,167 @@ def fetch_stock_history(symbol, range_key="1mo"):
         return []
 
 
+def fetch_finnhub_profile(symbol):
+    """Company profile: name, industry, country, market cap, logo, weburl."""
+    if not FINNHUB_API_KEY or not symbol:
+        return None
+    key = "finnhub:profile:" + symbol.upper()
+    cached = _cache_get(key, 24 * 3600)
+    if cached is not None:
+        return cached
+    try:
+        url = "https://finnhub.io/api/v1/stock/profile2?symbol=%s&token=%s" % (symbol.upper(), FINNHUB_API_KEY)
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        j = resp.json() or {}
+        if not j.get("name"):
+            return None
+        out = {
+            "name": j.get("name") or "",
+            "industry": j.get("finnhubIndustry") or "",
+            "country": j.get("country") or "",
+            "market_cap": j.get("marketCapitalization"),
+            "share_outstanding": j.get("shareOutstanding"),
+            "ipo": j.get("ipo") or "",
+            "weburl": j.get("weburl") or "",
+            "logo": j.get("logo") or "",
+            "exchange": j.get("exchange") or "",
+            "ticker": j.get("ticker") or symbol.upper(),
+        }
+        _cache_set(key, out)
+        return out
+    except Exception as e:
+        log.warning("Finnhub profile failed for %s: %s", symbol, e)
+        return None
+
+
+def fetch_finnhub_recommendation(symbol):
+    """Analyst recommendation trends — most recent entry only."""
+    if not FINNHUB_API_KEY or not symbol:
+        return None
+    key = "finnhub:reco:" + symbol.upper()
+    cached = _cache_get(key, 6 * 3600)
+    if cached is not None:
+        return cached
+    try:
+        url = "https://finnhub.io/api/v1/stock/recommendation?symbol=%s&token=%s" % (symbol.upper(), FINNHUB_API_KEY)
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        arr = resp.json() or []
+        if not isinstance(arr, list) or not arr:
+            return None
+        r = arr[0]
+        out = {
+            "period": r.get("period", ""),
+            "strong_buy": int(r.get("strongBuy") or 0),
+            "buy": int(r.get("buy") or 0),
+            "hold": int(r.get("hold") or 0),
+            "sell": int(r.get("sell") or 0),
+            "strong_sell": int(r.get("strongSell") or 0),
+        }
+        out["total"] = out["strong_buy"] + out["buy"] + out["hold"] + out["sell"] + out["strong_sell"]
+        _cache_set(key, out)
+        return out
+    except Exception as e:
+        log.warning("Finnhub recommendation failed for %s: %s", symbol, e)
+        return None
+
+
+def fetch_finnhub_company_news(symbol, days_back=14):
+    """Recent company news headlines from Finnhub."""
+    if not FINNHUB_API_KEY or not symbol:
+        return []
+    key = "finnhub:news:%s:%d" % (symbol.upper(), days_back)
+    cached = _cache_get(key, 3600)
+    if cached is not None:
+        return cached
+    try:
+        _to = datetime.now(TZ).date()
+        _from = _to - timedelta(days=days_back)
+        url = (
+            "https://finnhub.io/api/v1/company-news?symbol=%s&from=%s&to=%s&token=%s"
+            % (symbol.upper(), _from.isoformat(), _to.isoformat(), FINNHUB_API_KEY)
+        )
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        arr = resp.json() or []
+        out = []
+        for n in arr[:8]:
+            out.append({
+                "headline": (n.get("headline") or "")[:200],
+                "summary": (n.get("summary") or "")[:400],
+                "source": n.get("source") or "",
+                "url": n.get("url") or "",
+                "datetime": n.get("datetime"),
+            })
+        _cache_set(key, out)
+        return out
+    except Exception as e:
+        log.warning("Finnhub company-news failed for %s: %s", symbol, e)
+        return []
+
+
+# ── Stock notes (buy thesis / exit criteria) ─────────────────────────────────
+
+def get_all_stock_notes():
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT symbol, thesis, exit_criteria, target_price, stop_loss, updated_at "
+            "FROM stock_notes ORDER BY symbol"
+        )
+        out = []
+        for r in cur.fetchall():
+            out.append({
+                "symbol": r["symbol"],
+                "thesis": r["thesis"] or "",
+                "exit_criteria": r["exit_criteria"] or "",
+                "target_price": float(r["target_price"]) if r["target_price"] is not None else None,
+                "stop_loss": float(r["stop_loss"]) if r["stop_loss"] is not None else None,
+                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            })
+        return out
+    finally:
+        cur.close()
+        conn.close()
+
+
+def upsert_stock_note(symbol, thesis=None, exit_criteria=None, target_price=None, stop_loss=None):
+    symbol = (symbol or "").strip().upper()[:16]
+    if not symbol:
+        return None
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        # Merge with existing row so a partial update preserves the other fields.
+        cur.execute("SELECT thesis, exit_criteria, target_price, stop_loss FROM stock_notes WHERE symbol=%s", (symbol,))
+        row = cur.fetchone()
+        if row:
+            new_thesis = thesis if thesis is not None else (row["thesis"] or "")
+            new_exit = exit_criteria if exit_criteria is not None else (row["exit_criteria"] or "")
+            new_target = target_price if target_price is not None else row["target_price"]
+            new_stop = stop_loss if stop_loss is not None else row["stop_loss"]
+        else:
+            new_thesis = thesis or ""
+            new_exit = exit_criteria or ""
+            new_target = target_price
+            new_stop = stop_loss
+        cur.execute(
+            "INSERT INTO stock_notes (symbol, thesis, exit_criteria, target_price, stop_loss, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, NOW()) "
+            "ON CONFLICT (symbol) DO UPDATE SET thesis=EXCLUDED.thesis, exit_criteria=EXCLUDED.exit_criteria, "
+            "target_price=EXCLUDED.target_price, stop_loss=EXCLUDED.stop_loss, updated_at=NOW()",
+            (symbol, new_thesis[:4000], new_exit[:4000], new_target, new_stop)
+        )
+        conn.commit()
+        return {"symbol": symbol, "thesis": new_thesis, "exit_criteria": new_exit,
+                "target_price": new_target, "stop_loss": new_stop}
+    finally:
+        cur.close()
+        conn.close()
+
+
 # News feeds: right-leaning national + Park City local
 _NEWS_NATIONAL_FEEDS = [
     ("Fox News", "https://moxie.foxnews.com/google-publisher/latest.xml"),
@@ -794,19 +958,114 @@ def _parse_feed(outlet, url):
     return items
 
 
+_STOPWORDS = {
+    "the","a","an","and","or","but","of","in","on","at","for","to","from","by",
+    "with","as","is","are","was","were","be","been","being","it","its","this",
+    "that","these","those","his","her","their","our","you","your","we","they",
+    "i","me","my","will","would","can","could","should","may","might","shall",
+    "has","have","had","do","does","did","not","no","so","than","then","after",
+    "before","about","into","over","under","up","down","out","off","says","said",
+    "new","who","what","when","where","why","how","one","two","three","more",
+}
+
+
+def _extract_keywords(text, limit=8):
+    """Lowercased, stopword-filtered, de-duped word tokens for preference learning."""
+    import re as _re
+    tokens = _re.findall(r"[a-zA-Z][a-zA-Z'\-]{2,}", (text or "").lower())
+    seen = set()
+    out = []
+    for t in tokens:
+        if t in _STOPWORDS or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _load_news_preferences():
+    """Return a profile dict: {outlet_score: {...}, liked_keywords: set, disliked_keywords: set, disliked_urls: set}."""
+    profile = {"outlet_score": {}, "liked_keywords": set(), "disliked_keywords": set(), "disliked_urls": set()}
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT outlet, rating, COUNT(*) AS n FROM news_preferences GROUP BY outlet, rating"
+        )
+        for r in cur.fetchall():
+            outlet = r["outlet"] or ""
+            rating = int(r["rating"])
+            n = int(r["n"] or 0)
+            profile["outlet_score"][outlet] = profile["outlet_score"].get(outlet, 0) + (rating * n)
+        cur.execute("SELECT rating, keywords, url_hash, url FROM news_preferences ORDER BY created_at DESC LIMIT 200")
+        for r in cur.fetchall():
+            words = (r["keywords"] or "").split()
+            target = profile["liked_keywords"] if int(r["rating"]) == 1 else profile["disliked_keywords"]
+            for w in words:
+                target.add(w)
+            if int(r["rating"]) == -1:
+                profile["disliked_urls"].add(r["url_hash"])
+        cur.close()
+        conn.close()
+    except Exception as e:
+        log.warning("load news preferences failed: %s", e)
+    return profile
+
+
+def _score_news_item(item, profile):
+    """Positive = more relevant; negative = less relevant."""
+    score = 0.0
+    outlet_score = profile["outlet_score"].get(item.get("outlet", ""), 0)
+    # Cap outlet influence so one liked outlet doesn't monopolise the feed
+    score += max(-3.0, min(3.0, outlet_score * 1.0))
+    text = (item.get("title", "") + " " + item.get("summary", "")).lower()
+    for kw in profile["liked_keywords"]:
+        if kw and kw in text:
+            score += 0.25
+    for kw in profile["disliked_keywords"]:
+        if kw and kw in text:
+            score -= 0.25
+    return score
+
+
 def fetch_news(bucket="national", limit=3):
     feeds = _NEWS_NATIONAL_FEEDS if bucket == "national" else _NEWS_LOCAL_FEEDS
     all_items = []
     for outlet, url in feeds:
         all_items.extend(_parse_feed(outlet, url))
-    # Round-robin across outlets so no single feed dominates
+
+    profile = _load_news_preferences()
+
+    # Filter out stories the student has explicitly disliked
+    filtered = []
+    for it in all_items:
+        url_hash = hashlib.sha256(((it.get("url") or it.get("title") or "")).encode("utf-8")).hexdigest()[:32]
+        if url_hash in profile["disliked_urls"]:
+            continue
+        it["_pref_score"] = _score_news_item(it, profile)
+        filtered.append(it)
+
+    # Round-robin across outlets, but within each outlet sort by preference score
     by_outlet = {}
-    for item in all_items:
+    for item in filtered:
         by_outlet.setdefault(item["outlet"], []).append(item)
+    for outlet in by_outlet:
+        by_outlet[outlet].sort(key=lambda x: x.get("_pref_score", 0), reverse=True)
+
+    # Outlet round-robin order: highest-score outlets first so a preferred outlet
+    # contributes its top story before less-preferred outlets.
+    outlet_order = sorted(
+        by_outlet.keys(),
+        key=lambda o: profile["outlet_score"].get(o, 0),
+        reverse=True,
+    )
+
     out = []
     i = 0
     while len(out) < limit and any(by_outlet.values()):
-        for outlet in list(by_outlet.keys()):
+        for outlet in outlet_order:
             lst = by_outlet.get(outlet) or []
             if not lst:
                 continue
@@ -816,6 +1075,8 @@ def fetch_news(bucket="national", limit=3):
         i += 1
         if i > 20:
             break
+    for it in out:
+        it.pop("_pref_score", None)
     return out
 
 
@@ -4126,6 +4387,13 @@ def api_chat():
             "[STOCK_ACTION: {\"action\":\"buy\"|\"sell\",\"symbol\":\"AAPL\",\"quantity\":10,\"price\":175.50,\"date\":\"YYYY-MM-DD\",\"notes\":\"\"}]. "
             "Use today's date if none is given. Still speak naturally in the rest of the reply (e.g. 'Noted, sir. 10 shares of **AAPL** at **$175.00** logged.'). "
             "If the student asks how their stocks are doing, summarize the holdings provided in context and invite them to open the **Morning Outlook** for the chart. "
+            "STOCK NOTES — when the student tells you WHY they bought something, when they want to sell, a target price, a stop-loss, or any research they want remembered "
+            "(e.g. 'remember I bought AAPL because of the iPhone 17 cycle', 'sell NVDA if it hits $200', 'set a stop at $150'), append "
+            "[STOCK_NOTE: {\"symbol\":\"AAPL\",\"thesis\":\"...\",\"exit_criteria\":\"...\",\"target_price\":200,\"stop_loss\":150}]. "
+            "Only include the fields you are setting — a partial note merges with what is already on file. Speak naturally in the rest of the reply "
+            "(e.g. 'Noted and filed under **AAPL**, sir.'). "
+            "STOCK RESEARCH — when the student asks to research, analyse, or get your take on a symbol, answer directly from your knowledge in character, "
+            "and mention that a full live brief (with analyst consensus, recent headlines, fundamentals, and exit triggers) is available via the **Research** button in the Portfolio card. "
             "TASK COMPLETION — when the student says a task is done, completed, finished, handled, or anything equivalent, append "
             "[TASK_COMPLETE: {\"id\": <id>}] at the very end of your reply. Use the id from the Pending tasks list injected below. "
             "If the id is ambiguous (e.g. only a fuzzy title was given), ask one clarifying question before emitting the token. "
@@ -4248,6 +4516,23 @@ ORDER BY pn.created_at DESC LIMIT 6""")
                 system_prompt += " Student has no recorded stock holdings yet."
         except Exception:
             log.warning("/api/chat could not load portfolio for context")
+
+        try:
+            _notes = get_all_stock_notes()
+            if _notes:
+                n_text = "; ".join(
+                    "%s thesis=%s%s%s%s" % (
+                        n["symbol"],
+                        (n["thesis"][:160] if n["thesis"] else "—"),
+                        (" exit=" + n["exit_criteria"][:120]) if n["exit_criteria"] else "",
+                        (" target=$" + str(n["target_price"])) if n["target_price"] is not None else "",
+                        (" stop=$" + str(n["stop_loss"])) if n["stop_loss"] is not None else "",
+                    )
+                    for n in _notes
+                )
+                system_prompt += " Stock notes on file (refer to when discussing those symbols): " + n_text + "."
+        except Exception:
+            log.warning("/api/chat could not load stock notes for context")
 
         client = anthropic.Anthropic(api_key=api_key)
         kwargs = {"model": "claude-sonnet-4-6", "max_tokens": 1024, "messages": messages}
@@ -4406,6 +4691,42 @@ ORDER BY pn.created_at DESC LIMIT 6""")
                 log.warning(f"/api/chat: task delete failed: {e}")
             content = _re.sub(r'\s*\[TASK_DELETE:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
 
+        # Extract and process [STOCK_NOTE: {...}] server-side
+        stock_note_saved = False
+        stock_note_symbol = None
+        note_match = _re.search(r'\[STOCK_NOTE:\s*(\{.*?\})\]', content, _re.DOTALL)
+        if note_match:
+            try:
+                raw_json = note_match.group(1).replace('**', '')
+                ndata = json.loads(raw_json)
+                symbol = str(ndata.get("symbol", "")).strip().upper()[:16]
+                if symbol:
+                    thesis = ndata.get("thesis")
+                    exit_criteria = ndata.get("exit_criteria")
+                    target_price = ndata.get("target_price")
+                    stop_loss = ndata.get("stop_loss")
+                    try:
+                        target_price = float(target_price) if target_price not in (None, "", "null") else None
+                    except Exception:
+                        target_price = None
+                    try:
+                        stop_loss = float(stop_loss) if stop_loss not in (None, "", "null") else None
+                    except Exception:
+                        stop_loss = None
+                    upsert_stock_note(
+                        symbol,
+                        thesis=(str(thesis) if thesis not in (None, "") else None),
+                        exit_criteria=(str(exit_criteria) if exit_criteria not in (None, "") else None),
+                        target_price=target_price,
+                        stop_loss=stop_loss,
+                    )
+                    stock_note_saved = True
+                    stock_note_symbol = symbol
+                    log.info(f"/api/chat: saved stock note for {symbol}")
+            except Exception as ne:
+                log.warning(f"/api/chat: stock note parse failed: {ne}")
+            content = _re.sub(r'\s*\[STOCK_NOTE:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+
         return jsonify({
             "content": content,
             "task_created": task_created,
@@ -4414,6 +4735,8 @@ ORDER BY pn.created_at DESC LIMIT 6""")
             "completed_title": completed_title,
             "task_deleted": task_deleted,
             "deleted_title": deleted_title,
+            "stock_note_saved": stock_note_saved,
+            "stock_note_symbol": stock_note_symbol,
         })
     except Exception:
         log.exception("/api/chat failed")
@@ -5017,6 +5340,253 @@ def api_stocks_history():
     if not symbol:
         return jsonify({"error": "symbol required"}), 400
     return jsonify({"symbol": symbol, "range": range_key, "points": fetch_stock_history(symbol, range_key)})
+
+
+@app.route("/api/stocks/notes", methods=["GET"])
+def api_stocks_notes_list():
+    try:
+        return jsonify({"notes": get_all_stock_notes()})
+    except Exception as e:
+        log.exception("stock notes list failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stocks/notes", methods=["POST"])
+def api_stocks_notes_upsert():
+    data = request.get_json(force=True) or {}
+    symbol = str(data.get("symbol", "")).strip().upper()[:16]
+    if not symbol:
+        return jsonify({"error": "symbol required"}), 400
+    thesis = data.get("thesis")
+    exit_criteria = data.get("exit_criteria")
+
+    def _num(v):
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except Exception:
+            return None
+
+    target_price = _num(data.get("target_price"))
+    stop_loss = _num(data.get("stop_loss"))
+    try:
+        result = upsert_stock_note(
+            symbol,
+            thesis=(str(thesis) if thesis is not None else None),
+            exit_criteria=(str(exit_criteria) if exit_criteria is not None else None),
+            target_price=target_price,
+            stop_loss=stop_loss,
+        )
+        return jsonify({"status": "ok", "note": result})
+    except Exception as e:
+        log.exception("stock notes upsert failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stocks/notes/<symbol>", methods=["DELETE"])
+def api_stocks_notes_delete(symbol):
+    sym = (symbol or "").strip().upper()[:16]
+    if not sym:
+        return jsonify({"error": "symbol required"}), 400
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM stock_notes WHERE symbol=%s", (sym,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stocks/research", methods=["POST"])
+def api_stocks_research():
+    """Claude-written research brief for a symbol, augmented with Finnhub data."""
+    data = request.get_json(force=True) or {}
+    symbol = str(data.get("symbol", "")).strip().upper()[:16]
+    if not symbol:
+        return jsonify({"error": "symbol required"}), 400
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
+
+    profile = fetch_finnhub_profile(symbol)
+    quote = fetch_finnhub_quote(symbol)
+    reco = fetch_finnhub_recommendation(symbol)
+    news = fetch_finnhub_company_news(symbol, days_back=14)
+
+    # Existing note (if any) so the research addresses the student's thesis
+    existing_note = None
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT thesis, exit_criteria, target_price, stop_loss FROM stock_notes WHERE symbol=%s", (symbol,))
+        row = cur.fetchone()
+        if row:
+            existing_note = {
+                "thesis": row["thesis"] or "",
+                "exit_criteria": row["exit_criteria"] or "",
+                "target_price": float(row["target_price"]) if row["target_price"] is not None else None,
+                "stop_loss": float(row["stop_loss"]) if row["stop_loss"] is not None else None,
+            }
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+    # Current position info
+    position = None
+    try:
+        port = _compute_portfolio()
+        if symbol in port:
+            position = port[symbol]
+    except Exception:
+        pass
+
+    # Assemble context block for Claude
+    ctx_lines = [f"Symbol: {symbol}"]
+    if profile:
+        ctx_lines.append(f"Company: {profile.get('name','')} ({profile.get('industry','')}) · {profile.get('country','')}")
+        if profile.get("market_cap"):
+            ctx_lines.append(f"Market cap (USD M): {profile['market_cap']}")
+        if profile.get("exchange"):
+            ctx_lines.append(f"Exchange: {profile['exchange']}")
+    else:
+        ctx_lines.append("Profile data unavailable (no FINNHUB_API_KEY or unknown symbol).")
+    if quote:
+        ctx_lines.append(f"Quote: ${quote['price']} (prev close ${quote['prev_close']}, day {quote['day_change_pct']:+.2f}%)")
+    if reco:
+        ctx_lines.append(
+            f"Analyst reco ({reco['period']}): strong_buy {reco['strong_buy']}, buy {reco['buy']}, "
+            f"hold {reco['hold']}, sell {reco['sell']}, strong_sell {reco['strong_sell']}"
+        )
+    if position:
+        ctx_lines.append(
+            f"Student position: {position['qty']} shares @ avg cost ${position['avg_cost']} (total cost ${position['total_cost']})"
+        )
+    if existing_note:
+        if existing_note["thesis"]:
+            ctx_lines.append(f"Student's buy thesis on file: {existing_note['thesis']}")
+        if existing_note["exit_criteria"]:
+            ctx_lines.append(f"Student's exit criteria on file: {existing_note['exit_criteria']}")
+        if existing_note["target_price"]:
+            ctx_lines.append(f"Target price: ${existing_note['target_price']}")
+        if existing_note["stop_loss"]:
+            ctx_lines.append(f"Stop loss: ${existing_note['stop_loss']}")
+    if news:
+        news_lines = ["Recent headlines:"]
+        for n in news[:6]:
+            src = n.get("source") or ""
+            news_lines.append(f"- [{src}] {n['headline']}")
+        ctx_lines.append("\n".join(news_lines))
+
+    prompt = (
+        "You are Jarvis — composed British AI majordomo. The student has asked for a research brief. "
+        "Use the factual context below as your primary grounding; supplement with your training knowledge when helpful, "
+        "but flag uncertainty plainly. Never fabricate specific numbers not in the context.\n\n"
+        "CONTEXT:\n" + "\n".join(ctx_lines) + "\n\n"
+        "Compose a concise markdown research brief with these sections (exact ## headings):\n"
+        "## Snapshot — 1-2 sentences: what the company does, current price/recent move.\n"
+        "## Bull Case — 3-4 bullets of reasons to own it.\n"
+        "## Bear Case — 3-4 bullets of risks / reasons for caution.\n"
+        "## Catalysts to Watch — earnings, product cycles, macro events that could move the stock.\n"
+        "## Suggested Exit Triggers — specific, measurable conditions under which it would be prudent to sell or trim "
+        "(price levels, fundamentals deteriorating, thesis breakage). If the student already has an exit note on file, reference and refine it.\n"
+        "## Verdict — a clear final take, in character (measured, no theatrics). If the student already has a thesis on file, weigh it against current evidence.\n\n"
+        "Keep the whole brief under 450 words. Use **bold** for key terms. No intro line before the first heading."
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=900,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        track_api_usage(message)
+        brief = message.content[0].text if message.content else ""
+        return jsonify({
+            "symbol": symbol,
+            "brief": brief,
+            "profile": profile,
+            "quote": quote,
+            "recommendation": reco,
+            "news": news[:5],
+            "position": position,
+            "note": existing_note,
+        })
+    except Exception as e:
+        log.exception("stock research failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/news/rate", methods=["POST"])
+def api_news_rate():
+    """Record a like (1) or dislike (-1) for a news story."""
+    data = request.get_json(force=True) or {}
+    try:
+        rating = int(data.get("rating", 0))
+    except Exception:
+        rating = 0
+    if rating not in (1, -1):
+        return jsonify({"error": "rating must be 1 or -1"}), 400
+    url = str(data.get("url", "")).strip()[:1000]
+    title = str(data.get("title", "")).strip()[:500]
+    outlet = str(data.get("outlet", "")).strip()[:100]
+    summary = str(data.get("summary", ""))
+    if not (url or title):
+        return jsonify({"error": "url or title required"}), 400
+    url_hash = hashlib.sha256((url or title).encode("utf-8")).hexdigest()[:32]
+    keywords = _extract_keywords(title + " " + summary)
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO news_preferences (url_hash, url, title, outlet, rating, keywords) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (url_hash) DO UPDATE SET rating=EXCLUDED.rating, created_at=NOW()",
+            (url_hash, url, title, outlet, rating, " ".join(keywords))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.exception("news rate failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/news/preferences", methods=["GET"])
+def api_news_preferences():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT outlet, SUM(CASE WHEN rating=1 THEN 1 ELSE 0 END) AS likes, "
+            "SUM(CASE WHEN rating=-1 THEN 1 ELSE 0 END) AS dislikes "
+            "FROM news_preferences WHERE outlet <> '' GROUP BY outlet ORDER BY likes DESC, dislikes ASC"
+        )
+        outlets = [{
+            "outlet": r["outlet"],
+            "likes": int(r["likes"] or 0),
+            "dislikes": int(r["dislikes"] or 0),
+        } for r in cur.fetchall()]
+        cur.execute(
+            "SELECT rating, COUNT(*) AS n FROM news_preferences GROUP BY rating"
+        )
+        totals = {"likes": 0, "dislikes": 0}
+        for r in cur.fetchall():
+            if int(r["rating"]) == 1:
+                totals["likes"] = int(r["n"])
+            elif int(r["rating"]) == -1:
+                totals["dislikes"] = int(r["n"])
+        cur.close()
+        conn.close()
+        return jsonify({"outlets": outlets, "totals": totals})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/daily-outlook", methods=["POST"])

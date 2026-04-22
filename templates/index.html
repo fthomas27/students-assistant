@@ -773,6 +773,60 @@ min-width: 90px;
 .outlook-holdings-table td.sym { color: var(--text); font-weight: 600; }
 #outlook-chart-wrap { background: var(--surface2); padding: 12px; border-radius: var(--r-sm); margin-top: 8px; }
 
+.stock-notes-panel {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+.stock-notes-panel label { display: block; font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px; margin-top: 8px; }
+.stock-notes-panel label:first-of-type { margin-top: 0; }
+.stock-notes-panel textarea,
+.stock-notes-panel input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  box-sizing: border-box;
+  resize: vertical;
+}
+.stock-notes-panel textarea { min-height: 54px; }
+.stock-notes-panel .row-of-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.research-brief {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text2);
+  line-height: 1.5;
+}
+.research-brief h2 { font-size: 14px; margin: 10px 0 6px; color: var(--text); text-transform: uppercase; letter-spacing: 0.3px; }
+.research-brief h2:first-child { margin-top: 0; }
+.research-brief strong { color: var(--text); }
+.research-brief ul { margin: 6px 0 10px 16px; }
+.research-brief li { margin-bottom: 4px; }
+
+.news-rate-btn {
+  background: var(--surface);
+  color: var(--text2);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.news-rate-btn:hover { background: var(--surface2); }
+.news-rate-btn.active-like   { background: rgba(92,184,92,0.15); border-color: #5cb85c; color: #5cb85c; }
+.news-rate-btn.active-dislike { background: rgba(224,108,117,0.15); border-color: #e06c75; color: #e06c75; }
+
 .stock-toast {
   position: fixed;
   top: 20px;
@@ -3484,7 +3538,14 @@ function openOutlookCardDetail(kind) {
     const holdings = s.holdings || [];
     const head = `
       <div class="outlook-primary">$${(s.total_value || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-      <div class="outlook-body" style="margin-bottom:12px;">${_pctHtml(s.total_day_change_pct)} today · ${holdings.length} position${holdings.length !== 1 ? 's' : ''}</div>`;
+      <div class="outlook-body" style="margin-bottom:12px;">${_pctHtml(s.total_day_change_pct)} today · ${holdings.length} position${holdings.length !== 1 ? 's' : ''}</div>
+      <div class="stock-notes-panel" style="margin-top:4px;margin-bottom:12px;">
+        <label>Research any symbol</label>
+        <div style="display:flex;gap:8px;">
+          <input id="research-symbol-input" type="text" placeholder="e.g. AAPL" maxlength="16" style="text-transform:uppercase;flex:1;">
+          <button class="outlook-btn" onclick="runStockResearch(document.getElementById('research-symbol-input').value)">Research</button>
+        </div>
+      </div>`;
     const table = holdings.length > 0 ? `
       <table class="outlook-holdings-table">
         <thead><tr><th>Sym</th><th>Qty</th><th>Avg</th><th>Last</th><th>Day</th><th>Value</th><th>P/L</th></tr></thead>
@@ -3502,9 +3563,11 @@ function openOutlookCardDetail(kind) {
       </table>
       <div id="outlook-chart-wrap"><canvas id="outlook-stock-chart" height="160"></canvas></div>
       <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
-        ${holdings.map(h => `<button class="outlook-btn" onclick="loadStockChart('${escapeHtml(h.symbol)}')">${escapeHtml(h.symbol)}</button>`).join('')}
+        ${holdings.map(h => `
+          <button class="outlook-btn" onclick="loadStockChart('${escapeHtml(h.symbol)}')">${escapeHtml(h.symbol)}</button>
+          <button class="outlook-btn" onclick="openStockDetail('${escapeHtml(h.symbol)}')">Notes &amp; research: ${escapeHtml(h.symbol)}</button>`).join('')}
       </div>
-      <div class="outlook-body" style="margin-top:10px;font-size:11px;">Log a trade via chat: "I bought 10 AAPL at $175" or "sold 5 TSLA at $240".</div>
+      <div class="outlook-body" style="margin-top:10px;font-size:11px;">Log a trade via chat: "I bought 10 AAPL at $175" or "sold 5 TSLA at $240". Dictate a thesis: "remember I bought AAPL because of the iPhone 17 cycle — exit above $250".</div>
     ` : `<div class="outlook-body">No holdings yet. Tell me in chat when you buy or sell and I shall keep the books.</div>`;
     _outlookModalShell('Portfolio', head + table);
     if (holdings.length > 0) {
@@ -3540,18 +3603,24 @@ function openOutlookCardDetail(kind) {
 
   if (kind === 'news') {
     const n = d.news || {};
-    const render = (items) => items.map((item, idx) => `
+    const render = (items) => items.map((item, idx) => {
+      const itemJson = JSON.stringify(item).replace(/'/g, "&#39;");
+      return `
       <div class="outlook-news-item" data-news-idx="${idx}">
         <div class="title">${escapeHtml(item.title)}</div>
         <div class="outlet"><strong>${escapeHtml(item.outlet)}</strong>${item.published ? ' · ' + escapeHtml(item.published) : ''}</div>
         ${item.summary ? `<div class="summary">${escapeHtml(item.summary)}</div>` : ''}
         <div class="outlook-news-actions">
+          <button class="news-rate-btn news-rate-like" title="More like this" onclick='rateNewsItem(this, ${itemJson}, 1)'>👍 Like</button>
+          <button class="news-rate-btn news-rate-dislike" title="Less like this" onclick='rateNewsItem(this, ${itemJson}, -1)'>👎 Not for me</button>
           <a class="outlook-btn" href="${escapeHtml(item.url)}" target="_blank" rel="noopener">Read at source</a>
-          <button class="outlook-btn" onclick='getNewsOtherAngles(this, ${JSON.stringify(item).replace(/'/g, "&#39;")})'>Other angles</button>
+          <button class="outlook-btn" onclick='getNewsOtherAngles(this, ${itemJson})'>Other angles</button>
         </div>
         <div class="news-synthesis" style="margin-top:8px;"></div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
     const body = `
+      <div class="outlook-body" style="font-size:11px;margin-bottom:10px;color:var(--text3);">Liking and disliking stories trains the feed to show more of what you care about and less of what you don't.</div>
       <h3 style="font-size:13px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;">National</h3>
       ${render(n.national || []) || '<div class="outlook-body">—</div>'}
       <h3 style="font-size:13px;color:var(--text3);margin:14px 0 8px;text-transform:uppercase;">Park City</h3>
@@ -3623,6 +3692,171 @@ async function loadStockChart(symbol) {
     });
   } catch (e) {
     console.error('stock chart failed', e);
+  }
+}
+
+function _esc(s) { return escapeHtml(String(s == null ? '' : s)); }
+
+async function openStockDetail(symbol) {
+  symbol = (symbol || '').toUpperCase().trim();
+  if (!symbol) return;
+  let note = {};
+  try {
+    const r = await fetch('/api/stocks/notes');
+    const d = await r.json();
+    const found = (d.notes || []).find(n => n.symbol === symbol);
+    if (found) note = found;
+  } catch (e) { /* ignore */ }
+
+  const body = `
+    <div class="stock-notes-panel">
+      <div style="font-size:12px;color:var(--text3);margin-bottom:8px;">Notes for <strong style="color:var(--text);">${_esc(symbol)}</strong></div>
+      <label>Buy thesis — why you own it</label>
+      <textarea id="note-thesis" placeholder="e.g. iPhone 17 upgrade cycle, services margin expansion...">${_esc(note.thesis || '')}</textarea>
+      <label>Exit criteria — when/why to sell</label>
+      <textarea id="note-exit" placeholder="e.g. services growth decelerates below 12% YoY, or price hits target">${_esc(note.exit_criteria || '')}</textarea>
+      <div class="row-of-two">
+        <div>
+          <label>Target price ($)</label>
+          <input id="note-target" type="number" step="0.01" value="${note.target_price != null ? note.target_price : ''}">
+        </div>
+        <div>
+          <label>Stop loss ($)</label>
+          <input id="note-stop" type="number" step="0.01" value="${note.stop_loss != null ? note.stop_loss : ''}">
+        </div>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <button class="outlook-btn" onclick="saveStockNote('${_esc(symbol)}')">Save note</button>
+        <button class="outlook-btn" onclick="runStockResearch('${_esc(symbol)}')">Research ${_esc(symbol)}</button>
+        <button class="outlook-btn" onclick="deleteStockNote('${_esc(symbol)}')" style="margin-left:auto;color:#e06c75;">Clear note</button>
+      </div>
+    </div>
+    <div id="research-output"></div>`;
+  _outlookModalShell(`${symbol} — Notes & Research`, body);
+}
+
+async function saveStockNote(symbol) {
+  const thesis = document.getElementById('note-thesis').value;
+  const exit_criteria = document.getElementById('note-exit').value;
+  const target_price = document.getElementById('note-target').value;
+  const stop_loss = document.getElementById('note-stop').value;
+  try {
+    const resp = await fetch('/api/stocks/notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, thesis, exit_criteria, target_price, stop_loss })
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    showStockToast(`Note saved for ${symbol}.`);
+  } catch (e) {
+    showStockToast(`Save failed: ${e.message}`);
+  }
+}
+
+async function deleteStockNote(symbol) {
+  if (!confirm(`Clear the saved note for ${symbol}?`)) return;
+  try {
+    await fetch(`/api/stocks/notes/${encodeURIComponent(symbol)}`, { method: 'DELETE' });
+    showStockToast(`Note cleared for ${symbol}.`);
+    openStockDetail(symbol);
+  } catch (e) { /* ignore */ }
+}
+
+async function runStockResearch(symbol) {
+  symbol = (symbol || '').toUpperCase().trim();
+  if (!symbol) { showStockToast('Enter a symbol first.'); return; }
+  // If we're in the generic portfolio modal, spawn the per-symbol detail shell first
+  let out = document.getElementById('research-output');
+  if (!out) {
+    await openStockDetail(symbol);
+    out = document.getElementById('research-output');
+  }
+  if (!out) return;
+  out.innerHTML = `<div class="research-brief">Researching <strong>${_esc(symbol)}</strong>, sir — consulting the market oracles…</div>`;
+  try {
+    const resp = await fetch('/api/stocks/research', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol })
+    });
+    const data = await resp.json();
+    if (data.error) {
+      out.innerHTML = `<div class="research-brief" style="color:#e06c75;">Research failed: ${_esc(data.error)}</div>`;
+      return;
+    }
+    const p = data.profile || {};
+    const q = data.quote || {};
+    const r = data.recommendation || {};
+    const news = data.news || [];
+    const meta = [
+      p.name ? `<strong>${_esc(p.name)}</strong>` : _esc(symbol),
+      p.industry ? _esc(p.industry) : null,
+      p.exchange ? _esc(p.exchange) : null,
+      q.price ? `$${q.price.toFixed(2)} ${_pctHtml(q.day_change_pct)}` : null,
+    ].filter(Boolean).join(' · ');
+    const recoHtml = r && r.total ? `
+      <div style="font-size:11px;color:var(--text3);margin-top:8px;text-transform:uppercase;letter-spacing:0.3px;">Analyst consensus (${_esc(r.period)})</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px;margin-top:4px;">
+        <span style="padding:3px 8px;background:rgba(92,184,92,0.15);color:#5cb85c;border-radius:4px;">Strong buy ${r.strong_buy}</span>
+        <span style="padding:3px 8px;background:rgba(92,184,92,0.10);color:#5cb85c;border-radius:4px;">Buy ${r.buy}</span>
+        <span style="padding:3px 8px;background:rgba(255,255,255,0.05);color:var(--text2);border-radius:4px;">Hold ${r.hold}</span>
+        <span style="padding:3px 8px;background:rgba(224,108,117,0.10);color:#e06c75;border-radius:4px;">Sell ${r.sell}</span>
+        <span style="padding:3px 8px;background:rgba(224,108,117,0.15);color:#e06c75;border-radius:4px;">Strong sell ${r.strong_sell}</span>
+      </div>` : '';
+    const newsHtml = news.length > 0 ? `
+      <div style="font-size:11px;color:var(--text3);margin-top:10px;text-transform:uppercase;letter-spacing:0.3px;">Recent headlines</div>
+      ${news.map(n => `
+        <div class="outlook-news-item" style="border-left-color:var(--purple);margin-top:6px;">
+          <div class="title" style="font-size:12px;">${_esc(n.headline)}</div>
+          <div class="outlet">${_esc(n.source || '')}</div>
+          ${n.url ? `<div style="margin-top:4px;"><a class="outlook-btn" href="${_esc(n.url)}" target="_blank" rel="noopener" style="font-size:10px;">Read</a></div>` : ''}
+        </div>`).join('')}` : '';
+    out.innerHTML = `
+      <div class="research-brief">
+        <div style="font-size:12px;color:var(--text3);margin-bottom:8px;">${meta || _esc(symbol)}</div>
+        ${formatMessage(data.brief || '_(No brief returned.)_')}
+        ${recoHtml}
+        ${newsHtml}
+      </div>`;
+  } catch (e) {
+    out.innerHTML = `<div class="research-brief" style="color:#e06c75;">Research failed: ${_esc(String(e))}</div>`;
+  }
+}
+
+function _newsItemKey(item) {
+  // Mirror server-side url_hash: sha256(url || title), first 32 hex chars.
+  // Browsers don't have sync sha256; we send the url+title and let the server hash.
+  return item.url || item.title || '';
+}
+
+async function rateNewsItem(btn, itemJson, rating) {
+  let item;
+  try { item = typeof itemJson === 'string' ? JSON.parse(itemJson) : itemJson; }
+  catch (e) { item = {}; }
+  const container = btn.closest('.outlook-news-item');
+  try {
+    const resp = await fetch('/api/news/rate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: item.url || '',
+        title: item.title || '',
+        outlet: item.outlet || '',
+        summary: item.summary || '',
+        rating: rating,
+      })
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    // Toggle active class on the siblings
+    if (container) {
+      const likeBtn = container.querySelector('.news-rate-like');
+      const dislikeBtn = container.querySelector('.news-rate-dislike');
+      if (likeBtn) likeBtn.classList.toggle('active-like', rating === 1);
+      if (dislikeBtn) dislikeBtn.classList.toggle('active-dislike', rating === -1);
+    }
+    showStockToast(rating === 1 ? 'Preference noted — more like this.' : 'Preference noted — less like this.');
+  } catch (e) {
+    showStockToast('Rating failed.');
   }
 }
 
@@ -3823,6 +4057,10 @@ Critical task-action rules:
 - Only ONE [TASK_ACTION] block per response.
 - NEVER output [TASK_ACTION] unless ${customName} explicitly asked to add a task.
 
+STOCK NOTES & RESEARCH
+- When ${customName} tells you WHY they bought something, a target price, a stop-loss, or anything they want remembered about a position, append [STOCK_NOTE: {"symbol":"AAPL","thesis":"...","exit_criteria":"...","target_price":200,"stop_loss":150}] at the end of your reply. Only include the fields you are actually setting — partials merge with what is already stored.
+- When ${customName} asks to research / analyse / get your take on a symbol, answer directly from your knowledge (bull case, bear case, catalysts, risks). Mention that a full live brief (analyst consensus + recent news + fundamentals + exit triggers) is available via the **Research** button on the Portfolio card inside the Morning Outlook.
+
 TASK COMPLETION & REMOVAL
 - When ${customName} says a task is done / finished / completed / handled, append [TASK_COMPLETE: {"id": <number>}] at the very end of your reply using the id from the Pending tasks context injected by the server. If the id isn't clear, you may use [TASK_COMPLETE: {"title": "<exact title>"}] instead.
 - When ${customName} says to delete / remove / cancel / discard a task, append [TASK_DELETE: {"id": <number>}] (or title fallback) at the end.
@@ -3864,6 +4102,11 @@ The server prompt also injects a [STOCK_ACTION: ...] token rule and the student'
     // If server recorded a stock transaction, show a toast
     if (data.stock_recorded) {
       showStockToast('Transaction recorded, sir.');
+    }
+
+    // If server saved a stock note, show a toast
+    if (data.stock_note_saved) {
+      showStockToast(data.stock_note_symbol ? `Note filed for ${data.stock_note_symbol}.` : 'Stock note saved.');
     }
 
     loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(assistantMessage)}</div>`;
