@@ -2789,32 +2789,16 @@ FROM workout_logs ORDER BY created_at DESC LIMIT 20""")
     })
 
 
-@app.route("/api/workout/generate", methods=["POST"])
-def api_workout_generate():
-    data = request.get_json(force=True) or {}
-    try:
-        intensity = int(data.get("intensity", 5))
-    except (TypeError, ValueError):
-        intensity = 5
-    intensity = max(1, min(10, intensity))
-    location = str(data.get("location", "home")).strip().lower()
-    if location not in ("home", "rec"):
-        location = "home"
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return jsonify({"error": "Add your Anthropic API key in Railway environment to generate workouts."}), 500
-
+def _generate_workout_core(intensity, location, api_key):
+    """Generate a workout plan, persist it, and return a result dict (or dict with 'error' key)."""
     with _workout_lock:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT last_focus_index FROM workout_state WHERE id = 1 FOR UPDATE")
+        cur.execute("SELECT last_focus_index FROM workout_state WHERE id=1 FOR UPDATE")
         row = cur.fetchone()
         if not row:
-            cur.execute(
-                "INSERT INTO workout_state (id, last_focus_index) VALUES (1, -1) ON CONFLICT (id) DO NOTHING"
-            )
-            cur.execute("SELECT last_focus_index FROM workout_state WHERE id = 1 FOR UPDATE")
+            cur.execute("INSERT INTO workout_state (id, last_focus_index) VALUES (1,-1) ON CONFLICT (id) DO NOTHING")
+            cur.execute("SELECT last_focus_index FROM workout_state WHERE id=1 FOR UPDATE")
             row = cur.fetchone()
         last_i = int(row["last_focus_index"])
         next_i = (last_i + 1) % len(WORKOUT_FOCUS_CYCLE)
@@ -2830,9 +2814,7 @@ def api_workout_generate():
                 "Be creative with unilateral work, tempo, and density."
             )
         else:
-            equip = (
-                "REC GYM (full gym): barbells, squat rack, cables, machines, dumbbells beyond 35 lb, all standard equipment."
-            )
+            equip = "REC GYM (full gym): barbells, squat rack, cables, machines, dumbbells beyond 35 lb, all standard equipment."
 
         user_prompt = (
             "Athlete name: %s.\n"
@@ -2847,13 +2829,9 @@ def api_workout_generate():
             "Give sets, reps or time, rest, and one short form cue per main movement. "
             "Do not skip the rotation focus — secondary work should support it."
         ) % (
-            name,
-            now_local.strftime("%A, %B %-d, %Y"),
-            focus_label,
-            intensity,
+            name, now_local.strftime("%A, %B %-d, %Y"), focus_label, intensity,
             "Home gym (≤35 lb dumbbells + bodyweight)" if location == "home" else "Rec / full gym",
-            equip,
-            history_text,
+            equip, history_text,
         )
 
         try:
@@ -2873,29 +2851,42 @@ def api_workout_generate():
             track_api_usage(message)
             content = message.content[0].text if message.content else ""
         except Exception as e:
-            log.error("Workout generate API error: %s", e)
+            log.error("Workout generate error: %s", e)
             cur.close()
             conn.close()
-            return jsonify({"error": "Could not generate workout. Check API key and try again."}), 500
+            return {"error": "Could not generate workout. Check API key and try again."}
 
-        cur.execute("""
-INSERT INTO workout_logs (focus_key, focus_label, intensity, location, plan_content)
-VALUES (%s, %s, %s, %s, %s) RETURNING id""",
-                    (focus_key, focus_label, intensity, location, content))
+        cur.execute(
+            "INSERT INTO workout_logs (focus_key, focus_label, intensity, location, plan_content) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+            (focus_key, focus_label, intensity, location, content),
+        )
         log_id = cur.fetchone()["id"]
         cur.execute("UPDATE workout_state SET last_focus_index=%s WHERE id=1", (next_i,))
         conn.commit()
         cur.close()
         conn.close()
 
-    return jsonify({
-        "plan": content,
-        "log_id": log_id,
-        "focus_key": focus_key,
-        "focus_label": focus_label,
-        "intensity": intensity,
-        "location": location,
-    })
+    return {"plan": content, "log_id": log_id, "focus_key": focus_key, "focus_label": focus_label, "intensity": intensity, "location": location}
+
+
+@app.route("/api/workout/generate", methods=["POST"])
+def api_workout_generate():
+    data = request.get_json(force=True) or {}
+    try:
+        intensity = int(data.get("intensity", 5))
+    except (TypeError, ValueError):
+        intensity = 5
+    intensity = max(1, min(10, intensity))
+    location = str(data.get("location", "home")).strip().lower()
+    if location not in ("home", "rec"):
+        location = "home"
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "Add your Anthropic API key in Railway environment to generate workouts."}), 500
+    result = _generate_workout_core(intensity, location, api_key)
+    if "error" in result:
+        return jsonify(result), 500
+    return jsonify(result)
 
 
 @app.route("/api/workout/log/<int:log_id>", methods=["PATCH"])
@@ -4346,11 +4337,403 @@ def api_config_post():
     return jsonify({"status": "ok"})
 
 
+# ── Jarvis Tool Definitions ───────────────────────────────────────────────────
+
+JARVIS_TOOLS = [
+    {
+        "name": "get_tasks",
+        "description": "Retrieve all pending (incomplete) tasks. Returns list with id, title, urgency, due_date, notes.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "create_task",
+        "description": "Create a new task for the student.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Task title"},
+                "urgency": {"type": "string", "enum": ["high", "medium", "low"]},
+                "due_date": {"type": "string", "description": "YYYY-MM-DD or omit if no deadline"},
+                "notes": {"type": "string", "description": "Optional notes"},
+            },
+            "required": ["title", "urgency"],
+        },
+    },
+    {
+        "name": "complete_task",
+        "description": "Mark a pending task as completed by its numeric ID.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "integer"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "delete_task",
+        "description": "Permanently delete a task by its numeric ID.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "integer"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "update_task",
+        "description": "Update a task's urgency, due date, or notes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer"},
+                "urgency": {"type": "string", "enum": ["high", "medium", "low"]},
+                "due_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "notes": {"type": "string"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "get_assignments",
+        "description": "Fetch upcoming Canvas assignments that have not been completed yet.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "complete_assignment",
+        "description": "Log a Canvas assignment as completed in the completions record.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "assignment_title": {"type": "string"},
+                "class_name": {"type": "string"},
+                "duration_minutes": {"type": "integer", "description": "How long it took (optional)"},
+            },
+            "required": ["assignment_title", "class_name"],
+        },
+    },
+    {
+        "name": "get_calendar_events",
+        "description": "Get calendar events from all connected calendars for the next N days.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_ahead": {"type": "integer", "description": "Days to look ahead, default 7, max 30"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "log_stock_transaction",
+        "description": "Record a stock buy or sell transaction in the portfolio tracker.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Ticker symbol e.g. AAPL"},
+                "action": {"type": "string", "enum": ["buy", "sell"]},
+                "quantity": {"type": "number"},
+                "price": {"type": "number", "description": "Price per share"},
+                "date": {"type": "string", "description": "YYYY-MM-DD, defaults to today"},
+                "notes": {"type": "string"},
+            },
+            "required": ["symbol", "action", "quantity", "price"],
+        },
+    },
+    {
+        "name": "save_stock_note",
+        "description": "Save or update investment thesis, exit criteria, target price, or stop-loss for a stock.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "thesis": {"type": "string"},
+                "exit_criteria": {"type": "string"},
+                "target_price": {"type": "number"},
+                "stop_loss": {"type": "number"},
+            },
+            "required": ["symbol"],
+        },
+    },
+    {
+        "name": "get_portfolio",
+        "description": "Get current stock holdings with quantities and average costs.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_projects",
+        "description": "Get all active projects with their tasks and recent notes.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_workout_history",
+        "description": "Get recent workout history (last 12 sessions) including focus area, intensity, location, and athlete notes.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "generate_workout",
+        "description": "Generate a full workout plan for the student based on the rotation schedule. Returns the complete plan, log_id, and focus area. Use this when the student asks for a workout.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "intensity": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Effort level 1-10"},
+                "location": {"type": "string", "enum": ["home", "gym"], "description": "Training location"},
+            },
+            "required": ["intensity", "location"],
+        },
+    },
+    {
+        "name": "get_briefing",
+        "description": "Get today's cached morning briefing summary with priorities, assignments, and schedule.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+]
+
+
+def _execute_jarvis_tool(name, inputs):
+    """Execute a Jarvis tool call and return a JSON-serializable result dict."""
+    try:
+        if name == "get_tasks":
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, title, urgency, due_date, notes FROM tasks WHERE completed=FALSE "
+                "ORDER BY urgency DESC, created_at ASC LIMIT 25"
+            )
+            tasks = []
+            for r in cur.fetchall():
+                t = dict(r)
+                if t.get("due_date") and hasattr(t["due_date"], "isoformat"):
+                    t["due_date"] = t["due_date"].isoformat()
+                tasks.append(t)
+            cur.close(); conn.close()
+            return {"tasks": tasks, "count": len(tasks)}
+
+        elif name == "create_task":
+            title = str(inputs.get("title", "")).strip()[:300]
+            if not title:
+                return {"error": "title is required"}
+            urgency = str(inputs.get("urgency", "low")).lower()
+            if urgency not in ("high", "medium", "low"):
+                urgency = "low"
+            due_date = inputs.get("due_date") or None
+            notes = str(inputs.get("notes", ""))[:2000]
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO tasks (title, urgency, due_date, notes) VALUES (%s,%s,%s,%s) RETURNING id",
+                (title, urgency, due_date, notes),
+            )
+            task_id = cur.fetchone()["id"]
+            conn.commit(); cur.close(); conn.close()
+            log.info(f"Jarvis tool: created task '{title}' id={task_id}")
+            return {"status": "created", "task_id": task_id, "title": title, "urgency": urgency}
+
+        elif name == "complete_task":
+            task_id = int(inputs.get("task_id", 0))
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE tasks SET completed=TRUE, completed_at=NOW() WHERE id=%s AND completed=FALSE RETURNING title",
+                (task_id,),
+            )
+            row = cur.fetchone()
+            conn.commit(); cur.close(); conn.close()
+            if row:
+                log.info(f"Jarvis tool: completed task id={task_id} '{row['title']}'")
+                return {"status": "completed", "task_id": task_id, "title": row["title"]}
+            return {"status": "not_found", "task_id": task_id}
+
+        elif name == "delete_task":
+            task_id = int(inputs.get("task_id", 0))
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM tasks WHERE id=%s RETURNING title", (task_id,))
+            row = cur.fetchone()
+            conn.commit(); cur.close(); conn.close()
+            if row:
+                log.info(f"Jarvis tool: deleted task id={task_id} '{row['title']}'")
+                return {"status": "deleted", "task_id": task_id, "title": row["title"]}
+            return {"status": "not_found", "task_id": task_id}
+
+        elif name == "update_task":
+            task_id = int(inputs.get("task_id", 0))
+            urgency = inputs.get("urgency")
+            due_date = inputs.get("due_date")
+            notes = inputs.get("notes")
+            updates, params = [], []
+            if urgency in ("high", "medium", "low"):
+                updates.append("urgency=%s"); params.append(urgency)
+            if due_date is not None:
+                updates.append("due_date=%s"); params.append(due_date or None)
+            if notes is not None:
+                updates.append("notes=%s"); params.append(str(notes)[:2000])
+            if not updates:
+                return {"status": "nothing_to_update"}
+            params.append(task_id)
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id=%s RETURNING title", params)
+            row = cur.fetchone()
+            conn.commit(); cur.close(); conn.close()
+            return {"status": "updated", "task_id": task_id, "title": row["title"] if row else None}
+
+        elif name == "get_assignments":
+            if not CANVAS_ICAL_URL:
+                return {"assignments": [], "note": "Canvas calendar not configured"}
+            try:
+                cal = fetch_ical(CANVAS_ICAL_URL)
+                if not cal:
+                    return {"assignments": [], "error": "Could not fetch Canvas calendar"}
+                asgn_list = parse_canvas_assignments(cal)
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                done = set(r["assignment_title"] for r in cur.fetchall())
+                cur.close(); conn.close()
+                asgn_list = [a for a in asgn_list if a["title"] not in done]
+                return {"assignments": asgn_list, "count": len(asgn_list)}
+            except Exception as e:
+                return {"assignments": [], "error": str(e)}
+
+        elif name == "complete_assignment":
+            title = str(inputs.get("assignment_title", ""))[:300]
+            class_name = str(inputs.get("class_name", ""))[:100]
+            duration = int(inputs.get("duration_minutes") or 0)
+            if not title:
+                return {"error": "assignment_title required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed) VALUES (%s,%s,%s,0,FALSE)",
+                (title, class_name, duration),
+            )
+            conn.commit(); cur.close(); conn.close()
+            log.info(f"Jarvis tool: logged completion of '{title}'")
+            return {"status": "logged", "assignment": title, "class": class_name}
+
+        elif name == "get_calendar_events":
+            days_ahead = min(30, max(1, int(inputs.get("days_ahead", 7))))
+            events = []
+            for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports")):
+                if not url:
+                    continue
+                try:
+                    cal = fetch_ical(url)
+                    if cal:
+                        parsed = parse_calendar_events(cal, days_ahead=days_ahead)
+                        for e in parsed:
+                            e["source"] = tag
+                        events.extend(parsed)
+                except Exception:
+                    pass
+            events.sort(key=lambda e: e.get("start_display", ""))
+            return {"events": events[:40], "count": len(events)}
+
+        elif name == "log_stock_transaction":
+            symbol = str(inputs.get("symbol", "")).strip().upper()[:16]
+            action = str(inputs.get("action", "")).lower()
+            try:
+                qty = float(inputs.get("quantity", 0))
+                price = float(inputs.get("price", 0))
+            except (TypeError, ValueError):
+                return {"error": "Invalid quantity or price"}
+            if not symbol or action not in ("buy", "sell") or qty <= 0 or price <= 0:
+                return {"error": "symbol, action (buy/sell), quantity>0, price>0 are all required"}
+            tx_date = inputs.get("date") or datetime.now(TZ).date().isoformat()
+            notes = str(inputs.get("notes", ""))[:500]
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO stock_transactions (symbol, action, quantity, price, transaction_date, notes) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                (symbol, action, qty, price, tx_date, notes),
+            )
+            tx_id = cur.fetchone()["id"]
+            conn.commit(); cur.close(); conn.close()
+            log.info(f"Jarvis tool: logged stock {action} {qty} {symbol} @ {price}")
+            return {"status": "recorded", "transaction_id": tx_id, "symbol": symbol, "action": action, "quantity": qty, "price": price}
+
+        elif name == "save_stock_note":
+            symbol = str(inputs.get("symbol", "")).strip().upper()[:16]
+            if not symbol:
+                return {"error": "symbol required"}
+            thesis = inputs.get("thesis")
+            exit_criteria = inputs.get("exit_criteria")
+            try:
+                target_price = float(inputs["target_price"]) if inputs.get("target_price") not in (None, "", "null") else None
+            except (TypeError, ValueError):
+                target_price = None
+            try:
+                stop_loss = float(inputs["stop_loss"]) if inputs.get("stop_loss") not in (None, "", "null") else None
+            except (TypeError, ValueError):
+                stop_loss = None
+            upsert_stock_note(
+                symbol,
+                thesis=(str(thesis) if thesis not in (None, "") else None),
+                exit_criteria=(str(exit_criteria) if exit_criteria not in (None, "") else None),
+                target_price=target_price,
+                stop_loss=stop_loss,
+            )
+            log.info(f"Jarvis tool: saved stock note for {symbol}")
+            return {"status": "saved", "symbol": symbol}
+
+        elif name == "get_portfolio":
+            port = _compute_portfolio()
+            holdings = [{"symbol": sym, "quantity": h["qty"], "avg_cost": round(h["avg_cost"], 2)} for sym, h in port.items()]
+            return {"holdings": holdings, "count": len(holdings)}
+
+        elif name == "get_projects":
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT id, title, description, status FROM projects WHERE status='active' ORDER BY created_at DESC")
+            projects = [dict(r) for r in cur.fetchall()]
+            cur.execute("""
+SELECT p.title as project, pt.id as task_id, pt.title as task, pt.assignee, pt.status, pt.notes
+FROM project_tasks pt JOIN projects p ON p.id=pt.project_id
+WHERE p.status='active' AND pt.status!='done' ORDER BY pt.created_at ASC LIMIT 20""")
+            proj_tasks = [dict(r) for r in cur.fetchall()]
+            cur.execute("""
+SELECT p.title as project, pn.content as note
+FROM project_notes pn JOIN projects p ON p.id=pn.project_id
+WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
+            proj_notes = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            return {"projects": projects, "tasks": proj_tasks, "notes": proj_notes}
+
+        elif name == "get_workout_history":
+            conn = get_db()
+            cur = conn.cursor()
+            history = _workout_history_block(cur)
+            cur.close(); conn.close()
+            return {"history": history}
+
+        elif name == "generate_workout":
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if not api_key:
+                return {"error": "No API key configured"}
+            intensity = max(1, min(10, int(inputs.get("intensity", 5))))
+            location = "home" if inputs.get("location") == "home" else "rec"
+            return _generate_workout_core(intensity, location, api_key)
+
+        elif name == "get_briefing":
+            conn = get_db()
+            cur = conn.cursor()
+            today = datetime.now(TZ).date()
+            cur.execute("SELECT content, generated_at FROM briefing_cache WHERE briefing_date=%s", (today,))
+            row = cur.fetchone()
+            cur.close(); conn.close()
+            if row:
+                ts = row["generated_at"].isoformat() if row["generated_at"] else None
+                return {"briefing": row["content"], "generated_at": ts}
+            return {"briefing": None, "note": "No briefing generated yet for today"}
+
+        else:
+            return {"error": f"Unknown tool: {name}"}
+
+    except Exception as e:
+        log.error(f"Jarvis tool failed [{name}]: {e}", exc_info=True)
+        return {"error": str(e)}
+
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     data = request.get_json(force=True) or {}
-    system_prompt = data.get("system", "")
     messages = data.get("messages", [])
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
@@ -4358,49 +4741,41 @@ def api_chat():
     try:
         now_chat = datetime.now(TZ)
         system_prompt = (
-            "You are Jarvis — the same Jarvis that serves Tony Stark in the Iron Man films: a highly intelligent, impeccably composed British AI majordomo. "
-            "You speak with dry wit, understated humour, and effortless articulacy. Address the student as 'sir' or by their first name when known. "
-            "Use elevated, slightly formal vocabulary (e.g. 'Very good, sir.', 'If I may,', 'Shall I proceed?', 'Might I suggest', 'As you wish'). "
-            "Keep a measured, unflappable tone even when delivering bad news — mild irony is welcome; theatrics are not. "
+            "You are Jarvis — the same Jarvis that serves Tony Stark in the Iron Man films: a highly intelligent, "
+            "impeccably composed British AI majordomo. You speak with dry wit, understated humour, and effortless "
+            "articulacy. Address the student as 'sir' or by their first name when known. "
+            "Use elevated, slightly formal vocabulary (e.g. 'Very good, sir.', 'If I may,', 'Shall I proceed?', "
+            "'Might I suggest', 'As you wish'). Keep a measured, unflappable tone — mild irony is welcome; theatrics are not. "
             "Be analytical, anticipatory, and discreet: volunteer relevant information before it is requested, "
-            "but never lecture or moralise. If something is overdue or amiss, note it plainly and suggest the next sensible move. "
-            "Never break character, never refer to yourself as an AI model, and do not use emoji unless the student does first. "
-            "SCOPE — you are a full general-purpose assistant, not limited to scheduling. Answer any reasonable question: homework help across every subject "
-            "(math with worked steps, science, history, English, foreign languages, computer science with runnable code), writing and editing, "
-            "research and explanations from your own knowledge, advice, conversation, sports and fitness talk, recommendations, jokes. "
-            "Never refuse with 'I can only help with your schedule' — you are the student's full assistant. Decline only genuinely harmful or illegal requests. "
-            "When the personal data injected below is relevant, use it; when a question is general, answer from your own knowledge without pretending the system lacks context. "
-            "Reference this authoritative date in all temporal reasoning — employ it whenever the student references 'today' or 'tomorrow' "
-            "and in all comparisons to assignment due dates: %s. Current local time (Utah): %s. "
-            "DUE-DATE PRESENTATION — when you mention any assignment or task due date, always render it in the long human-readable form, "
-            "e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)'. Never surface a raw ISO timestamp like '2026-04-21T17:59:00-06:00' to the student. "
-            "FORMATTING RULES — mandatory, no exceptions: "
-            "Use **bold** for every important term, name, assignment title, date, and key fact. "
-            "Use # for a single top-level title when answering a broad question. "
-            "Use ## to introduce every major section (e.g. ## Priorities, ## Schedule, ## Assignments). "
-            "Use ### for sub-sections within those. "
-            "Use - bullet points for any list of 2+ items. "
-            "Vary text size deliberately — short answers may have one ## header, long answers must have multiple. "
-            "Never write more than two sentences in a row without a header, bullet, or bold term breaking it up. "
-            "STOCK TRANSACTIONS — when the student tells you they bought or sold a stock (e.g. 'I bought 10 AAPL at $175', 'sold 5 TSLA at 240'), "
-            "silently append a single token at the very end of your reply using this exact grammar: "
-            "[STOCK_ACTION: {\"action\":\"buy\"|\"sell\",\"symbol\":\"AAPL\",\"quantity\":10,\"price\":175.50,\"date\":\"YYYY-MM-DD\",\"notes\":\"\"}]. "
-            "Use today's date if none is given. Still speak naturally in the rest of the reply (e.g. 'Noted, sir. 10 shares of **AAPL** at **$175.00** logged.'). "
-            "If the student asks how their stocks are doing, summarize the holdings provided in context and invite them to open the **Morning Outlook** for the chart. "
-            "STOCK NOTES — when the student tells you WHY they bought something, when they want to sell, a target price, a stop-loss, or any research they want remembered "
-            "(e.g. 'remember I bought AAPL because of the iPhone 17 cycle', 'sell NVDA if it hits $200', 'set a stop at $150'), append "
-            "[STOCK_NOTE: {\"symbol\":\"AAPL\",\"thesis\":\"...\",\"exit_criteria\":\"...\",\"target_price\":200,\"stop_loss\":150}]. "
-            "Only include the fields you are setting — a partial note merges with what is already on file. Speak naturally in the rest of the reply "
-            "(e.g. 'Noted and filed under **AAPL**, sir.'). "
-            "STOCK RESEARCH — when the student asks to research, analyse, or get your take on a symbol, answer directly from your knowledge in character, "
-            "and mention that a full live brief (with analyst consensus, recent headlines, fundamentals, and exit triggers) is available via the **Research** button in the Portfolio card. "
-            "TASK COMPLETION — when the student says a task is done, completed, finished, handled, or anything equivalent, append "
-            "[TASK_COMPLETE: {\"id\": <id>}] at the very end of your reply. Use the id from the Pending tasks list injected below. "
-            "If the id is ambiguous (e.g. only a fuzzy title was given), ask one clarifying question before emitting the token. "
-            "Speak naturally in the rest of the reply (e.g. 'Very good, sir — marked **Chemistry homework** as complete.'). "
-            "TASK REMOVAL — when the student says to delete, remove, cancel, scrap, or discard a task, append "
-            "[TASK_DELETE: {\"id\": <id>}]. Same disambiguation rules apply. Only one TASK_COMPLETE or TASK_DELETE per reply, and never when the student did not ask. "
-        ) % (now_chat.strftime("%A, %B %d, %Y"), now_chat.strftime("%-I:%M %p %Z")) + system_prompt
+            "but never lecture or moralise. Never break character, never refer to yourself as an AI model, "
+            "and do not use emoji unless the student does first.\n\n"
+            "SCOPE — You are a full general-purpose assistant. Answer any reasonable question: "
+            "homework help (math with worked steps, science, history, English, languages, CS with runnable code), "
+            "writing, research, advice, conversation, fitness talk, recommendations, jokes. "
+            "Decline only genuinely harmful or illegal requests.\n\n"
+            "AUTHORITATIVE DATE & TIME — Today is %s. Current local time (Utah/Mountain): %s. "
+            "Use this in all temporal reasoning. When mentioning due dates, always render in full human-readable form "
+            "e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)'. Never show raw ISO timestamps.\n\n"
+            "FORMATTING — Use **bold** for every important term, name, date, and key fact. "
+            "Use ## for major sections, ### for sub-sections. Use - bullet points for lists of 2+ items. "
+            "Never write more than two sentences in a row without a header, bullet, or bold term breaking it up.\n\n"
+            "TOOL USE — You have direct tools to take real actions in this app. Use them proactively and precisely:\n"
+            "- TASKS: When the student mentions finishing, completing, or doing a task, call complete_task immediately "
+            "using the task ID from your context. If the task ID is unclear, call get_tasks first to look it up, "
+            "then complete it — do not ask the student for the ID. When they want to add a task, call create_task. "
+            "When they want to remove or delete a task, call delete_task.\n"
+            "- STOCKS: When the student says they bought or sold shares, call log_stock_transaction with the exact "
+            "symbol, action, quantity, and price they stated. Read their message carefully — extract the precise "
+            "numbers. If any detail is genuinely ambiguous, ask ONE clarifying question before calling the tool. "
+            "When they share investment reasoning, a price target, or exit plan, call save_stock_note. "
+            "When they ask about a stock, answer from your knowledge and mention the Research button for live data.\n"
+            "- ASSIGNMENTS: When the student says they finished or submitted an assignment, call complete_assignment.\n"
+            "- WORKOUTS: When the student asks for a workout, call generate_workout with an appropriate intensity "
+            "(ask if unsure) and location (home or gym).\n"
+            "- Always confirm what you did in natural Jarvis character after calling a tool. "
+            "Never call a tool the student did not ask for. Read back the key details before confirming so the "
+            "student can catch any error."
+        ) % (now_chat.strftime("%A, %B %d, %Y"), now_chat.strftime("%-I:%M %p %Z"))
 
         # Inject school schedule context
         try:
@@ -4410,88 +4785,75 @@ def api_chat():
             if school_hours:
                 sh, sm, eh, em = school_hours
                 system_prompt += (
-                    " Today is a %s day at Park City High School. "
+                    "\n\nSCHOOL — Today is a %s day at Park City High School. "
                     "School runs 7:%02d AM – %d:%02d %s. "
-                    "Jarvis is NOT available during school hours. "
                     "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
-                    "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM. "
-                    "If asked what color day any date is, look it up from the calendar system."
+                    "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM."
                 ) % (dtype.title(), sm, eh % 12 or 12, em, "AM" if eh < 12 else "PM")
             else:
                 dow = today.weekday()
-                if dow >= 5:
-                    system_prompt += " Today is a weekend — no school."
-                else:
-                    system_prompt += " Today is a no-school day (holiday or break)."
+                system_prompt += "\n\nSCHOOL — " + ("Today is a weekend — no school." if dow >= 5 else "Today is a no-school day (holiday or break).")
         except Exception:
             pass
 
-        # Inject live assignments into the system prompt
+        # Inject live assignments
         try:
-            cal = fetch_ical(CANVAS_ICAL_URL)
-            if cal:
-                asgn_list = parse_canvas_assignments(cal)
-                # Filter out already-completed assignments
-                try:
-                    _conn = get_db()
-                    _cur = _conn.cursor()
-                    _cur.execute("SELECT DISTINCT assignment_title FROM completions")
-                    _done = set(r["assignment_title"] for r in _cur.fetchall())
-                    _cur.close()
-                    _conn.close()
-                    asgn_list = [a for a in asgn_list if a["title"] not in _done]
-                except Exception:
-                    pass
-                if asgn_list:
-                    asgn_text = "; ".join(
-                        "%s (%s, due %s, due_date=%s)" % (
-                            a["title"],
-                            a["class_name"],
-                            a["due_display"],
-                            (a.get("due_iso") or "")[:10],
+            if CANVAS_ICAL_URL:
+                cal = fetch_ical(CANVAS_ICAL_URL)
+                if cal:
+                    asgn_list = parse_canvas_assignments(cal)
+                    try:
+                        _conn = get_db()
+                        _cur = _conn.cursor()
+                        _cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                        _done = set(r["assignment_title"] for r in _cur.fetchall())
+                        _cur.close(); _conn.close()
+                        asgn_list = [a for a in asgn_list if a["title"] not in _done]
+                    except Exception:
+                        pass
+                    if asgn_list:
+                        asgn_text = "; ".join(
+                            "%s (%s, due %s, due_date=%s)" % (
+                                a["title"], a["class_name"], a["due_display"], (a.get("due_iso") or "")[:10],
+                            ) for a in asgn_list
                         )
-                        for a in asgn_list
-                    )
-                    system_prompt += (
-                        " Upcoming assignments (not yet completed; due_date is YYYY-MM-DD in your timezone, "
-                        "aligned with the authoritative 'today' above): " + asgn_text + "."
-                    )
-                else:
-                    system_prompt += " All assignments are completed."
+                        system_prompt += "\n\nUPCOMING ASSIGNMENTS (not yet completed): " + asgn_text + "."
+                    else:
+                        system_prompt += "\n\nAll Canvas assignments are completed."
         except Exception:
             log.warning("/api/chat could not fetch assignments for context")
 
-        # Inject pending tasks (with notes) and project context into the system prompt
+        # Inject pending tasks and project context
         try:
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "SELECT id, title, urgency, notes FROM tasks WHERE completed = FALSE "
-                "ORDER BY urgency DESC, created_at ASC LIMIT 10"
+                "SELECT id, title, urgency, notes FROM tasks WHERE completed=FALSE "
+                "ORDER BY urgency DESC, created_at ASC LIMIT 15"
             )
             tasks = [dict(r) for r in cur.fetchall()]
             cur.execute("""
 SELECT p.title as project, pt.title as task, pt.assignee, pt.status, pt.notes
-FROM project_tasks pt JOIN projects p ON p.id = pt.project_id
-WHERE p.status = 'active' AND pt.status != 'done' ORDER BY pt.created_at ASC LIMIT 10""")
+FROM project_tasks pt JOIN projects p ON p.id=pt.project_id
+WHERE p.status='active' AND pt.status!='done' ORDER BY pt.created_at ASC LIMIT 10""")
             proj_tasks = [dict(r) for r in cur.fetchall()]
             cur.execute("""
 SELECT p.title as project, pn.content as note
-FROM project_notes pn JOIN projects p ON p.id = pn.project_id
-WHERE p.status = 'active'
-ORDER BY pn.created_at DESC LIMIT 6""")
+FROM project_notes pn JOIN projects p ON p.id=pn.project_id
+WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
             proj_notes = [dict(r) for r in cur.fetchall()]
-            cur.close()
-            conn.close()
+            cur.close(); conn.close()
             if tasks:
                 tasks_text = "; ".join(
-                    "id=%d [%s] %s%s" % (t["id"], t["urgency"], t["title"], (" — " + (t["notes"] or "")[:80]) if t["notes"] else "")
+                    "id=%d [%s] %s%s" % (t["id"], t["urgency"], t["title"],
+                        (" — " + (t["notes"] or "")[:80]) if t["notes"] else "")
                     for t in tasks
                 )
-                system_prompt += " Pending tasks (include id when invoking TASK_COMPLETE or TASK_DELETE): " + tasks_text + "."
+                system_prompt += "\n\nPENDING TASKS (use task tools to act; IDs are authoritative): " + tasks_text + "."
             if proj_tasks:
                 pt_text = "; ".join(
-                    "%s (project: %s, assigned: %s, status: %s)" % (t["task"], t["project"], t["assignee"] or "unassigned", t["status"])
+                    "%s (project: %s, assigned: %s, status: %s)" % (
+                        t["task"], t["project"], t["assignee"] or "unassigned", t["status"])
                     for t in proj_tasks
                 )
                 system_prompt += " Project tasks: " + pt_text + "."
@@ -4501,19 +4863,16 @@ ORDER BY pn.created_at DESC LIMIT 6""")
         except Exception:
             log.warning("/api/chat could not fetch tasks for context")
 
-        # Inject stock portfolio snapshot (current holdings only — no live prices to keep it cheap)
+        # Inject stock portfolio and notes
         try:
             port = _compute_portfolio()
             if port:
                 h_text = "; ".join(
-                    "%s qty=%s avg_cost=$%.2f" % (sym, h["qty"], h["avg_cost"])
-                    for sym, h in port.items()
+                    "%s qty=%s avg_cost=$%.2f" % (sym, h["qty"], h["avg_cost"]) for sym, h in port.items()
                 )
-                system_prompt += (
-                    " Student's current stock holdings (from recorded transactions): " + h_text + "."
-                )
+                system_prompt += "\n\nSTOCK HOLDINGS (from recorded transactions): " + h_text + "."
             else:
-                system_prompt += " Student has no recorded stock holdings yet."
+                system_prompt += "\n\nNo stock holdings recorded yet."
         except Exception:
             log.warning("/api/chat could not load portfolio for context")
 
@@ -4522,221 +4881,107 @@ ORDER BY pn.created_at DESC LIMIT 6""")
             if _notes:
                 n_text = "; ".join(
                     "%s thesis=%s%s%s%s" % (
-                        n["symbol"],
-                        (n["thesis"][:160] if n["thesis"] else "—"),
+                        n["symbol"], (n["thesis"][:160] if n["thesis"] else "—"),
                         (" exit=" + n["exit_criteria"][:120]) if n["exit_criteria"] else "",
                         (" target=$" + str(n["target_price"])) if n["target_price"] is not None else "",
                         (" stop=$" + str(n["stop_loss"])) if n["stop_loss"] is not None else "",
-                    )
-                    for n in _notes
+                    ) for n in _notes
                 )
-                system_prompt += " Stock notes on file (refer to when discussing those symbols): " + n_text + "."
+                system_prompt += " Stock notes on file: " + n_text + "."
         except Exception:
             log.warning("/api/chat could not load stock notes for context")
 
+        # ── Agentic loop: extended thinking + tool use ──────────────────────
         client = anthropic.Anthropic(api_key=api_key)
-        kwargs = {"model": "claude-sonnet-4-6", "max_tokens": 1024, "messages": messages}
-        if system_prompt:
-            kwargs["system"] = system_prompt
-        message = client.messages.create(**kwargs)
-        track_api_usage(message)
-        content = message.content[0].text if message.content else ""
+        messages_loop = list(messages)
+        response = None
+        actions_taken = []
 
-        # Extract and process [TASK_ACTION: {...}] server-side
-        import re as _re
-        task_created = False
-        task_match = _re.search(r'\[TASK_ACTION:\s*(\{.*\})\]', content, _re.DOTALL)
-        if task_match:
-            try:
-                raw_json = task_match.group(1)
-                # Strip any bold markers Claude might add
-                raw_json = raw_json.replace('**', '')
-                task_data = json.loads(raw_json)
-                t_title = str(task_data.get("title", "")).strip()[:300]
-                if t_title:
-                    t_urgency = str(task_data.get("urgency", "low")).lower()
-                    if t_urgency not in ("high", "medium", "low"):
-                        t_urgency = "low"
-                    t_due = task_data.get("due_date") or None
-                    t_notes = str(task_data.get("notes", ""))[:2000]
-                    _conn = get_db()
-                    _cur = _conn.cursor()
-                    _cur.execute(
-                        "INSERT INTO tasks (title, notes, urgency, due_date) VALUES (%s, %s, %s, %s)",
-                        (t_title, t_notes, t_urgency, t_due)
-                    )
-                    _conn.commit()
-                    _cur.close()
-                    _conn.close()
-                    task_created = True
-                    log.info(f"/api/chat: created task '{t_title}' urgency={t_urgency}")
-            except Exception as te:
-                log.warning(f"/api/chat: task creation failed: {te}")
-            # Always strip the token from displayed content
-            content = _re.sub(r'\s*\[TASK_ACTION:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+        for _iteration in range(10):
+            response = client.beta.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=16000,
+                thinking={"type": "enabled", "budget_tokens": 10000},
+                tools=JARVIS_TOOLS,
+                system=system_prompt,
+                messages=messages_loop,
+                betas=["interleaved-thinking-2025-05-14"],
+            )
+            track_api_usage(response)
 
-        # Extract and process [STOCK_ACTION: {...}] server-side
-        stock_recorded = False
-        stock_match = _re.search(r'\[STOCK_ACTION:\s*(\{.*?\})\]', content, _re.DOTALL)
-        if stock_match:
-            try:
-                raw_json = stock_match.group(1).replace('**', '')
-                sdata = json.loads(raw_json)
-                symbol = str(sdata.get("symbol", "")).strip().upper()[:16]
-                action = str(sdata.get("action", "")).strip().lower()
-                qty = float(sdata.get("quantity", 0) or 0)
-                price = float(sdata.get("price", 0) or 0)
-                tx_date = sdata.get("date") or datetime.now(TZ).date().isoformat()
-                notes = str(sdata.get("notes", ""))[:500]
-                if symbol and action in ("buy", "sell") and qty > 0 and price > 0:
-                    _conn = get_db()
-                    _cur = _conn.cursor()
-                    _cur.execute(
-                        "INSERT INTO stock_transactions (symbol, action, quantity, price, transaction_date, notes) "
-                        "VALUES (%s, %s, %s, %s, %s, %s)",
-                        (symbol, action, qty, price, tx_date, notes)
-                    )
-                    _conn.commit()
-                    _cur.close()
-                    _conn.close()
-                    stock_recorded = True
-                    log.info(f"/api/chat: recorded stock {action} {qty} {symbol} @ {price}")
-            except Exception as se:
-                log.warning(f"/api/chat: stock action parse failed: {se}")
-            content = _re.sub(r'\s*\[STOCK_ACTION:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+            if response.stop_reason == "end_turn":
+                break
 
-        def _resolve_task_target(data):
-            """Return a task id from {id} or {title}. Returns (id, title) or (None, None)."""
-            _c = get_db()
-            _cu = _c.cursor()
-            try:
-                tid = data.get("id")
-                if tid is not None:
-                    try:
-                        tid = int(tid)
-                    except Exception:
-                        tid = None
-                if tid:
-                    _cu.execute("SELECT id, title FROM tasks WHERE id=%s", (tid,))
-                    r = _cu.fetchone()
-                    if r:
-                        return r["id"], r["title"]
-                title = str(data.get("title", "")).strip()
-                if title:
-                    _cu.execute(
-                        "SELECT id, title FROM tasks WHERE completed=FALSE AND LOWER(title)=LOWER(%s) LIMIT 2",
-                        (title,)
-                    )
-                    rows = _cu.fetchall()
-                    if len(rows) == 1:
-                        return rows[0]["id"], rows[0]["title"]
-                    _cu.execute(
-                        "SELECT id, title FROM tasks WHERE completed=FALSE AND LOWER(title) LIKE LOWER(%s) LIMIT 2",
-                        ("%" + title + "%",)
-                    )
-                    rows = _cu.fetchall()
-                    if len(rows) == 1:
-                        return rows[0]["id"], rows[0]["title"]
-            finally:
-                _cu.close()
-                _c.close()
-            return None, None
+            if response.stop_reason == "tool_use":
+                # Serialize the full assistant turn (thinking + text + tool_use blocks)
+                assistant_content = []
+                for block in response.content:
+                    if block.type == "thinking":
+                        d = {"type": "thinking", "thinking": block.thinking}
+                        if getattr(block, "signature", None):
+                            d["signature"] = block.signature
+                        assistant_content.append(d)
+                    elif block.type == "text":
+                        assistant_content.append({"type": "text", "text": block.text})
+                    elif block.type == "tool_use":
+                        assistant_content.append({
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input,
+                        })
+                messages_loop.append({"role": "assistant", "content": assistant_content})
 
-        # Extract and process [TASK_COMPLETE: {...}] server-side
-        task_completed = False
-        completed_title = None
-        comp_match = _re.search(r'\[TASK_COMPLETE:\s*(\{.*?\})\]', content, _re.DOTALL)
-        if comp_match:
-            try:
-                raw_json = comp_match.group(1).replace('**', '')
-                cdata = json.loads(raw_json)
-                tid, ttitle = _resolve_task_target(cdata)
-                if tid:
-                    _c = get_db()
-                    _cu = _c.cursor()
-                    _cu.execute(
-                        "UPDATE tasks SET completed=TRUE, completed_at=NOW() WHERE id=%s AND completed=FALSE",
-                        (tid,)
-                    )
-                    _c.commit()
-                    _cu.close()
-                    _c.close()
-                    task_completed = True
-                    completed_title = ttitle
-                    log.info(f"/api/chat: completed task id={tid} '{ttitle}'")
-            except Exception as e:
-                log.warning(f"/api/chat: task complete failed: {e}")
-            content = _re.sub(r'\s*\[TASK_COMPLETE:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+                # Execute every tool call in this turn
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        log.info(f"Jarvis tool: {block.name} inputs={json.dumps(block.input)}")
+                        result = _execute_jarvis_tool(block.name, block.input)
+                        actions_taken.append({"tool": block.name, "result": result})
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(result),
+                        })
+                messages_loop.append({"role": "user", "content": tool_results})
+            else:
+                break
 
-        # Extract and process [TASK_DELETE: {...}] server-side
-        task_deleted = False
-        deleted_title = None
-        del_match = _re.search(r'\[TASK_DELETE:\s*(\{.*?\})\]', content, _re.DOTALL)
-        if del_match:
-            try:
-                raw_json = del_match.group(1).replace('**', '')
-                ddata = json.loads(raw_json)
-                tid, ttitle = _resolve_task_target(ddata)
-                if tid:
-                    _c = get_db()
-                    _cu = _c.cursor()
-                    _cu.execute("DELETE FROM tasks WHERE id=%s", (tid,))
-                    _c.commit()
-                    _cu.close()
-                    _c.close()
-                    task_deleted = True
-                    deleted_title = ttitle
-                    log.info(f"/api/chat: deleted task id={tid} '{ttitle}'")
-            except Exception as e:
-                log.warning(f"/api/chat: task delete failed: {e}")
-            content = _re.sub(r'\s*\[TASK_DELETE:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+        # Extract final text from the last response
+        content = ""
+        if response:
+            for block in response.content:
+                if getattr(block, "type", None) == "text":
+                    content += block.text
 
-        # Extract and process [STOCK_NOTE: {...}] server-side
-        stock_note_saved = False
-        stock_note_symbol = None
-        note_match = _re.search(r'\[STOCK_NOTE:\s*(\{.*?\})\]', content, _re.DOTALL)
-        if note_match:
-            try:
-                raw_json = note_match.group(1).replace('**', '')
-                ndata = json.loads(raw_json)
-                symbol = str(ndata.get("symbol", "")).strip().upper()[:16]
-                if symbol:
-                    thesis = ndata.get("thesis")
-                    exit_criteria = ndata.get("exit_criteria")
-                    target_price = ndata.get("target_price")
-                    stop_loss = ndata.get("stop_loss")
-                    try:
-                        target_price = float(target_price) if target_price not in (None, "", "null") else None
-                    except Exception:
-                        target_price = None
-                    try:
-                        stop_loss = float(stop_loss) if stop_loss not in (None, "", "null") else None
-                    except Exception:
-                        stop_loss = None
-                    upsert_stock_note(
-                        symbol,
-                        thesis=(str(thesis) if thesis not in (None, "") else None),
-                        exit_criteria=(str(exit_criteria) if exit_criteria not in (None, "") else None),
-                        target_price=target_price,
-                        stop_loss=stop_loss,
-                    )
-                    stock_note_saved = True
-                    stock_note_symbol = symbol
-                    log.info(f"/api/chat: saved stock note for {symbol}")
-            except Exception as ne:
-                log.warning(f"/api/chat: stock note parse failed: {ne}")
-            content = _re.sub(r'\s*\[STOCK_NOTE:\s*\{.*?\}\]\s*', ' ', content, flags=_re.DOTALL).strip()
+        # Build action metadata so the frontend can refresh the right panels
+        task_created = any(a["tool"] == "create_task" and a["result"].get("status") == "created" for a in actions_taken)
+        task_completed = any(a["tool"] == "complete_task" and a["result"].get("status") == "completed" for a in actions_taken)
+        task_deleted = any(a["tool"] == "delete_task" and a["result"].get("status") == "deleted" for a in actions_taken)
+        stock_recorded = any(a["tool"] == "log_stock_transaction" and a["result"].get("status") == "recorded" for a in actions_taken)
+        stock_note_saved = any(a["tool"] == "save_stock_note" and a["result"].get("status") == "saved" for a in actions_taken)
+        assignment_completed = any(a["tool"] == "complete_assignment" and a["result"].get("status") == "logged" for a in actions_taken)
+        workout_generated = any(a["tool"] == "generate_workout" and "plan" in a["result"] for a in actions_taken)
+
+        completed_title = next((a["result"].get("title") for a in actions_taken if a["tool"] == "complete_task"), None)
+        deleted_title = next((a["result"].get("title") for a in actions_taken if a["tool"] == "delete_task"), None)
+        stock_note_symbol = next((a["result"].get("symbol") for a in actions_taken if a["tool"] == "save_stock_note"), None)
+        workout_log_id = next((a["result"].get("log_id") for a in actions_taken if a["tool"] == "generate_workout"), None)
 
         return jsonify({
             "content": content,
             "task_created": task_created,
-            "stock_recorded": stock_recorded,
             "task_completed": task_completed,
             "completed_title": completed_title,
             "task_deleted": task_deleted,
             "deleted_title": deleted_title,
+            "stock_recorded": stock_recorded,
             "stock_note_saved": stock_note_saved,
             "stock_note_symbol": stock_note_symbol,
+            "assignment_completed": assignment_completed,
+            "workout_generated": workout_generated,
+            "workout_log_id": workout_log_id,
         })
     except Exception:
         log.exception("/api/chat failed")
