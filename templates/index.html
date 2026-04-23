@@ -699,9 +699,10 @@ min-width: 90px;
 
 .outlook-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   margin-top: 10px;
+  width: 100%;
 }
 .outlook-card {
   background: var(--surface2);
@@ -2547,7 +2548,7 @@ function renderTasks() {
   container.innerHTML = sorted.slice(0, 8).map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
     return `
-      <div class="sidebar-item ${urgencyClass}" style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
+      <div class="sidebar-item ${urgencyClass}" data-task-id="${t.id}" data-source="${t.source || 'task'}" data-project-id="${t.project_id || ''}" style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
         <div style="flex: 1; cursor: pointer;" onclick="viewTask(${t.id})">
           <div class="sidebar-item-title">${t.title}</div>
           <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
@@ -3445,8 +3446,9 @@ function displayOutlookInChat(data) {
 
   const gridBubble = document.createElement('div');
   gridBubble.className = 'message assistant';
+  gridBubble.style.cssText = 'width:100%;max-width:100%;';
   gridBubble.innerHTML = `
-    <div class="message-bubble" style="padding:12px;">
+    <div class="message-bubble" style="padding:12px;max-width:100%;width:100%;box-sizing:border-box;">
       <div class="outlook-grid">
         <div class="outlook-card" data-kind="cal" onclick="openOutlookCardDetail('cal')">
           <h4>📅 Today</h4>
@@ -4467,15 +4469,27 @@ async function completeTask(event, taskId) {
   try {
     triggerHaptic('success');
 
-    const response = await fetch(`/api/tasks/${taskId}`, {
+    // Read source/project from data attributes so project tasks hit the right endpoint
+    const taskElement = document.querySelector(`[data-task-id="${taskId}"]`);
+    const source = taskElement ? taskElement.dataset.source : 'task';
+    const projectId = taskElement ? taskElement.dataset.projectId : '';
+
+    let url, body;
+    if (source === 'project_task' && projectId) {
+      url = `/api/projects/${projectId}/tasks/${taskId}`;
+      body = JSON.stringify({ status: 'done' });
+    } else {
+      url = `/api/tasks/${taskId}`;
+      body = JSON.stringify({ completed: true });
+    }
+
+    const response = await fetch(url, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ completed: true })
+      body
     });
 
     if (response.ok) {
-      // Find and animate the task element
-      const taskElement = document.querySelector(`[data-task-id="${taskId}"]`);
       if (taskElement) {
         celebrateCompletion(taskElement);
       }
