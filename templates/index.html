@@ -1724,6 +1724,7 @@ margin-bottom: 0;
     <button class="circle-btn active" data-page="home" onclick="navigateTo('home')"        title="Home">&#8962;</button>
     <button class="circle-btn" data-page="chat"        onclick="navigateTo('chat')"        title="Chat">&#128172;</button>
     <button class="circle-btn" data-page="plan"        onclick="navigateTo('plan')"        title="Plan">&#127919;</button>
+    <button class="circle-btn" data-page="projects"    onclick="navigateTo('projects')"    title="Projects">&#128230;</button>
   </nav>
   <div class="top-nav-actions">
     <button class="icon-btn" onclick="openChatHistory()" title="History">&#128336;</button>
@@ -1909,19 +1910,20 @@ margin-bottom: 0;
         <button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
       </div>
     </div>
-    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
-      <div class="sidebar-header" style="margin-top: 0; display: flex; justify-content: space-between; align-items: center;">
-        <span>📦 Projects</span>
-        <button onclick="openAddProjectModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new project">+</button>
-      </div>
-      <div class="sidebar-section" style="margin-top: 8px;">
-        <div id="projectsSection" class="section-content">
-          <div id="projectsList"></div>
-        </div>
-      </div>
-    </div>
   </div>
   <span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
+</div>
+
+<div class="page" id="page-projects">
+  <div class="sidebar-header" style="display: flex; justify-content: space-between; align-items: center;">
+    <span>📦 Projects</span>
+    <button onclick="openAddProjectModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new project">+</button>
+  </div>
+  <div class="sidebar-section">
+    <div id="projectsSection" class="section-content">
+      <div id="projectsList"></div>
+    </div>
+  </div>
 </div>
 
 </main>
@@ -1950,6 +1952,7 @@ function navigateTo(pageName) {
   else if (pageName === 'tasks') loadSidebarData();
   else if (pageName === 'assignments') loadAssignments();
   else if (pageName === 'plan') loadDailyPlan();
+  else if (pageName === 'projects') renderProjects();
 }
 
 function loadAssignments() {
