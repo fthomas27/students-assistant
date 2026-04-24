@@ -1224,7 +1224,7 @@ def parse_canvas_assignments(cal):
             "description": description[:1000],
             "teacher": teacher,
             "due_iso": due_val.astimezone(TZ).isoformat(),
-            "due_display": due_val.astimezone(TZ).strftime("%A, %B %-d, %Y, at %-I:%M %p (%Z)"),
+            "due_display": due_val.astimezone(TZ).strftime("%A, %-m/%-d/%Y, at %-I:%M %p (%Z)"),
             "urgency": urgency
         })
     assignments.sort(key=lambda x: x["due_iso"])
@@ -1418,7 +1418,7 @@ def generate_briefing(force=False):
         conn.close()
 
         now_local = datetime.now(TZ)
-        now_str = now_local.strftime("%A, %B %-d, %Y at %-I:%M %p")
+        now_str = now_local.strftime("%A, %-m/%-d/%Y at %-I:%M %p")
         today = now_local.date()
 
         asgn_sorted = sorted(assignments, key=lambda a: a.get("due_iso", ""))
@@ -1629,7 +1629,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
 
         remaining_text = "\n".join(["- %s (%s, due %s)" % (a["title"], a["class_name"], a["due_display"]) for a in remaining_asgn[:6]]) or "None."
         tasks_text = "\n".join(["- [%s] %s" % (t["urgency"], t["title"]) for t in pending_tasks]) or "None."
-        now_str = datetime.now(TZ).strftime("%A, %B %-d at %-I:%M %p")
+        now_str = datetime.now(TZ).strftime("%A, %-m/%-d at %-I:%M %p")
 
         prompt = (
             "You are Jarvis — the impeccably composed British AI majordomo from the Iron Man films — "
@@ -2829,7 +2829,7 @@ def _generate_workout_core(intensity, location, api_key):
             "Give sets, reps or time, rest, and one short form cue per main movement. "
             "Do not skip the rotation focus — secondary work should support it."
         ) % (
-            name, now_local.strftime("%A, %B %-d, %Y"), focus_label, intensity,
+            name, now_local.strftime("%-m/%-d/%Y"), focus_label, intensity,
             "Home gym (≤35 lb dumbbells + bodyweight)" if location == "home" else "Rec / full gym",
             equip, history_text,
         )
@@ -3044,7 +3044,7 @@ def api_workout_regenerate():
         "Make this DIFFERENT from the previous attempt — use different exercises, rep ranges, or exercise order."
     ) % (
         name,
-        now_local.strftime("%A, %B %-d, %Y"),
+        now_local.strftime("%-m/%-d/%Y"),
         focus_label,
         intensity,
         "Home gym (≤35 lb dumbbells + bodyweight)" if location == "home" else "Rec / full gym",
@@ -3307,7 +3307,7 @@ def api_day_type():
         "date": d.isoformat(),
         "day_type": color,
         "is_school_day": is_school_day,
-        "display": f"{d.strftime('%A, %B %-d, %Y')} is a {color} day" if color else f"{d.strftime('%A, %B %-d, %Y')} (no school)"
+        "display": f"{d.strftime('%-m/%-d/%Y')} is a {color} day" if color else f"{d.strftime('%-m/%-d/%Y')} (no school)"
     })
 
 
@@ -4775,7 +4775,7 @@ def api_chat():
             "- Always confirm what you did in natural Jarvis character after calling a tool. "
             "Never call a tool the student did not ask for. Read back the key details before confirming so the "
             "student can catch any error."
-        ) % (now_chat.strftime("%A, %B %d, %Y"), now_chat.strftime("%-I:%M %p %Z"))
+        ) % (now_chat.strftime("%A, %-m/%-d/%Y"), now_chat.strftime("%-I:%M %p %Z"))
 
         # Inject school schedule context
         try:
