@@ -2540,19 +2540,6 @@ async function loadSidebarData() {
 }
 
 async function loadProjects() {
-  const container = document.getElementById('projectsList');
-  if (!container) return;
-
-  // Show skeleton loader
-  const skeletonHTML = `
-    <div class="sidebar-item" style="color: var(--text3); animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;">
-      <div style="height: 16px; background: var(--surface2); border-radius: 4px; margin-bottom: 6px;"></div>
-      <div style="height: 12px; background: var(--surface2); border-radius: 4px; width: 80%;"></div>
-    </div>
-  `;
-  container.innerHTML = skeletonHTML + skeletonHTML;
-
-  // Timeout after 10 seconds
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -2567,10 +2554,7 @@ async function loadProjects() {
     }
 
     const data = await response.json();
-    if (!data.projects) {
-      container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No projects</div>';
-      return;
-    }
+    if (!data.projects) return;
 
     projectsCache = data.projects;
     renderProjects();
@@ -2578,8 +2562,6 @@ async function loadProjects() {
   } catch (error) {
     clearTimeout(timeoutId);
     console.error('Error loading projects:', error);
-    const errorMsg = error.name === 'AbortError' ? 'Connection timeout' : 'Failed to load projects';
-    container.innerHTML = `<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 12px 0; font-size: 11px;">${errorMsg}</div>`;
   }
 }
 
@@ -2654,6 +2636,7 @@ function renderTasks() {
 
 function renderProjects() {
   const container = document.getElementById('projectsList');
+  if (!container) return;
   if (!projectsCache || projectsCache.length === 0) {
     container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No active projects</div>';
     return;
