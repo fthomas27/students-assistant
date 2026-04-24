@@ -1950,6 +1950,10 @@ function navigateTo(pageName) {
   else if (pageName === 'tasks') loadSidebarData();
   else if (pageName === 'assignments') loadAssignments();
   else if (pageName === 'plan') loadDailyPlan();
+  else if (pageName === 'chat') {
+    var msgs = document.getElementById('chatMessages');
+    if (msgs) msgs.scrollTop = msgs.scrollHeight;
+  }
 }
 
 function loadAssignments() {
@@ -1999,8 +2003,8 @@ function loadHomePage() {
       } else {
         planEl.innerHTML = data.items.map(function(item) {
           return '<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:14px;">'
-            + '<span style="color:var(--accent);font-size:12px;">' + (item.scheduled_start_time || '') + '</span> '
-            + '<span style="color:var(--text);">' + item.item_title + '</span>'
+            + '<span style="color:var(--accent);font-size:12px;">' + escapeHtml(item.scheduled_start_time || '') + '</span> '
+            + '<span style="color:var(--text);">' + escapeHtml(item.item_title || '') + '</span>'
             + '</div>';
         }).join('');
       }
@@ -2242,15 +2246,15 @@ async function loadSidebarData() {
     });
   }, 40000);
 
-  // Handle each API request individually for progressive rendering
+  // Handle each API request individually for progressive rendering.
+  // Always render on every fetch so a fresh skeleton is replaced even
+  // when the data is identical to the cached copy (e.g. both empty).
   const dataHandlers = {
     assignments: {
       url: '/api/assignments',
       containerId: 'assignmentsList',
       processor: (data) => {
-        const newData = data.assignments || [];
-        if (!dataChanged(assignmentsCache, newData)) return;
-        assignmentsCache = newData;
+        assignmentsCache = data.assignments || [];
         renderAssignments();
       }
     },
@@ -2258,9 +2262,7 @@ async function loadSidebarData() {
       url: '/api/tasks',
       containerId: 'tasksList',
       processor: (data) => {
-        const newData = data.tasks || [];
-        if (!dataChanged(tasksCache, newData)) return;
-        tasksCache = newData;
+        tasksCache = data.tasks || [];
         renderTasks();
       }
     },
@@ -2268,9 +2270,7 @@ async function loadSidebarData() {
       url: '/api/calendar',
       containerId: 'calendarList',
       processor: (data) => {
-        const newData = data.events || [];
-        if (!dataChanged(calendarCache, newData)) return;
-        calendarCache = newData;
+        calendarCache = data.events || [];
         buildEventsByDate();
         renderCalendar();
       }
