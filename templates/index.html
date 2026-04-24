@@ -2230,13 +2230,13 @@ async function loadSidebarData() {
   `;
 
   Object.values(elements).forEach(el => {
-    el.innerHTML = skeletonHTML + skeletonHTML;
+    if (el) el.innerHTML = skeletonHTML + skeletonHTML;
   });
 
   // Timeout safety: if still loading after 40 seconds, show timeout message
   const timeoutId = setTimeout(() => {
     Object.entries(elements).forEach(([key, el]) => {
-      if (el.innerHTML.includes('pulse')) {
+      if (el && el.innerHTML.includes('pulse')) {
         el.innerHTML = '<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 20px 0; font-size: 12px;">Connection timeout</div>';
       }
     });
@@ -2898,6 +2898,7 @@ async function saveTaskEdit(taskId) {
 
 function renderCalendar() {
   const container = document.getElementById('calendarList');
+  if (!container) return;
   if (!calendarCache || calendarCache.length === 0) {
     container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No upcoming events</div>';
     return;
