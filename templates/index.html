@@ -185,8 +185,7 @@ grid-auto-rows: minmax(120px, auto);
 gap: 12px;
 }
 #homeOutlookContent .outlook-card[data-kind="news"] {
-grid-column: span 2;
-grid-row: span 2;
+grid-column: span 4;
 }
 #homeOutlookContent .outlook-card[data-kind="cal"] {
 grid-column: span 2;
@@ -330,15 +329,29 @@ padding: 16px 8px;
 /* ── NEWS CARD (Home, featured) ── */
 #homeOutlookContent .outlook-news-list {
 display: flex;
-flex-direction: column;
+flex-direction: row;
 gap: 10px;
 margin-top: 4px;
+overflow-x: auto;
+overflow-y: hidden;
+padding-bottom: 6px;
+scrollbar-width: thin;
+}
+#homeOutlookContent .outlook-news-list::-webkit-scrollbar {
+height: 6px;
+}
+#homeOutlookContent .outlook-news-list::-webkit-scrollbar-thumb {
+background: var(--border2);
+border-radius: 3px;
 }
 #homeOutlookContent .outlook-news-entry {
 padding: 8px 10px;
 background: rgba(255,255,255,0.03);
 border-radius: var(--r-sm);
 border-left: 3px solid var(--purple);
+flex: 0 0 240px;
+display: flex;
+flex-direction: column;
 }
 #homeOutlookContent .outlook-news-entry .outlet {
 font-size: 10px;
