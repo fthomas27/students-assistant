@@ -179,7 +179,199 @@ margin: 0 0 4px;
 }
 
 #homeOutlookContent .outlook-grid {
-grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+display: grid;
+grid-template-columns: repeat(4, 1fr);
+grid-auto-rows: minmax(120px, auto);
+gap: 12px;
+}
+#homeOutlookContent .outlook-card[data-kind="news"] {
+grid-column: span 2;
+grid-row: span 2;
+}
+#homeOutlookContent .outlook-card[data-kind="cal"] {
+grid-column: span 2;
+}
+@media (max-width: 900px) {
+#homeOutlookContent .outlook-grid {
+grid-template-columns: 1fr;
+}
+#homeOutlookContent .outlook-card[data-kind="news"],
+#homeOutlookContent .outlook-card[data-kind="cal"] {
+grid-column: auto;
+grid-row: auto;
+}
+}
+
+/* ── KANBAN (Projects page) ── */
+.kanban-board {
+display: grid;
+grid-template-columns: repeat(3, 1fr);
+gap: 16px;
+flex: 1;
+min-height: 0;
+margin-top: 12px;
+}
+.kanban-column {
+display: flex;
+flex-direction: column;
+background: var(--surface);
+border: 1px solid var(--border);
+border-radius: var(--r-sm);
+min-height: 0;
+transition: border-color 0.2s;
+}
+.kanban-column.drag-over {
+border-color: var(--accent);
+box-shadow: 0 0 0 2px rgba(255,127,80,0.2);
+}
+.kanban-column-header {
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 10px 12px;
+border-bottom: 1px solid var(--border);
+font-size: 12px;
+font-weight: 700;
+color: var(--text2);
+text-transform: uppercase;
+letter-spacing: 0.1em;
+flex-shrink: 0;
+}
+.kanban-count {
+background: var(--accent);
+color: #fff;
+font-size: 10px;
+font-weight: 700;
+padding: 2px 8px;
+border-radius: 10px;
+min-width: 20px;
+text-align: center;
+}
+.kanban-column-body {
+display: flex;
+flex-direction: column;
+gap: 8px;
+padding: 8px;
+overflow-y: auto;
+flex: 1;
+}
+.kanban-card {
+background: var(--surface2);
+border: 1px solid var(--border);
+border-left: 3px solid var(--accent);
+border-radius: var(--r-sm);
+padding: 10px 12px;
+cursor: grab;
+transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
+user-select: none;
+}
+.kanban-card:active { cursor: grabbing; }
+.kanban-card:hover {
+background: var(--surface);
+transform: translateY(-1px);
+box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+.kanban-card.dragging { opacity: 0.5; }
+.kanban-card-title {
+font-size: 13px;
+font-weight: 600;
+color: var(--text);
+margin-bottom: 4px;
+overflow: hidden;
+text-overflow: ellipsis;
+white-space: nowrap;
+}
+.kanban-card-desc {
+font-size: 11px;
+color: var(--text2);
+line-height: 1.4;
+margin-bottom: 8px;
+display: -webkit-box;
+-webkit-line-clamp: 2;
+-webkit-box-orient: vertical;
+overflow: hidden;
+}
+.kanban-card-footer {
+display: flex;
+align-items: center;
+justify-content: space-between;
+font-size: 10px;
+color: var(--text3);
+}
+.kanban-progress-track {
+flex: 1;
+height: 4px;
+background: var(--bg);
+border-radius: 2px;
+overflow: hidden;
+margin-right: 8px;
+}
+.kanban-progress-fill {
+height: 100%;
+background: var(--accent);
+transition: width 0.3s;
+}
+.kanban-checkin-dot {
+display: inline-block;
+width: 6px;
+height: 6px;
+background: var(--red);
+border-radius: 50%;
+margin-left: 4px;
+}
+.kanban-empty {
+color: var(--text3);
+font-size: 12px;
+font-style: italic;
+text-align: center;
+padding: 16px 8px;
+}
+
+/* ── NEWS CARD (Home, featured) ── */
+#homeOutlookContent .outlook-news-list {
+display: flex;
+flex-direction: column;
+gap: 10px;
+margin-top: 4px;
+}
+#homeOutlookContent .outlook-news-entry {
+padding: 8px 10px;
+background: rgba(255,255,255,0.03);
+border-radius: var(--r-sm);
+border-left: 3px solid var(--purple);
+}
+#homeOutlookContent .outlook-news-entry .outlet {
+font-size: 10px;
+font-weight: 700;
+color: var(--text3);
+text-transform: uppercase;
+letter-spacing: 0.08em;
+margin-bottom: 2px;
+}
+#homeOutlookContent .outlook-news-entry .headline {
+font-size: 13px;
+color: var(--text);
+font-weight: 600;
+line-height: 1.35;
+margin-bottom: 4px;
+}
+#homeOutlookContent .outlook-news-entry .summary {
+font-size: 11px;
+color: var(--text2);
+line-height: 1.4;
+}
+#homeOutlookContent .outlook-news-entry .published {
+font-size: 10px;
+color: var(--text3);
+margin-top: 4px;
+}
+
+@media (max-width: 900px) {
+.kanban-board {
+grid-template-columns: 1fr;
+overflow-y: auto;
+}
+.kanban-column { max-height: 60vh; }
 }
 
 /* ── HEADER ── */
@@ -1725,6 +1917,7 @@ margin-bottom: 0;
     <button class="circle-btn active" data-page="home" onclick="navigateTo('home')"        title="Home">&#8962;</button>
     <button class="circle-btn" data-page="chat"        onclick="navigateTo('chat')"        title="Chat">&#128172;</button>
     <button class="circle-btn" data-page="plan"        onclick="navigateTo('plan')"        title="Plan">&#127919;</button>
+    <button class="circle-btn" data-page="projects"    onclick="navigateTo('projects')"    title="Projects">&#128230;</button>
   </nav>
   <div class="top-nav-actions">
     <button class="icon-btn" onclick="openChatHistory()" title="History">&#128336;</button>
@@ -1925,6 +2118,36 @@ margin-bottom: 0;
   <span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
 </div>
 
+<div class="page" id="page-projects">
+  <div class="sidebar-header" style="display: flex; justify-content: space-between; align-items: center;">
+    <span>📦 Projects</span>
+    <button onclick="openAddProjectModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new project">+</button>
+  </div>
+  <div class="kanban-board" id="kanbanBoard">
+    <section class="kanban-column" data-status="active">
+      <div class="kanban-column-header">
+        <span>Active</span>
+        <span class="kanban-count" id="kanbanCountActive">0</span>
+      </div>
+      <div class="kanban-column-body" id="kanbanColActive" data-status="active"></div>
+    </section>
+    <section class="kanban-column" data-status="paused">
+      <div class="kanban-column-header">
+        <span>Paused</span>
+        <span class="kanban-count" id="kanbanCountPaused">0</span>
+      </div>
+      <div class="kanban-column-body" id="kanbanColPaused" data-status="paused"></div>
+    </section>
+    <section class="kanban-column" data-status="done">
+      <div class="kanban-column-header">
+        <span>Done</span>
+        <span class="kanban-count" id="kanbanCountDone">0</span>
+      </div>
+      <div class="kanban-column-body" id="kanbanColDone" data-status="done"></div>
+    </section>
+  </div>
+</div>
+
 </main>
 
 <script>
@@ -1951,6 +2174,7 @@ function navigateTo(pageName) {
   else if (pageName === 'tasks') loadSidebarData();
   else if (pageName === 'assignments') loadAssignments();
   else if (pageName === 'plan') loadDailyPlan();
+  else if (pageName === 'projects') loadProjects();
   else if (pageName === 'chat') {
     var msgs = document.getElementById('chatMessages');
     if (msgs) msgs.scrollTop = msgs.scrollHeight;
@@ -2348,6 +2572,7 @@ async function loadProjects() {
 
     projectsCache = data.projects;
     renderProjects();
+    renderProjectsKanban();
   } catch (error) {
     clearTimeout(timeoutId);
     console.error('Error loading projects:', error);
@@ -2445,6 +2670,107 @@ function renderProjects() {
     </div>
   `).join('');
   updateSidebarStats();
+}
+
+function renderProjectsKanban() {
+  const board = document.getElementById('kanbanBoard');
+  if (!board) return;
+
+  const cols = {
+    active: document.getElementById('kanbanColActive'),
+    paused: document.getElementById('kanbanColPaused'),
+    done:   document.getElementById('kanbanColDone')
+  };
+  const counts = {
+    active: document.getElementById('kanbanCountActive'),
+    paused: document.getElementById('kanbanCountPaused'),
+    done:   document.getElementById('kanbanCountDone')
+  };
+  if (!cols.active || !cols.paused || !cols.done) return;
+
+  const groups = { active: [], paused: [], done: [] };
+  (projectsCache || []).forEach(p => {
+    const status = groups.hasOwnProperty(p.status) ? p.status : 'active';
+    groups[status].push(p);
+  });
+
+  Object.keys(groups).forEach(status => {
+    counts[status].textContent = groups[status].length;
+    const list = groups[status];
+    if (list.length === 0) {
+      cols[status].innerHTML = '<div class="kanban-empty">No projects</div>';
+      return;
+    }
+    cols[status].innerHTML = list.map(p => {
+      const pct = Math.max(0, Math.min(100, parseInt(p.completion_pct, 10) || 0));
+      const needsCheckin = p.needs_checkin ? '<span class="kanban-checkin-dot" title="Check-in overdue"></span>' : '';
+      return '<div class="kanban-card" draggable="true" data-project-id="' + p.id + '">'
+        + '<div class="kanban-card-title">' + escapeHtml(p.title || '') + needsCheckin + '</div>'
+        + (p.description ? '<div class="kanban-card-desc">' + escapeHtml(p.description) + '</div>' : '')
+        + '<div class="kanban-card-footer">'
+        +   '<div class="kanban-progress-track"><div class="kanban-progress-fill" style="width:' + pct + '%;"></div></div>'
+        +   '<span>' + pct + '%</span>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+  });
+
+  wireKanbanInteractions();
+}
+
+function wireKanbanInteractions() {
+  const cards = document.querySelectorAll('#kanbanBoard .kanban-card');
+  cards.forEach(card => {
+    card.addEventListener('click', (e) => {
+      if (card.classList.contains('dragging')) return;
+      const id = parseInt(card.dataset.projectId, 10);
+      if (!isNaN(id)) openProjectDetailsModal(id);
+    });
+    card.addEventListener('dragstart', (e) => {
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', card.dataset.projectId);
+    });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+  });
+
+  const cols = document.querySelectorAll('#kanbanBoard .kanban-column');
+  cols.forEach(col => {
+    const body = col.querySelector('.kanban-column-body');
+    col.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      col.classList.add('drag-over');
+    });
+    col.addEventListener('dragleave', (e) => {
+      if (!col.contains(e.relatedTarget)) col.classList.remove('drag-over');
+    });
+    col.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      col.classList.remove('drag-over');
+      const id = parseInt(e.dataTransfer.getData('text/plain'), 10);
+      const newStatus = body.dataset.status;
+      if (isNaN(id) || !newStatus) return;
+      const project = (projectsCache || []).find(p => p.id === id);
+      if (!project || project.status === newStatus) return;
+      const previousStatus = project.status;
+      project.status = newStatus;
+      renderProjectsKanban();
+      try {
+        const resp = await fetch('/api/projects/' + id, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus })
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      } catch (err) {
+        console.error('Failed to update project status:', err);
+        project.status = previousStatus;
+        renderProjectsKanban();
+        if (typeof showToast === 'function') showToast('Could not update project status', 'error');
+      }
+    });
+  });
 }
 
 function viewProject(title, description) {
@@ -3295,10 +3621,22 @@ function buildOutlookGridHTML(data) {
 
   const news = data.news || {};
   const allNews = [...(news.national || []), ...(news.local || [])];
+  const _trim = (s, n) => {
+    const t = (s || '').toString();
+    return t.length > n ? t.slice(0, n).trimEnd() + '…' : t;
+  };
   const newsBody = allNews.length > 0
-    ? `<div class="outlook-primary">${allNews.length}</div>
-       <div class="outlook-body">headlines queued</div>
-       ${allNews.slice(0, 3).map(n => `<div class="outlook-item">📰 <strong>${escapeHtml(n.outlet)}</strong>: ${escapeHtml((n.title || '').slice(0, 60))}${n.title && n.title.length > 60 ? '…' : ''}</div>`).join('')}`
+    ? `<div class="outlook-body" style="margin-bottom:6px;">${allNews.length} headline${allNews.length !== 1 ? 's' : ''} queued</div>
+       <div class="outlook-news-list">
+         ${allNews.slice(0, 6).map(n => `
+           <div class="outlook-news-entry">
+             <div class="outlet">📰 ${escapeHtml(n.outlet || '')}</div>
+             <div class="headline">${escapeHtml(n.title || '')}</div>
+             ${n.summary ? `<div class="summary">${escapeHtml(_trim(n.summary, 180))}</div>` : ''}
+             ${n.published ? `<div class="published">${escapeHtml(n.published)}</div>` : ''}
+           </div>
+         `).join('')}
+       </div>`
     : `<div class="outlook-body">News feeds quiet.</div>`;
 
   return `
