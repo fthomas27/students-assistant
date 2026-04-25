@@ -596,12 +596,15 @@ async function loadSchedule() {
       const start = to12Hour(item.scheduled_start_time);
       const end = to12Hour(item.scheduled_end_time);
       const isPrivate = item.item_type === 'private';
-      const badgeClass = isPrivate ? 'badge-private' : `badge-${item.item_type}`;
-      const badgeLabel = isPrivate ? 'private' : item.item_type;
+      if (isPrivate) {
+        return `<div class="schedule-item">
+          <span class="schedule-time">${start} – ${end}</span>
+        </div>`;
+      }
       return `<div class="schedule-item">
         <span class="schedule-time">${start} – ${end}</span>
-        <span class="schedule-title${isPrivate ? ' private' : ''}${item.completed ? ' schedule-done' : ''}">${isPrivate ? 'Private' : escapeHtml(item.item_title)}</span>
-        <span class="schedule-type-badge ${badgeClass}">${badgeLabel}</span>
+        <span class="schedule-title${item.completed ? ' schedule-done' : ''}">${escapeHtml(item.item_title)}</span>
+        <span class="schedule-type-badge badge-${item.item_type}">${item.item_type}</span>
       </div>`;
     }).join('');
   } catch (e) {

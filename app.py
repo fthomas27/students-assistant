@@ -3693,7 +3693,7 @@ ORDER BY dpi.order_index ASC, dpi.scheduled_start_time ASC""", (plan["id"],))
             result.append({
                 "id": item["id"],
                 "item_type": item["item_type"] if not is_hidden else "private",
-                "item_title": item["item_title"] if not is_hidden else "Private",
+                "item_title": item["item_title"] if not is_hidden else "",
                 "scheduled_start_time": str(item["scheduled_start_time"]),
                 "scheduled_end_time": str(item["scheduled_end_time"]),
                 "completed": item["completed"],
