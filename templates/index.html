@@ -2195,7 +2195,7 @@ function updateTopNavDate() {
   var el = document.getElementById('topNavDate');
   if (!el) return;
   var now = new Date();
-  el.textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  el.textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric' });
 }
 
 function loadHomePage() {
@@ -2348,7 +2348,7 @@ function loadChatHistory() {
   list.innerHTML = histories.map((h, i) => `
     <div style="padding: 12px; background: var(--surface2); border-radius: var(--r-sm); margin-bottom: 8px; cursor: pointer;" onclick="loadChat(${i})">
       <div style="color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(h.title || 'Chat ' + (i + 1))}</div>
-      <div style="color: var(--text3); font-size: 12px; margin-top: 4px;">${new Date(h.timestamp).toLocaleDateString()} - ${h.messageCount} messages</div>
+      <div style="color: var(--text3); font-size: 12px; margin-top: 4px;">${new Date(h.timestamp).toLocaleDateString('en-US', {month:'numeric',day:'numeric',year:'numeric'})} - ${h.messageCount} messages</div>
     </div>
   `).join('');
 }
@@ -3233,7 +3233,7 @@ function renderCalendar() {
     const badge = isSports ? '<span style="display: inline-block; background: var(--purple); color: white; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-left: 4px; font-weight: 600;">SPORTS</span>' : '';
     const d = new Date(e.start_iso);
     const timeOnly = e.all_day ? 'All Day' : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-    const dateOnly = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const dateOnly = d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' });
     return `
       <div class="sidebar-item" style="cursor:pointer;${isSports ? 'border-left:3px solid var(--purple);' : ''}"
            onclick="openCalendarModalOnDate(${d.getFullYear()},${d.getMonth()},${d.getDate()})">
@@ -3659,7 +3659,7 @@ function displayOutlookInChat(data) {
   const intro = document.createElement('div');
   intro.className = 'message assistant';
   const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric' });
   intro.innerHTML = `<div class="message-bubble">${formatMessage(`## Morning Outlook\n${dateStr} — a civilised summary of the day ahead, sir. Tap any card for detail.`)}</div>`;
   messagesDiv.appendChild(intro);
 
@@ -3776,11 +3776,11 @@ function openOutlookCardDetail(kind) {
       <div class="outlook-body" style="margin-bottom:12px;">${escapeHtml(w.description || '')} · feels ${w.feels_like_f}° · wind ${w.wind_mph} mph</div>`;
     const week = daily.length > 0 ? `
       <h3 style="font-size:13px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;">7-Day</h3>
-      ${daily.map(d => `
-        <div class="outlook-news-item" style="border-left-color:#4fb3f6;display:flex;justify-content:space-between;align-items:center;">
-          <div><strong>${escapeHtml(d.date)}</strong> · ${escapeHtml(d.description)}</div>
-          <div>${d.hi_f}° / ${d.lo_f}° · ${d.precip_pct}%</div>
-        </div>`).join('')}` : '';
+      ${daily.map(d => {
+        const parts = d.date.split('-');
+        const dayLabel = new Date(+parts[0], +parts[1]-1, +parts[2]).toLocaleDateString('en-US', { weekday: 'long' });
+        return `<div class="outlook-news-item" style="border-left-color:#4fb3f6;display:flex;justify-content:space-between;align-items:center;"><div><strong>${escapeHtml(dayLabel)}</strong> · ${escapeHtml(d.description)}</div><div>${d.hi_f}° / ${d.lo_f}° · ${d.precip_pct}%</div></div>`;
+      }).join('')}` : '';
     _outlookModalShell('Park City Weather', cur + week);
     return;
   }
@@ -4114,7 +4114,7 @@ function formatDate(dateStr) {
   const days = Math.floor((d - today) / (1000 * 60 * 60 * 24));
   if (days > 0 && days < 7) return `In ${days} days`;
 
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' });
 }
 
 function formatDueDateLong(dateStr) {
@@ -4122,7 +4122,7 @@ function formatDueDateLong(dateStr) {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr;
   const datePart = d.toLocaleDateString('en-US', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+    weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric'
   });
   const timePart = d.toLocaleTimeString('en-US', {
     hour: 'numeric', minute: '2-digit', hour12: true
@@ -4134,7 +4134,7 @@ function formatDueDateLong(dateStr) {
 function formatEventTime(startStr) {
   if (!startStr) return '';
   const d = new Date(startStr);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
+  return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' }) + ' ' +
          d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
@@ -5453,7 +5453,7 @@ function renderCalendarModal() {
 async function showCalendarEvents(day, month, year, events) {
   const eventsList = document.getElementById('calendarEventsList');
   const dateStr = new Date(year, month, day).toLocaleDateString('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric'
+    weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric'
   });
   const isoDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
@@ -5598,13 +5598,8 @@ function updateClock() {
     const displayMinutes = minutes < 10 ? '0' + minutes : minutes;
     timeElement.textContent = `${displayHours}:${displayMinutes} ${ampm}`;
 
-    // Format date as Day, Month Date
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const dayName = days[now.getDay()];
-    const monthName = months[now.getMonth()];
-    const date = now.getDate();
-    dateElement.textContent = `${dayName}, ${monthName} ${date}`;
+    dateElement.textContent = `${days[now.getDay()]}, ${now.getMonth()+1}/${now.getDate()}/${now.getFullYear()}`;
   }
 }
 
