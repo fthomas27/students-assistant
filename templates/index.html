@@ -190,12 +190,20 @@ grid-column: span 4;
 #homeOutlookContent .outlook-card[data-kind="cal"] {
 grid-column: span 2;
 }
+#homeOutlookContent .outlook-card[data-kind="weather"] {
+grid-column: span 2;
+}
+#homeOutlookContent .outlook-card[data-kind="quote"] {
+grid-column: span 2;
+}
 @media (max-width: 900px) {
 #homeOutlookContent .outlook-grid {
 grid-template-columns: 1fr;
 }
 #homeOutlookContent .outlook-card[data-kind="news"],
-#homeOutlookContent .outlook-card[data-kind="cal"] {
+#homeOutlookContent .outlook-card[data-kind="cal"],
+#homeOutlookContent .outlook-card[data-kind="weather"],
+#homeOutlookContent .outlook-card[data-kind="quote"] {
 grid-column: auto;
 grid-row: auto;
 }
@@ -2230,7 +2238,7 @@ function loadHomePage() {
       } else {
         planEl.innerHTML = data.items.map(function(item) {
           return '<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:14px;">'
-            + '<span style="color:var(--accent);font-size:12px;">' + escapeHtml(item.scheduled_start_time || '') + '</span> '
+            + '<span style="color:var(--accent);font-size:12px;">' + escapeHtml(to12Hour(item.scheduled_start_time) || '') + '</span> '
             + '<span style="color:var(--text);">' + escapeHtml(item.item_title || '') + '</span>'
             + '</div>';
         }).join('');
@@ -2621,13 +2629,19 @@ function renderTasks() {
 
   container.innerHTML = sorted.slice(0, 8).map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
+    const isHidden = t.hidden_from_parent;
+    const eyeTitle = isHidden ? 'Visible to parent: No — click to show' : 'Visible to parent: Yes — click to hide';
+    const eyeStyle = isHidden ? 'color:var(--text3);text-decoration:line-through;' : 'color:var(--text2);';
     return `
       <div class="sidebar-item ${urgencyClass}" data-task-id="${t.id}" data-source="${t.source || 'task'}" data-project-id="${t.project_id || ''}" style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
-        <div style="flex: 1; cursor: pointer;" onclick="viewTask(${t.id})">
+        <div style="flex: 1; cursor: pointer;" onclick="editTask(${t.id})">
           <div class="sidebar-item-title">${t.title}</div>
           <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
         </div>
-        <button class="complete-btn" onclick="completeTask(event, ${t.id})" style="background: none; border: none; color: var(--text2); cursor: pointer; font-size: 16px; padding: 2px 6px; margin-top: 2px; flex-shrink: 0;" title="Mark as done">✓</button>
+        <div style="display:flex;gap:2px;flex-shrink:0;align-items:center;margin-top:2px;">
+          ${t.source !== 'project_task' ? `<button onclick="toggleTaskHidden(event,${t.id},${!isHidden})" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;${eyeStyle}" title="${eyeTitle}">👁</button>` : ''}
+          <button class="complete-btn" onclick="completeTask(event, ${t.id})" style="background: none; border: none; color: var(--text2); cursor: pointer; font-size: 16px; padding: 2px 6px;" title="Mark as done">✓</button>
+        </div>
       </div>
     `;
   }).join('');
@@ -2689,12 +2703,16 @@ function renderProjectsKanban() {
     cols[status].innerHTML = list.map(p => {
       const pct = Math.max(0, Math.min(100, parseInt(p.completion_pct, 10) || 0));
       const needsCheckin = p.needs_checkin ? '<span class="kanban-checkin-dot" title="Check-in overdue"></span>' : '';
+      const hiddenIcon = p.hidden_from_parent
+        ? '<span style="font-size:11px;color:var(--text3);margin-left:4px;" title="Hidden from parent">🔒</span>'
+        : '<span style="font-size:11px;color:var(--text3);margin-left:4px;opacity:0.4;" title="Visible to parent">👁</span>';
       return '<div class="kanban-card" draggable="true" data-project-id="' + p.id + '">'
         + '<div class="kanban-card-title">' + escapeHtml(p.title || '') + needsCheckin + '</div>'
         + (p.description ? '<div class="kanban-card-desc">' + escapeHtml(p.description) + '</div>' : '')
         + '<div class="kanban-card-footer">'
         +   '<div class="kanban-progress-track"><div class="kanban-progress-fill" style="width:' + pct + '%;"></div></div>'
         +   '<span>' + pct + '%</span>'
+        +   '<button onclick="event.stopPropagation();toggleProjectHidden(' + p.id + ',' + !p.hidden_from_parent + ')" style="background:none;border:none;cursor:pointer;padding:0 2px;font-size:13px;line-height:1;" title="' + (p.hidden_from_parent ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide') + '">' + (p.hidden_from_parent ? '🔒' : '👁') + '</button>'
         + '</div>'
         + '</div>';
     }).join('');
@@ -4935,6 +4953,29 @@ async function saveEditProject(projectId) {
     console.error('Error updating project:', e);
     alert('Error updating project');
   }
+}
+
+async function toggleProjectHidden(projectId, hide) {
+  try {
+    await fetch(`/api/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hidden_from_parent: hide })
+    });
+    await loadProjects();
+  } catch (e) { console.error('toggleProjectHidden failed', e); }
+}
+
+async function toggleTaskHidden(event, taskId, hide) {
+  event.stopPropagation();
+  try {
+    await fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hidden_from_parent: hide })
+    });
+    await loadSidebarData();
+  } catch (e) { console.error('toggleTaskHidden failed', e); }
 }
 
 async function deleteProject(projectId) {
