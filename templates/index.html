@@ -190,12 +190,20 @@ grid-column: span 4;
 #homeOutlookContent .outlook-card[data-kind="cal"] {
 grid-column: span 2;
 }
+#homeOutlookContent .outlook-card[data-kind="weather"] {
+grid-column: span 2;
+}
+#homeOutlookContent .outlook-card[data-kind="quote"] {
+grid-column: span 2;
+}
 @media (max-width: 900px) {
 #homeOutlookContent .outlook-grid {
 grid-template-columns: 1fr;
 }
 #homeOutlookContent .outlook-card[data-kind="news"],
-#homeOutlookContent .outlook-card[data-kind="cal"] {
+#homeOutlookContent .outlook-card[data-kind="cal"],
+#homeOutlookContent .outlook-card[data-kind="weather"],
+#homeOutlookContent .outlook-card[data-kind="quote"] {
 grid-column: auto;
 grid-row: auto;
 }
