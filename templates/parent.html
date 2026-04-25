@@ -446,6 +446,36 @@ textarea {
   display: inline-block;
   margin-left: 4px;
 }
+
+.schedule-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.schedule-item:last-child { border-bottom: none; }
+.schedule-time {
+  color: var(--accent);
+  font-weight: 600;
+  min-width: 110px;
+  font-size: 13px;
+}
+.schedule-title { color: var(--text); flex: 1; }
+.schedule-title.private { color: var(--text3); font-style: italic; }
+.schedule-done { text-decoration: line-through; opacity: 0.5; }
+.schedule-type-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.badge-calendar { background: rgba(79,179,246,0.2); color: #4fb3f6; }
+.badge-assignment { background: rgba(255,127,80,0.2); color: var(--accent); }
+.badge-task { background: rgba(92,184,92,0.2); color: var(--green); }
+.badge-private { background: rgba(153,153,153,0.15); color: var(--text3); }
 </style>
 </head>
 <body>
@@ -460,6 +490,12 @@ textarea {
   </div>
 
   <div id="message" class="message"></div>
+
+  <!-- Today's Schedule -->
+  <div class="form-section" id="scheduleSection">
+    <div class="form-title">📅 Today's Schedule</div>
+    <div id="scheduleContent" style="color:var(--text3);font-size:14px;">Loading schedule...</div>
+  </div>
 
   <!-- Statistics -->
   <div class="stats-grid" id="statsGrid" style="display: none;">
@@ -534,11 +570,48 @@ textarea {
 let tasks = [];
 let currentFilter = 'all';
 
-// Load tasks on page load
+// Load tasks and schedule on page load
 document.addEventListener('DOMContentLoaded', () => {
   loadTasks();
+  loadSchedule();
   document.getElementById('addTaskForm').addEventListener('submit', addTask);
 });
+
+function to12Hour(t) {
+  if (!t) return '';
+  const [h, m] = t.split(':').map(Number);
+  return `${h % 12 || 12}:${m.toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+async function loadSchedule() {
+  const el = document.getElementById('scheduleContent');
+  try {
+    const res = await fetch('/api/parent/daily-plan', { credentials: 'same-origin' });
+    const data = await res.json();
+    if (!data.exists || !data.items || data.items.length === 0) {
+      el.innerHTML = '<span style="color:var(--text3);">No schedule has been generated for today.</span>';
+      return;
+    }
+    el.innerHTML = data.items.map(item => {
+      const start = to12Hour(item.scheduled_start_time);
+      const end = to12Hour(item.scheduled_end_time);
+      const isPrivate = item.item_type === 'private';
+      const badgeClass = isPrivate ? 'badge-private' : `badge-${item.item_type}`;
+      const badgeLabel = isPrivate ? 'private' : item.item_type;
+      return `<div class="schedule-item">
+        <span class="schedule-time">${start} – ${end}</span>
+        <span class="schedule-title${isPrivate ? ' private' : ''}${item.completed ? ' schedule-done' : ''}">${isPrivate ? 'Private' : escapeHtml(item.item_title)}</span>
+        <span class="schedule-type-badge ${badgeClass}">${badgeLabel}</span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<span style="color:var(--text3);">Could not load schedule.</span>';
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 
 async function loadTasks() {
   try {

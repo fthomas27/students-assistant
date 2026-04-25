@@ -374,6 +374,22 @@ ON CONFLICT (ip_address) DO NOTHING""")
         conn = get_db()
         cur = conn.cursor()
 
+    try:
+        cur.execute("ALTER TABLE projects ADD COLUMN hidden_from_parent BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    try:
+        cur.execute("ALTER TABLE tasks ADD COLUMN hidden_from_parent BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
     # Insert default config values
     defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas"}
     for k, v in defaults.items():
@@ -3362,7 +3378,7 @@ def api_tasks_get():
         cur = conn.cursor()
         cur.execute("""
 SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
-       NULL as project_id, NULL as project_title
+       NULL as project_id, NULL as project_title, hidden_from_parent
 FROM tasks ORDER BY completed ASC,
     CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
     created_at ASC""")
@@ -3371,7 +3387,8 @@ FROM tasks ORDER BY completed ASC,
         cur.execute("""
 SELECT pt.id, pt.title, pt.notes, 'medium' as urgency,
        (pt.status = 'done') as completed, NULL as completed_at, pt.due_date,
-       pt.created_at, pt.project_id, p.title as project_title
+       pt.created_at, pt.project_id, p.title as project_title,
+       p.hidden_from_parent
 FROM project_tasks pt
 JOIN projects p ON p.id = pt.project_id
 WHERE p.status = 'active' AND LOWER(pt.assignee) IN ('me', 'finn')
@@ -3479,6 +3496,9 @@ WHERE plan_date = %s""", (today,))
                 except (ValueError, TypeError):
                     return jsonify({"error": "invalid due_date format"}), 400
             cur.execute("UPDATE tasks SET due_date=%s WHERE id=%s", (due_date, task_id))
+        if "hidden_from_parent" in data:
+            cur.execute("UPDATE tasks SET hidden_from_parent=%s WHERE id=%s",
+                        (bool(data["hidden_from_parent"]), task_id))
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -3629,6 +3649,60 @@ def api_parent_task_update(task_id):
         conn.rollback()
         log.error(f"Parent task update error: {type(e).__name__}")
         return jsonify({"error": "Failed to update task"}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.route("/api/parent/daily-plan", methods=["GET"])
+def api_parent_daily_plan():
+    """Return today's daily plan for parent view. Hidden task items show as Private."""
+    today = datetime.now(TZ).date()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s", (today,))
+        plan = cur.fetchone()
+        if not plan:
+            return jsonify({"exists": False, "items": []})
+
+        cur.execute("""
+SELECT dpi.id, dpi.item_type, dpi.item_id, dpi.item_title,
+       dpi.scheduled_start_time, dpi.scheduled_end_time,
+       dpi.completed, dpi.order_index
+FROM daily_plan_items dpi
+WHERE dpi.plan_id = %s
+ORDER BY dpi.order_index ASC, dpi.scheduled_start_time ASC""", (plan["id"],))
+        items = [dict(r) for r in cur.fetchall()]
+
+        # Collect task IDs to check hidden status
+        task_ids = [int(i["item_id"]) for i in items
+                    if i["item_type"] == "task" and i["item_id"] and i["item_id"].isdigit()]
+        hidden_task_ids = set()
+        if task_ids:
+            cur.execute("SELECT id FROM tasks WHERE id = ANY(%s) AND hidden_from_parent = TRUE",
+                        (task_ids,))
+            hidden_task_ids = {r["id"] for r in cur.fetchall()}
+
+        result = []
+        for item in items:
+            is_hidden = (item["item_type"] == "task"
+                         and item["item_id"]
+                         and item["item_id"].isdigit()
+                         and int(item["item_id"]) in hidden_task_ids)
+            result.append({
+                "id": item["id"],
+                "item_type": item["item_type"] if not is_hidden else "private",
+                "item_title": item["item_title"] if not is_hidden else "Private",
+                "scheduled_start_time": str(item["scheduled_start_time"]),
+                "scheduled_end_time": str(item["scheduled_end_time"]),
+                "completed": item["completed"],
+            })
+
+        return jsonify({"exists": True, "items": result})
+    except Exception as e:
+        log.exception(f"Parent daily plan error: {e}")
+        return jsonify({"error": "Failed to load plan"}), 500
     finally:
         cur.close()
         conn.close()
@@ -4050,7 +4124,7 @@ def api_projects_get():
         cur = conn.cursor()
         cur.execute("""
 SELECT id, title, description, status, lead, members, last_checkin,
-       checkin_interval_days, completion_pct, created_at,
+       checkin_interval_days, completion_pct, created_at, hidden_from_parent,
        CASE WHEN last_checkin IS NULL OR
            NOW() - last_checkin > make_interval(days => checkin_interval_days)
        THEN TRUE ELSE FALSE END as needs_checkin
@@ -4118,7 +4192,8 @@ def api_projects_update(project_id):
         "members": ("members", lambda v: str(v)[:500]),
         "status": ("status", lambda v: str(v).strip().lower()),
         "checkin_interval_days": ("checkin_interval_days", lambda v: max(1, min(90, int(v) if isinstance(v, (int, float)) else 7))),
-        "completion_pct": ("completion_pct", lambda v: max(0, min(100, int(v) if isinstance(v, (int, float)) else 0)))
+        "completion_pct": ("completion_pct", lambda v: max(0, min(100, int(v) if isinstance(v, (int, float)) else 0))),
+        "hidden_from_parent": ("hidden_from_parent", lambda v: bool(v)),
     }
 
     for key, (db_field, transform) in fields_map.items():
