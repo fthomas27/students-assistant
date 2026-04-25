@@ -2238,7 +2238,7 @@ function loadHomePage() {
       } else {
         planEl.innerHTML = data.items.map(function(item) {
           return '<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:14px;">'
-            + '<span style="color:var(--accent);font-size:12px;">' + escapeHtml(item.scheduled_start_time || '') + '</span> '
+            + '<span style="color:var(--accent);font-size:12px;">' + escapeHtml(to12Hour(item.scheduled_start_time) || '') + '</span> '
             + '<span style="color:var(--text);">' + escapeHtml(item.item_title || '') + '</span>'
             + '</div>';
         }).join('');
