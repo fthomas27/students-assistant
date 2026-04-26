@@ -207,12 +207,20 @@ grid-column: span 4;
 #homeOutlookContent .outlook-card[data-kind="cal"] {
 grid-column: span 2;
 }
+#homeOutlookContent .outlook-card[data-kind="weather"] {
+grid-column: span 2;
+}
+#homeOutlookContent .outlook-card[data-kind="quote"] {
+grid-column: span 2;
+}
 @media (max-width: 900px) {
 #homeOutlookContent .outlook-grid {
 grid-template-columns: 1fr;
 }
 #homeOutlookContent .outlook-card[data-kind="news"],
-#homeOutlookContent .outlook-card[data-kind="cal"] {
+#homeOutlookContent .outlook-card[data-kind="cal"],
+#homeOutlookContent .outlook-card[data-kind="weather"],
+#homeOutlookContent .outlook-card[data-kind="quote"] {
 grid-column: auto;
 grid-row: auto;
 }
@@ -762,9 +770,10 @@ min-width: 90px;
 
 .outlook-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   margin-top: 10px;
+  width: 100%;
 }
 .outlook-card {
   background: var(--surface2);
@@ -2084,17 +2093,6 @@ margin-bottom: 0;
         <button onclick="deletePlan()" style="flex: 1; padding: 8px; font-size: 12px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; color: var(--text); transition: background 0.15s;">Clear</button>
       </div>
     </div>
-    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
-      <div class="sidebar-header" style="margin-top: 0; display: flex; justify-content: space-between; align-items: center;">
-        <span>📦 Projects</span>
-        <button onclick="openAddProjectModal()" style="background: none; border: none; color: var(--text); cursor: pointer; font-size: 18px; padding: 0; line-height: 1;" title="Add new project">+</button>
-      </div>
-      <div class="sidebar-section" style="margin-top: 8px;">
-        <div id="projectsSection" class="section-content">
-          <div id="projectsList"></div>
-        </div>
-      </div>
-    </div>
   </div>
   <span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
 </div>
@@ -2249,7 +2247,7 @@ function updateTopNavDate() {
   var el = document.getElementById('topNavDate');
   if (!el) return;
   var now = new Date();
-  el.textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  el.textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric' });
 }
 
 function loadHomePage() {
@@ -2283,7 +2281,7 @@ function loadHomePage() {
       } else {
         planEl.innerHTML = data.items.map(function(item) {
           return '<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:14px;">'
-            + '<span style="color:var(--accent);font-size:12px;">' + escapeHtml(item.scheduled_start_time || '') + '</span> '
+            + '<span style="color:var(--accent);font-size:12px;">' + escapeHtml(to12Hour(item.scheduled_start_time) || '') + '</span> '
             + '<span style="color:var(--text);">' + escapeHtml(item.item_title || '') + '</span>'
             + '</div>';
         }).join('');
@@ -2447,7 +2445,7 @@ function loadChatHistory() {
   list.innerHTML = histories.map((h, i) => `
     <div style="padding: 12px; background: var(--surface2); border-radius: var(--r-sm); margin-bottom: 8px; cursor: pointer;" onclick="loadChat(${i})">
       <div style="color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(h.title || 'Chat ' + (i + 1))}</div>
-      <div style="color: var(--text3); font-size: 12px; margin-top: 4px;">${new Date(h.timestamp).toLocaleDateString()} - ${h.messageCount} messages</div>
+      <div style="color: var(--text3); font-size: 12px; margin-top: 4px;">${new Date(h.timestamp).toLocaleDateString('en-US', {month:'numeric',day:'numeric',year:'numeric'})} - ${h.messageCount} messages</div>
     </div>
   `).join('');
 }
@@ -2654,19 +2652,6 @@ async function loadSidebarData() {
 }
 
 async function loadProjects() {
-  const container = document.getElementById('projectsList');
-  if (!container) return;
-
-  // Show skeleton loader
-  const skeletonHTML = `
-    <div class="sidebar-item" style="color: var(--text3); animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;">
-      <div style="height: 16px; background: var(--surface2); border-radius: 4px; margin-bottom: 6px;"></div>
-      <div style="height: 12px; background: var(--surface2); border-radius: 4px; width: 80%;"></div>
-    </div>
-  `;
-  container.innerHTML = skeletonHTML + skeletonHTML;
-
-  // Timeout after 10 seconds
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -2681,10 +2666,7 @@ async function loadProjects() {
     }
 
     const data = await response.json();
-    if (!data.projects) {
-      container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No projects</div>';
-      return;
-    }
+    if (!data.projects) return;
 
     projectsCache = data.projects;
     renderProjects();
@@ -2692,8 +2674,6 @@ async function loadProjects() {
   } catch (error) {
     clearTimeout(timeoutId);
     console.error('Error loading projects:', error);
-    const errorMsg = error.name === 'AbortError' ? 'Connection timeout' : 'Failed to load projects';
-    container.innerHTML = `<div class="sidebar-item" style="color: var(--text3); text-align: center; padding: 12px 0; font-size: 11px;">${errorMsg}</div>`;
   }
 }
 
@@ -2777,13 +2757,19 @@ function renderTasks() {
 
   container.innerHTML = sorted.slice(0, 8).map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
+    const isHidden = t.hidden_from_parent;
+    const eyeTitle = isHidden ? 'Visible to parent: No — click to show' : 'Visible to parent: Yes — click to hide';
+    const eyeStyle = isHidden ? 'color:var(--text3);text-decoration:line-through;' : 'color:var(--text2);';
     return `
-      <div class="sidebar-item ${urgencyClass}" style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
-        <div style="flex: 1; cursor: pointer;" onclick="viewTask(${t.id})">
+      <div class="sidebar-item ${urgencyClass}" data-task-id="${t.id}" data-source="${t.source || 'task'}" data-project-id="${t.project_id || ''}" style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
+        <div style="flex: 1; cursor: pointer;" onclick="editTask(${t.id})">
           <div class="sidebar-item-title">${t.title}</div>
           <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
         </div>
-        <button class="complete-btn" onclick="completeTask(event, ${t.id})" style="background: none; border: none; color: var(--text2); cursor: pointer; font-size: 16px; padding: 2px 6px; margin-top: 2px; flex-shrink: 0;" title="Mark as done">✓</button>
+        <div style="display:flex;gap:2px;flex-shrink:0;align-items:center;margin-top:2px;">
+          ${t.source !== 'project_task' ? `<button onclick="toggleTaskHidden(event,${t.id},${!isHidden})" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;${eyeStyle}" title="${eyeTitle}">👁</button>` : ''}
+          <button class="complete-btn" onclick="completeTask(event, ${t.id})" style="background: none; border: none; color: var(--text2); cursor: pointer; font-size: 16px; padding: 2px 6px;" title="Mark as done">✓</button>
+        </div>
       </div>
     `;
   }).join('');
@@ -2792,6 +2778,7 @@ function renderTasks() {
 
 function renderProjects() {
   const container = document.getElementById('projectsList');
+  if (!container) return;
   if (!projectsCache || projectsCache.length === 0) {
     container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No active projects</div>';
     return;
@@ -2844,12 +2831,16 @@ function renderProjectsKanban() {
     cols[status].innerHTML = list.map(p => {
       const pct = Math.max(0, Math.min(100, parseInt(p.completion_pct, 10) || 0));
       const needsCheckin = p.needs_checkin ? '<span class="kanban-checkin-dot" title="Check-in overdue"></span>' : '';
+      const hiddenIcon = p.hidden_from_parent
+        ? '<span style="font-size:11px;color:var(--text3);margin-left:4px;" title="Hidden from parent">🔒</span>'
+        : '<span style="font-size:11px;color:var(--text3);margin-left:4px;opacity:0.4;" title="Visible to parent">👁</span>';
       return '<div class="kanban-card" draggable="true" data-project-id="' + p.id + '">'
         + '<div class="kanban-card-title">' + escapeHtml(p.title || '') + needsCheckin + '</div>'
         + (p.description ? '<div class="kanban-card-desc">' + escapeHtml(p.description) + '</div>' : '')
         + '<div class="kanban-card-footer">'
         +   '<div class="kanban-progress-track"><div class="kanban-progress-fill" style="width:' + pct + '%;"></div></div>'
         +   '<span>' + pct + '%</span>'
+        +   '<button onclick="event.stopPropagation();toggleProjectHidden(' + p.id + ',' + !p.hidden_from_parent + ')" style="background:none;border:none;cursor:pointer;padding:0 2px;font-size:13px;line-height:1;" title="' + (p.hidden_from_parent ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide') + '">' + (p.hidden_from_parent ? '🔒' : '👁') + '</button>'
         + '</div>'
         + '</div>';
     }).join('');
@@ -3388,7 +3379,7 @@ function renderCalendar() {
     const badge = isSports ? '<span style="display: inline-block; background: var(--purple); color: white; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-left: 4px; font-weight: 600;">SPORTS</span>' : '';
     const d = new Date(e.start_iso);
     const timeOnly = e.all_day ? 'All Day' : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-    const dateOnly = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const dateOnly = d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' });
     return `
       <div class="sidebar-item" style="cursor:pointer;${isSports ? 'border-left:3px solid var(--purple);' : ''}"
            onclick="openCalendarModalOnDate(${d.getFullYear()},${d.getMonth()},${d.getDate()})">
@@ -3805,7 +3796,7 @@ function displayOutlookInChat(data) {
   const intro = document.createElement('div');
   intro.className = 'message assistant';
   const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric' });
   intro.innerHTML = `<div class="message-bubble">${formatMessage(`## Morning Outlook\n${dateStr} — a civilised summary of the day ahead, sir. Tap any card for detail.`)}</div>`;
   messagesDiv.appendChild(intro);
 
@@ -3922,11 +3913,11 @@ function openOutlookCardDetail(kind) {
       <div class="outlook-body" style="margin-bottom:12px;">${escapeHtml(w.description || '')} · feels ${w.feels_like_f}° · wind ${w.wind_mph} mph</div>`;
     const week = daily.length > 0 ? `
       <h3 style="font-size:13px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;">7-Day</h3>
-      ${daily.map(d => `
-        <div class="outlook-news-item" style="border-left-color:#4fb3f6;display:flex;justify-content:space-between;align-items:center;">
-          <div><strong>${escapeHtml(d.date)}</strong> · ${escapeHtml(d.description)}</div>
-          <div>${d.hi_f}° / ${d.lo_f}° · ${d.precip_pct}%</div>
-        </div>`).join('')}` : '';
+      ${daily.map(d => {
+        const parts = d.date.split('-');
+        const dayLabel = new Date(+parts[0], +parts[1]-1, +parts[2]).toLocaleDateString('en-US', { weekday: 'long' });
+        return `<div class="outlook-news-item" style="border-left-color:#4fb3f6;display:flex;justify-content:space-between;align-items:center;"><div><strong>${escapeHtml(dayLabel)}</strong> · ${escapeHtml(d.description)}</div><div>${d.hi_f}° / ${d.lo_f}° · ${d.precip_pct}%</div></div>`;
+      }).join('')}` : '';
     _outlookModalShell('Park City Weather', cur + week);
     return;
   }
@@ -4281,7 +4272,7 @@ function formatDate(dateStr) {
   const days = Math.floor((d - today) / (1000 * 60 * 60 * 24));
   if (days > 0 && days < 7) return `In ${days} days`;
 
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' });
 }
 
 function formatDueDateLong(dateStr) {
@@ -4289,7 +4280,7 @@ function formatDueDateLong(dateStr) {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr;
   const datePart = d.toLocaleDateString('en-US', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+    weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric'
   });
   const timePart = d.toLocaleTimeString('en-US', {
     hour: 'numeric', minute: '2-digit', hour12: true
@@ -4301,7 +4292,7 @@ function formatDueDateLong(dateStr) {
 function formatEventTime(startStr) {
   if (!startStr) return '';
   const d = new Date(startStr);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
+  return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' }) + ' ' +
          d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
@@ -4826,15 +4817,27 @@ async function completeTask(event, taskId) {
   try {
     triggerHaptic('success');
 
-    const response = await fetch(`/api/tasks/${taskId}`, {
+    // Read source/project from data attributes so project tasks hit the right endpoint
+    const taskElement = document.querySelector(`[data-task-id="${taskId}"]`);
+    const source = taskElement ? taskElement.dataset.source : 'task';
+    const projectId = taskElement ? taskElement.dataset.projectId : '';
+
+    let url, body;
+    if (source === 'project_task' && projectId) {
+      url = `/api/projects/${projectId}/tasks/${taskId}`;
+      body = JSON.stringify({ status: 'done' });
+    } else {
+      url = `/api/tasks/${taskId}`;
+      body = JSON.stringify({ completed: true });
+    }
+
+    const response = await fetch(url, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ completed: true })
+      body
     });
 
     if (response.ok) {
-      // Find and animate the task element
-      const taskElement = document.querySelector(`[data-task-id="${taskId}"]`);
       if (taskElement) {
         celebrateCompletion(taskElement);
       }
@@ -5081,6 +5084,29 @@ async function saveEditProject(projectId) {
     console.error('Error updating project:', e);
     alert('Error updating project');
   }
+}
+
+async function toggleProjectHidden(projectId, hide) {
+  try {
+    await fetch(`/api/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hidden_from_parent: hide })
+    });
+    await loadProjects();
+  } catch (e) { console.error('toggleProjectHidden failed', e); }
+}
+
+async function toggleTaskHidden(event, taskId, hide) {
+  event.stopPropagation();
+  try {
+    await fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hidden_from_parent: hide })
+    });
+    await loadSidebarData();
+  } catch (e) { console.error('toggleTaskHidden failed', e); }
 }
 
 async function deleteProject(projectId) {
@@ -5606,7 +5632,7 @@ function renderCalendarModal() {
 async function showCalendarEvents(day, month, year, events) {
   const eventsList = document.getElementById('calendarEventsList');
   const dateStr = new Date(year, month, day).toLocaleDateString('en-US', {
-    weekday: 'long', month: 'long', day: 'numeric'
+    weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric'
   });
   const isoDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
@@ -5738,9 +5764,30 @@ function closeEventDetailModal() {
   }, 300);
 }
 
-// Refresh the top-nav date once a minute (handles midnight rollover).
-updateTopNavDate();
-setInterval(updateTopNavDate, 60000);
+// Update clock display
+function updateClock() {
+  updateTopNavDate();
+  const now = new Date();
+  const timeElement = document.getElementById('clockTime');
+  const dateElement = document.getElementById('clockDate');
+
+  if (timeElement && dateElement) {
+    // Format time as HH:MM AM/PM
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+    const displayMinutes = minutes < 10 ? '0' + minutes : minutes;
+    timeElement.textContent = `${displayHours}:${displayMinutes} ${ampm}`;
+
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    dateElement.textContent = `${days[now.getDay()]}, ${now.getMonth()+1}/${now.getDate()}/${now.getFullYear()}`;
+  }
+}
+
+// Initialize clock and update every minute
+updateClock();
+setInterval(updateClock, 60000);
 
 loadSidebarData();
 loadProjects();
