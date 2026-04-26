@@ -2092,6 +2092,7 @@ margin-bottom: 0;
         <div class="empty-state-text">Hey! Ask me anything about your assignments, tasks, projects, or calendar.</div>
         <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 20px;">
           <button onclick="generateDailyOutlook()" class="quick-action-btn">🌅 Morning Outlook</button>
+          <button onclick="fetchAndShowWeeklyInsight({force:true})" class="quick-action-btn">📊 Weekly Insight</button>
           <button onclick="suggestMessage('What assignments are due soon?')" class="quick-action-btn">Assignments</button>
           <button onclick="suggestMessage('What tasks do I need to do?')" class="quick-action-btn">My tasks</button>
           <button onclick="suggestMessage('What do I have today?')" class="quick-action-btn">Today</button>
@@ -2189,6 +2190,7 @@ function navigateTo(pageName) {
   else if (pageName === 'plan') loadDailyPlan();
   else if (pageName === 'projects') loadProjects();
   else if (pageName === 'chat') {
+    fetchAndShowWeeklyInsight();
     var msgs = document.getElementById('chatMessages');
     if (msgs) msgs.scrollTop = msgs.scrollHeight;
   }
@@ -2196,6 +2198,61 @@ function navigateTo(pageName) {
 
 function loadAssignments() {
   loadSidebarData();
+}
+
+function _lastSundayMidnight() {
+  // Local-time Sunday at 00:00:00. Sunday returns today at 00:00.
+  const now = new Date();
+  const day = now.getDay(); // 0 = Sunday
+  const sun = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day, 0, 0, 0, 0);
+  return sun;
+}
+
+function _formatInsightWeek(generatedAtIso) {
+  const d = generatedAtIso ? new Date(generatedAtIso) : new Date();
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+}
+
+function _renderInsightBubble(content, generatedAtIso) {
+  const messagesDiv = document.getElementById('chatMessages');
+  if (!messagesDiv) return;
+  const empty = messagesDiv.querySelector('.empty-state');
+  if (empty) empty.remove();
+  const bubble = document.createElement('div');
+  bubble.className = 'message assistant';
+  const header = `<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">📊 Weekly Insight — week of ${_formatInsightWeek(generatedAtIso)}</div>`;
+  bubble.innerHTML = `<div class="message-bubble" style="border-left:3px solid var(--accent);">${header}${formatMessage(content)}</div>`;
+  messagesDiv.appendChild(bubble);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+async function fetchAndShowWeeklyInsight(opts) {
+  opts = opts || {};
+  try {
+    if (opts.force) {
+      const resp = await fetch('/api/insight/weekly/generate', { method: 'POST' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      if (!data.content) return;
+      sessionStorage.setItem('lastInsightShown', data.generated_at || '');
+      _renderInsightBubble(data.content, data.generated_at);
+      return;
+    }
+    const resp = await fetch('/api/insight/weekly');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.content || !data.generated_at) return;
+    const generatedAt = new Date(data.generated_at);
+    if (generatedAt < _lastSundayMidnight()) return;
+    if (sessionStorage.getItem('lastInsightShown') === data.generated_at) return;
+    sessionStorage.setItem('lastInsightShown', data.generated_at);
+    _renderInsightBubble(data.content, data.generated_at);
+  } catch (e) {
+    console.error('Weekly insight fetch failed:', e);
+    if (opts.force && typeof showToast === 'function') {
+      showToast('Could not generate weekly insight', 'error');
+    }
+  }
 }
 
 function loadDailyPlan() {
