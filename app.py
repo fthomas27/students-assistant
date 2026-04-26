@@ -1,5 +1,6 @@
 import os
 import time
+import gzip
 import logging
 import threading
 import socket
@@ -38,6 +39,40 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Strict',
     PREFERRED_URL_SCHEME='https'
 )
+
+
+_GZIP_TYPES = ('text/html', 'text/css', 'text/javascript', 'application/javascript', 'application/json', 'image/svg+xml')
+
+
+@app.after_request
+def gzip_response(response):
+    """Gzip-compress text responses larger than 500 bytes when the client supports it."""
+    try:
+        accept = request.headers.get('Accept-Encoding', '')
+        if 'gzip' not in accept.lower():
+            return response
+        if response.status_code < 200 or response.status_code >= 300:
+            return response
+        if response.direct_passthrough:
+            return response
+        if response.headers.get('Content-Encoding'):
+            return response
+        ctype = (response.mimetype or '').lower()
+        if not any(ctype.startswith(t) for t in _GZIP_TYPES):
+            return response
+        data = response.get_data()
+        if len(data) < 500:
+            return response
+        compressed = gzip.compress(data, compresslevel=6)
+        response.set_data(compressed)
+        response.headers['Content-Encoding'] = 'gzip'
+        response.headers['Content-Length'] = str(len(compressed))
+        vary = response.headers.get('Vary', '')
+        if 'Accept-Encoding' not in vary:
+            response.headers['Vary'] = (vary + ', Accept-Encoding').lstrip(', ')
+    except Exception as e:
+        log.warning("gzip_response error: %s", e)
+    return response
 
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin-change-me").strip()
@@ -399,7 +434,7 @@ ON CONFLICT (ip_address) DO NOTHING""")
         cur = conn.cursor()
 
     # Create indexes
-    indexes = ["CREATE INDEX IF NOT EXISTS idx_completions_assignment_title ON completions(assignment_title)", "CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed, created_at DESC)", "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)", "CREATE INDEX IF NOT EXISTS idx_project_tasks_assignee_status ON project_tasks(assignee, status)", "CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)", "CREATE INDEX IF NOT EXISTS idx_completions_completed_at ON completions(completed_at DESC)", "CREATE INDEX IF NOT EXISTS idx_daily_plans_date ON daily_plans(plan_date)", "CREATE INDEX IF NOT EXISTS idx_daily_plan_items_plan_id ON daily_plan_items(plan_id)", "CREATE INDEX IF NOT EXISTS idx_daily_plan_items_completed ON daily_plan_items(completed)", "CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_address, attempted_at DESC)", "CREATE INDEX IF NOT EXISTS idx_login_lockouts_ip ON login_lockouts(ip_address)"]
+    indexes = ["CREATE INDEX IF NOT EXISTS idx_completions_assignment_title ON completions(assignment_title)", "CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed, created_at DESC)", "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)", "CREATE INDEX IF NOT EXISTS idx_project_tasks_assignee_status ON project_tasks(assignee, status)", "CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)", "CREATE INDEX IF NOT EXISTS idx_completions_completed_at ON completions(completed_at DESC)", "CREATE INDEX IF NOT EXISTS idx_daily_plans_date ON daily_plans(plan_date)", "CREATE INDEX IF NOT EXISTS idx_daily_plan_items_plan_id ON daily_plan_items(plan_id)", "CREATE INDEX IF NOT EXISTS idx_daily_plan_items_completed ON daily_plan_items(completed)", "CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_address, attempted_at DESC)", "CREATE INDEX IF NOT EXISTS idx_login_lockouts_ip ON login_lockouts(ip_address)", "CREATE INDEX IF NOT EXISTS idx_tasks_due_pending ON tasks(due_date) WHERE completed = FALSE", "CREATE INDEX IF NOT EXISTS idx_project_tasks_project ON project_tasks(project_id)"]
     for idx_sql in indexes:
         try:
             cur.execute(idx_sql)
@@ -547,9 +582,16 @@ def _cache_get(key, ttl):
     return None
 
 
+_SIMPLE_CACHE_MAX = 256
+
+
 def _cache_set(key, value):
     with _simple_cache_lock:
         _simple_cache[key] = (time.monotonic(), value)
+        if len(_simple_cache) > _SIMPLE_CACHE_MAX:
+            # Evict the oldest entry by timestamp
+            oldest_key = min(_simple_cache, key=lambda k: _simple_cache[k][0])
+            _simple_cache.pop(oldest_key, None)
 
 
 # Park City, UT
@@ -1865,6 +1907,22 @@ ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content"
         log.info("Weekly insight generated.")
 
 
+def cleanup_old_data():
+    """Prune daily_plans rows older than 60 days. daily_plan_items cascades."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM daily_plans WHERE plan_date < CURRENT_DATE - INTERVAL '60 days'")
+        deleted = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+        if deleted:
+            log.info("cleanup_old_data: deleted %d daily_plans rows older than 60 days", deleted)
+    except Exception as e:
+        log.error("cleanup_old_data error: %s", e)
+
+
 def schedule_briefing():
     cfg = get_config()
     t = cfg.get("morning_briefing_time", "07:00")
@@ -1884,10 +1942,14 @@ def schedule_briefing():
     # Weekly insight every Sunday at 8 AM
     scheduler.add_job(generate_weekly_insight, "cron", day_of_week="sun", hour=8, minute=0,
                       id="weekly_insight", replace_existing=True)
+    # Nightly cleanup of stale daily_plans rows at 02:30 (quietest hour)
+    scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=30,
+                      id="cleanup_old_data", replace_existing=True)
     log.info("Briefing scheduled for %02d:%02d Mountain", hour, minute)
     log.info("Evening debrief scheduled for 18:30 Mountain")
     log.info("Recurring tasks processor scheduled for 00:00 Mountain")
     log.info("Weekly insight scheduled for Sun 08:00 Mountain")
+    log.info("Cleanup job scheduled for 02:30 Mountain")
 
 
 # ── Security Functions ──────────────────────────────────────────────────────────
