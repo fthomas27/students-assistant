@@ -2004,6 +2004,7 @@ margin-bottom: 0;
       </div>
       <div style="margin-top: 16px; display: flex; gap: 8px;">
         <button onclick="startNewChat()" style="flex: 1; padding: 10px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">+ New Chat</button>
+        <button onclick="clearAllChatHistory()" style="flex: 1; padding: 10px; background: transparent; border: 1px solid var(--red); border-radius: var(--r-sm); color: var(--red); cursor: pointer; font-weight: 600;">Clear History</button>
       </div>
     </div>
   </div>
@@ -2100,6 +2101,7 @@ margin-bottom: 0;
         <div class="empty-state-text">Hey! Ask me anything about your assignments, tasks, projects, or calendar.</div>
         <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 20px;">
           <button onclick="generateDailyOutlook()" class="quick-action-btn">🌅 Morning Outlook</button>
+          <button onclick="fetchAndShowWeeklyInsight({force:true})" class="quick-action-btn">📊 Weekly Insight</button>
           <button onclick="suggestMessage('What assignments are due soon?')" class="quick-action-btn">Assignments</button>
           <button onclick="suggestMessage('What tasks do I need to do?')" class="quick-action-btn">My tasks</button>
           <button onclick="suggestMessage('What do I have today?')" class="quick-action-btn">Today</button>
@@ -2186,6 +2188,7 @@ function navigateTo(pageName) {
   else if (pageName === 'plan') loadDailyPlan();
   else if (pageName === 'projects') loadProjects();
   else if (pageName === 'chat') {
+    fetchAndShowWeeklyInsight();
     var msgs = document.getElementById('chatMessages');
     if (msgs) msgs.scrollTop = msgs.scrollHeight;
   }
@@ -2193,6 +2196,61 @@ function navigateTo(pageName) {
 
 function loadAssignments() {
   loadSidebarData();
+}
+
+function _lastSundayMidnight() {
+  // Local-time Sunday at 00:00:00. Sunday returns today at 00:00.
+  const now = new Date();
+  const day = now.getDay(); // 0 = Sunday
+  const sun = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day, 0, 0, 0, 0);
+  return sun;
+}
+
+function _formatInsightWeek(generatedAtIso) {
+  const d = generatedAtIso ? new Date(generatedAtIso) : new Date();
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+}
+
+function _renderInsightBubble(content, generatedAtIso) {
+  const messagesDiv = document.getElementById('chatMessages');
+  if (!messagesDiv) return;
+  const empty = messagesDiv.querySelector('.empty-state');
+  if (empty) empty.remove();
+  const bubble = document.createElement('div');
+  bubble.className = 'message assistant';
+  const header = `<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">📊 Weekly Insight — week of ${_formatInsightWeek(generatedAtIso)}</div>`;
+  bubble.innerHTML = `<div class="message-bubble" style="border-left:3px solid var(--accent);">${header}${formatMessage(content)}</div>`;
+  messagesDiv.appendChild(bubble);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+async function fetchAndShowWeeklyInsight(opts) {
+  opts = opts || {};
+  try {
+    if (opts.force) {
+      const resp = await fetch('/api/insight/weekly/generate', { method: 'POST' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      if (!data.content) return;
+      sessionStorage.setItem('lastInsightShown', data.generated_at || '');
+      _renderInsightBubble(data.content, data.generated_at);
+      return;
+    }
+    const resp = await fetch('/api/insight/weekly');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.content || !data.generated_at) return;
+    const generatedAt = new Date(data.generated_at);
+    if (generatedAt < _lastSundayMidnight()) return;
+    if (sessionStorage.getItem('lastInsightShown') === data.generated_at) return;
+    sessionStorage.setItem('lastInsightShown', data.generated_at);
+    _renderInsightBubble(data.content, data.generated_at);
+  } catch (e) {
+    console.error('Weekly insight fetch failed:', e);
+    if (opts.force && typeof showToast === 'function') {
+      showToast('Could not generate weekly insight', 'error');
+    }
+  }
 }
 
 function loadDailyPlan() {
@@ -2281,8 +2339,13 @@ function updateSidebarStats() {
 
 function openSettings() {
   closeProjectDetailsModal();
-  document.getElementById('settingsModal').classList.add('visible');
-  document.getElementById('settingsBackdrop').classList.add('visible');
+  const modal = document.getElementById('settingsModal');
+  const backdrop = document.getElementById('settingsBackdrop');
+  modal.style.animation = '';
+  backdrop.style.transition = '';
+  backdrop.style.background = '';
+  modal.classList.add('visible');
+  backdrop.classList.add('visible');
 
   // Load settings from localStorage
   const customName = localStorage.getItem('aiCustomName') || 'Student';
@@ -2295,12 +2358,16 @@ function openSettings() {
 function closeSettingsModal() {
   const modal = document.getElementById('settingsModal');
   const backdrop = document.getElementById('settingsBackdrop');
+  if (!modal.classList.contains('visible')) return;
   modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
   backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
   backdrop.style.background = 'rgba(0,0,0,0)';
   setTimeout(() => {
     modal.classList.remove('visible');
     backdrop.classList.remove('visible');
+    modal.style.animation = '';
+    backdrop.style.transition = '';
+    backdrop.style.background = '';
   }, 300);
 }
 
@@ -2327,20 +2394,29 @@ function confirmLogout() {
 
 function openChatHistory() {
   closeProjectDetailsModal();
-  document.getElementById('chatHistoryModal').classList.add('visible');
-  document.getElementById('chatHistoryBackdrop').classList.add('visible');
+  const modal = document.getElementById('chatHistoryModal');
+  const backdrop = document.getElementById('chatHistoryBackdrop');
+  modal.style.animation = '';
+  backdrop.style.transition = '';
+  backdrop.style.background = '';
+  modal.classList.add('visible');
+  backdrop.classList.add('visible');
   loadChatHistory();
 }
 
 function closeChatHistory() {
   const modal = document.getElementById('chatHistoryModal');
   const backdrop = document.getElementById('chatHistoryBackdrop');
+  if (!modal.classList.contains('visible')) return;
   modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
   backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
   backdrop.style.background = 'rgba(0,0,0,0)';
   setTimeout(() => {
     modal.classList.remove('visible');
     backdrop.classList.remove('visible');
+    modal.style.animation = '';
+    backdrop.style.transition = '';
+    backdrop.style.background = '';
   }, 300);
 }
 
@@ -2378,6 +2454,20 @@ function startNewChat() {
   conversationHistory = [];
   document.getElementById('chatMessages').innerHTML = '<div class="empty-state">Start a new chat...</div>';
   closeChatHistory();
+}
+
+function clearAllChatHistory() {
+  const count = JSON.parse(localStorage.getItem('chatHistories') || '[]').length;
+  const msg = count === 0
+    ? 'Clear the current chat? This cannot be undone.'
+    : `Delete all ${count} saved chat${count !== 1 ? 's' : ''} and the current conversation? This cannot be undone.`;
+  if (!confirm(msg)) return;
+  localStorage.removeItem('chatHistories');
+  conversationHistory = [];
+  const messagesDiv = document.getElementById('chatMessages');
+  if (messagesDiv) messagesDiv.innerHTML = '<div class="empty-state">Chat history cleared.</div>';
+  loadChatHistory();
+  if (typeof showToast === 'function') showToast('Chat history cleared', 'success', 2000);
 }
 
 function saveCurrentChat() {
@@ -5370,8 +5460,13 @@ let currentDayEvents = [];
 function openCalendarModal() {
   closeProjectDetailsModal();
   calendarCurrentDate = new Date(); // Reset to today for consistency
-  document.getElementById('calendarModal').classList.add('visible');
-  document.getElementById('calendarBackdrop').classList.add('visible');
+  const modal = document.getElementById('calendarModal');
+  const backdrop = document.getElementById('calendarBackdrop');
+  modal.style.animation = '';
+  backdrop.style.transition = '';
+  backdrop.style.background = '';
+  modal.classList.add('visible');
+  backdrop.classList.add('visible');
   renderCalendarModal();
 
   const dateKey = `${calendarCurrentDate.getFullYear()}-${calendarCurrentDate.getMonth()}-${calendarCurrentDate.getDate()}`;
@@ -5382,8 +5477,13 @@ function openCalendarModal() {
 function openCalendarModalOnDate(year, month, day) {
   closeProjectDetailsModal();
   calendarCurrentDate = new Date(year, month, day);
-  document.getElementById('calendarModal').classList.add('visible');
-  document.getElementById('calendarBackdrop').classList.add('visible');
+  const modal = document.getElementById('calendarModal');
+  const backdrop = document.getElementById('calendarBackdrop');
+  modal.style.animation = '';
+  backdrop.style.transition = '';
+  backdrop.style.background = '';
+  modal.classList.add('visible');
+  backdrop.classList.add('visible');
   renderCalendarModal();
   const dateKey = `${year}-${month}-${day}`;
   showCalendarEvents(day, month, year, calendarEventsByDate[dateKey] || []);
@@ -5392,6 +5492,7 @@ function openCalendarModalOnDate(year, month, day) {
 function closeCalendarModal() {
   const modal = document.getElementById('calendarModal');
   const backdrop = document.getElementById('calendarBackdrop');
+  if (!modal.classList.contains('visible')) return;
   modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
   backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
   backdrop.style.background = 'rgba(0,0,0,0)';
@@ -5399,6 +5500,8 @@ function closeCalendarModal() {
     modal.classList.remove('visible');
     backdrop.classList.remove('visible');
     modal.style.animation = '';
+    backdrop.style.transition = '';
+    backdrop.style.background = '';
   }, 300);
 }
 
@@ -5613,6 +5716,7 @@ function showEventDetail(eventIdx) {
 function closeEventDetailModal() {
   const modal = document.getElementById('eventDetailModal');
   const backdrop = document.getElementById('eventDetailBackdrop');
+  if (!modal.classList.contains('visible')) return;
   modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
   backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
   backdrop.style.background = 'rgba(0,0,0,0)';
@@ -5620,6 +5724,8 @@ function closeEventDetailModal() {
     modal.classList.remove('visible');
     backdrop.classList.remove('visible');
     modal.style.animation = '';
+    backdrop.style.transition = '';
+    backdrop.style.background = '';
   }, 300);
 }
 

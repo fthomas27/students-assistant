@@ -277,6 +277,7 @@ def init_db():
         ("timer_state", "CREATE TABLE IF NOT EXISTS timer_state (id INT PRIMARY KEY DEFAULT 1, assignment_uid TEXT NOT NULL DEFAULT '', assignment_title TEXT NOT NULL DEFAULT '', class_name TEXT NOT NULL DEFAULT '', estimate_minutes REAL NOT NULL DEFAULT 30, started_at TIMESTAMPTZ, paused_at TIMESTAMPTZ, accumulated_seconds REAL NOT NULL DEFAULT 0, active BOOLEAN NOT NULL DEFAULT FALSE)"),
         ("briefing_cache", "CREATE TABLE IF NOT EXISTS briefing_cache (id INT PRIMARY KEY DEFAULT 1, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL DEFAULT '')"),
         ("debrief_cache", "CREATE TABLE IF NOT EXISTS debrief_cache (id INT PRIMARY KEY DEFAULT 1, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL DEFAULT '')"),
+        ("insight_cache", "CREATE TABLE IF NOT EXISTS insight_cache (id INT PRIMARY KEY DEFAULT 1, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL DEFAULT '')"),
         ("tasks", "CREATE TABLE IF NOT EXISTS tasks (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, due_date DATE, created_by_parent BOOLEAN NOT NULL DEFAULT FALSE)"),
         ("projects", "CREATE TABLE IF NOT EXISTS projects (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', lead TEXT NOT NULL DEFAULT '', members TEXT NOT NULL DEFAULT '', last_checkin TIMESTAMPTZ, checkin_interval_days INT NOT NULL DEFAULT 7, completion_pct INT NOT NULL DEFAULT 0)"),
         ("project_notes", "CREATE TABLE IF NOT EXISTS project_notes (id SERIAL PRIMARY KEY, project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL)"),
@@ -1686,6 +1687,200 @@ ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content"
         log.info("Evening debrief generated.")
 
 
+def generate_weekly_insight(force=False):
+    """Generate the Sunday-morning weekly insight: review of last 7 days and look ahead."""
+    with _briefing_lock:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            log.warning("Weekly insight: ANTHROPIC_API_KEY not set")
+            return
+        cfg = get_config()
+        name = cfg.get("name", "Jarvis")
+
+        now_local = datetime.now(TZ)
+        if not force:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT generated_at FROM insight_cache WHERE id = 1")
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            if row and row["generated_at"]:
+                # Skip if already generated since the most recent Sunday 00:00 local
+                days_since_sun = (now_local.weekday() + 1) % 7  # Mon=0..Sun=6 -> days since Sunday
+                last_sunday = (now_local - timedelta(days=days_since_sun)).replace(hour=0, minute=0, second=0, microsecond=0)
+                if row["generated_at"].astimezone(TZ) >= last_sunday:
+                    return
+
+        today = now_local.date()
+        week_ago = today - timedelta(days=7)
+        week_ahead = today + timedelta(days=7)
+
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Last 7 days: completions
+        cur.execute("""
+SELECT assignment_title, class_name, duration_minutes, completed_at
+FROM completions
+WHERE completed_at >= %s
+ORDER BY completed_at ASC""", (now_local - timedelta(days=7),))
+        completions_week = [dict(r) for r in cur.fetchall()]
+
+        # Last 7 days: tasks completed
+        cur.execute("""
+SELECT title, urgency, completed_at
+FROM tasks
+WHERE completed = TRUE AND completed_at >= %s
+ORDER BY completed_at ASC""", (now_local - timedelta(days=7),))
+        tasks_done_week = [dict(r) for r in cur.fetchall()]
+
+        # Currently pending tasks
+        cur.execute("""
+SELECT title, urgency, due_date
+FROM tasks
+WHERE completed = FALSE
+ORDER BY urgency DESC, created_at ASC LIMIT 10""")
+        tasks_open = [dict(r) for r in cur.fetchall()]
+
+        # Last 7 days: workouts logged
+        cur.execute("""
+SELECT focus_label, intensity, perceived_difficulty, created_at
+FROM workout_logs
+WHERE created_at >= %s
+ORDER BY created_at ASC""", (now_local - timedelta(days=7),))
+        workouts_week = [dict(r) for r in cur.fetchall()]
+
+        # Projects needing check-in
+        cur.execute("""
+SELECT id, title, status, last_checkin, checkin_interval_days, completion_pct
+FROM projects
+WHERE status = 'active'""")
+        projects = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+
+        projects_overdue_checkin = []
+        for p in projects:
+            last = p.get("last_checkin")
+            interval = p.get("checkin_interval_days") or 7
+            if last is None:
+                projects_overdue_checkin.append(p)
+            else:
+                age_days = (now_local - last.astimezone(TZ)).days
+                if age_days > interval:
+                    projects_overdue_checkin.append(p)
+
+        # Upcoming 7 days: assignments + events
+        upcoming_assignments = []
+        cal = fetch_ical(CANVAS_ICAL_URL)
+        if cal:
+            all_asgn = parse_canvas_assignments(cal)
+            for a in all_asgn:
+                d = _assignment_due_date_local(a)
+                if today <= d <= week_ahead:
+                    upcoming_assignments.append(a)
+            upcoming_assignments.sort(key=lambda a: a.get("due_iso", ""))
+
+        upcoming_events = []
+        for offset in range(0, 8):
+            day = today + timedelta(days=offset)
+            upcoming_events.extend(fetch_day_calendar_events(day, days_ahead=1))
+
+        # Format payloads compactly for the prompt
+        total_hours = sum(c["duration_minutes"] for c in completions_week) / 60.0
+        completions_text = "\n".join(
+            "- %s (%s) — %.0f min" % (c["assignment_title"], c["class_name"], c["duration_minutes"])
+            for c in completions_week[:15]
+        ) or "- None."
+        tasks_done_text = "\n".join(
+            "- [%s] %s" % (t["urgency"], t["title"]) for t in tasks_done_week[:15]
+        ) or "- None."
+        tasks_open_text = "\n".join(
+            "- [%s] %s%s" % (t["urgency"], t["title"], (" (due %s)" % t["due_date"]) if t.get("due_date") else "")
+            for t in tasks_open
+        ) or "- None."
+        workouts_text = "\n".join(
+            "- %s (intensity %d%s)" % (
+                w["focus_label"], w["intensity"],
+                ", perceived %d" % w["perceived_difficulty"] if w.get("perceived_difficulty") else "")
+            for w in workouts_week
+        ) or "- None logged."
+        projects_text = "\n".join(
+            "- %s (%d%% complete, status %s)" % (p["title"], p.get("completion_pct") or 0, p["status"])
+            for p in projects
+        ) or "- No active projects."
+        projects_overdue_text = "\n".join(
+            "- %s (last check-in overdue)" % p["title"] for p in projects_overdue_checkin
+        ) or "- None."
+        upcoming_assign_text = "\n".join(
+            "- %s (%s) due %s" % (a["title"], a.get("class_name", ""), a.get("due_display", ""))
+            for a in upcoming_assignments[:10]
+        ) or "- None."
+        upcoming_events_text = "\n".join(
+            "- %s%s on %s" % (e["title"], " [SPORTS]" if e.get("source") == "sports" else "", e.get("start_display", ""))
+            for e in upcoming_events[:10]
+        ) or "- None."
+
+        now_str = now_local.strftime("%A, %B %-d, %Y at %-I:%M %p")
+        week_label = "%s – %s" % (week_ago.strftime("%b %-d"), today.strftime("%b %-d"))
+
+        prompt = (
+            "You are Jarvis — the impeccably composed British AI majordomo from the Iron Man films — "
+            "delivering the weekly insight for %s, a high school student in Park City, Utah. "
+            "Speak with dry wit, understated humour, and effortless articulacy, as Jarvis speaks to Tony Stark. "
+            "Address the student as 'sir' or by their first name. Remain measured and unflappable. "
+            "When you mention any due date, render it in long form (e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)'), never a raw ISO timestamp.\n\n"
+            "Current time: %s\n"
+            "Reviewing the week of %s.\n\n"
+            "WEEK COMPLETIONS (%.1f hours of focused work, %d items):\n%s\n\n"
+            "TASKS COMPLETED THIS WEEK:\n%s\n\n"
+            "WORKOUTS LOGGED THIS WEEK:\n%s\n\n"
+            "ACTIVE PROJECTS (current state):\n%s\n\n"
+            "PROJECTS WITH OVERDUE CHECK-IN:\n%s\n\n"
+            "STILL OPEN (carrying into the new week):\n%s\n\n"
+            "UPCOMING ASSIGNMENTS (next 7 days):\n%s\n\n"
+            "UPCOMING CALENDAR (next 7 days):\n%s\n\n"
+            "Compose a sophisticated weekly insight using EXACTLY these four markdown sections with ## headings (spell each heading exactly):\n\n"
+            "## Week in Review\n"
+            "• Three to five bullets distilling the week's pattern: what was accomplished, time invested, where momentum was strongest. Reference specific items and the metrics where pertinent.\n\n"
+            "## Productivity Assessment\n"
+            "• A measured, candid appraisal in two to three sentences (or bullets). Was the workload distributed sensibly? Were any classes neglected? Note the cadence of workouts. Keep it analytical, not preachy.\n\n"
+            "## Project Status\n"
+            "• One bullet per active project summarising progress; flag any with overdue check-ins explicitly. If none, one bullet: All projects are presently in good order.\n\n"
+            "## Recommendation for the Coming Week\n"
+            "• Exactly one specific, actionable recommendation grounded in what the data shows — for instance, a particular class to prioritise, a project to push, or a habit to adjust. Keep it to one short paragraph or two bullets.\n\n"
+            "Maintain a refined, insightful tone. Use **bold** for assignment, project, or class names where helpful. No introductory paragraph. Deliver the four sections only."
+        ) % (
+            name, now_str, week_label, total_hours, len(completions_week),
+            completions_text, tasks_done_text, workouts_text, projects_text,
+            projects_overdue_text, tasks_open_text, upcoming_assign_text, upcoming_events_text,
+        )
+
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+            message = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=900,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            track_api_usage(message)
+            content = message.content[0].text if message.content else "Good morning, sir."
+        except Exception as e:
+            log.error("Weekly insight API error: %s", e)
+            return
+
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+INSERT INTO insight_cache (id, generated_at, content) VALUES (1, NOW(), %s)
+ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content""", (content,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        log.info("Weekly insight generated.")
+
+
 def schedule_briefing():
     cfg = get_config()
     t = cfg.get("morning_briefing_time", "07:00")
@@ -1702,9 +1897,13 @@ def schedule_briefing():
     # Process recurring tasks daily at midnight
     scheduler.add_job(_process_recurring_tasks, "cron", hour=0, minute=0,
                       id="process_recurring_tasks", replace_existing=True)
+    # Weekly insight every Sunday at 8 AM
+    scheduler.add_job(generate_weekly_insight, "cron", day_of_week="sun", hour=8, minute=0,
+                      id="weekly_insight", replace_existing=True)
     log.info("Briefing scheduled for %02d:%02d Mountain", hour, minute)
     log.info("Evening debrief scheduled for 18:30 Mountain")
     log.info("Recurring tasks processor scheduled for 00:00 Mountain")
+    log.info("Weekly insight scheduled for Sun 08:00 Mountain")
 
 
 # ── Security Functions ──────────────────────────────────────────────────────────
@@ -2738,6 +2937,41 @@ def api_debrief_generate():
     """Manual trigger to generate debrief."""
     threading.Thread(target=generate_evening_debrief, daemon=True).start()
     return jsonify({"status": "generating", "message": "Debrief generation started"})
+
+
+@app.route("/api/insight/weekly", methods=["GET"])
+def api_insight_weekly():
+    """Return the current weekly insight, if one is cached."""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT generated_at, content FROM insight_cache WHERE id = 1")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row or not row.get("content"):
+        return jsonify({"content": "", "generated_at": None})
+    return jsonify({
+        "content": row["content"],
+        "generated_at": row["generated_at"].isoformat() if row["generated_at"] else None,
+    })
+
+
+@app.route("/api/insight/weekly/generate", methods=["POST"])
+def api_insight_weekly_generate():
+    """Force-generate a fresh weekly insight; returns the new row when ready."""
+    generate_weekly_insight(force=True)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT generated_at, content FROM insight_cache WHERE id = 1")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row or not row.get("content"):
+        return jsonify({"content": "", "generated_at": None}), 503
+    return jsonify({
+        "content": row["content"],
+        "generated_at": row["generated_at"].isoformat() if row["generated_at"] else None,
+    })
 
 
 def _workout_history_block(cur):
