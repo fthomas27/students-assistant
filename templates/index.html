@@ -7,7 +7,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -96,6 +95,24 @@ transition: transform 0.25s ease, box-shadow 0.25s ease, background 0.25s ease, 
 display: flex;
 align-items: center;
 justify-content: center;
+position: relative;
+}
+
+.circle-btn-badge {
+position: absolute;
+top: 2px;
+right: 2px;
+width: 10px;
+height: 10px;
+border-radius: 50%;
+background: var(--red);
+box-shadow: 0 0 0 2px var(--bg);
+display: none;
+pointer-events: none;
+}
+
+.circle-btn-badge.visible {
+display: block;
 }
 
 .circle-btn.active {
@@ -207,6 +224,61 @@ grid-template-columns: 1fr;
 grid-column: auto;
 grid-row: auto;
 }
+}
+
+/* ── ASSIGNMENTS PAGE (grouped by class, overdue highlight) ── */
+.assignment-class-header {
+display: flex;
+align-items: center;
+gap: 8px;
+padding: 12px 12px 6px;
+margin-top: 10px;
+font-size: 11px;
+font-weight: 700;
+color: var(--text2);
+text-transform: uppercase;
+letter-spacing: 0.08em;
+}
+.assignment-class-header:first-child { margin-top: 0; }
+.class-color-swatch {
+display: inline-block;
+width: 10px;
+height: 10px;
+border-radius: 50%;
+flex-shrink: 0;
+}
+.class-count {
+margin-left: auto;
+background: var(--surface2);
+color: var(--text3);
+font-size: 10px;
+font-weight: 600;
+padding: 2px 8px;
+border-radius: 10px;
+}
+.sidebar-item.assignment-overdue {
+border-left: 3px solid var(--red);
+background: rgba(255,107,107,0.08);
+}
+.sidebar-item.assignment-overdue .sidebar-item-title {
+color: var(--red);
+font-weight: 600;
+}
+.sidebar-item.assignment-overdue .sidebar-item-due {
+color: var(--red);
+}
+.overdue-pill {
+display: inline-block;
+font-size: 9px;
+font-weight: 700;
+padding: 2px 6px;
+border-radius: 8px;
+background: var(--red);
+color: white;
+margin-left: 6px;
+text-transform: uppercase;
+letter-spacing: 0.05em;
+vertical-align: middle;
 }
 
 /* ── KANBAN (Projects page) ── */
@@ -394,98 +466,6 @@ overflow-y: auto;
 }
 .kanban-column { max-height: 60vh; }
 }
-
-/* ── HEADER ── */
-.header {
-height: var(--header-h);
-background: rgba(15,15,15,0.98);
-backdrop-filter: blur(32px);
-border-bottom: 1px solid var(--border);
-display: none;
-align-items: center;
-justify-content: space-between;
-padding: 0 16px;
-flex-shrink: 0;
-position: relative;
-z-index: 10;
-box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-grid-column: 1 / -1;
-}
-
-.header-title {
-font-family: 'DM Serif Display', serif;
-font-size: 20px;
-color: var(--text);
-line-height: 1.1;
-}
-
-.header-actions {
-display: flex;
-gap: 8px;
-align-items: center;
-}
-
-.clock-display {
-font-family: 'DM Sans', sans-serif;
-font-size: 13px;
-color: var(--text2);
-text-align: right;
-min-width: 120px;
-font-weight: 500;
-letter-spacing: 0.5px;
-}
-
-.clock-time {
-font-size: 14px;
-color: var(--text);
-font-weight: 600;
-}
-
-.clock-date {
-font-size: 11px;
-color: var(--text3);
-margin-top: 2px;
-}
-
-.gear-btn {
-width: 36px;
-height: 36px;
-border: 1px solid var(--border);
-background: var(--surface);
-border-radius: 50%;
-display: flex;
-align-items: center;
-justify-content: center;
-cursor: pointer;
-font-size: 16px;
-color: var(--text);
-transition: background 0.25s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.25s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-will-change: background, transform;
-}
-
-.gear-btn:hover { transform: scale(1.05); }
-
-.gear-btn:active { background: var(--surface2); transform: scale(0.95); }
-
-.menu-btn {
-width: 36px;
-height: 36px;
-border: 1px solid var(--border);
-background: var(--surface);
-border-radius: 50%;
-display: flex;
-align-items: center;
-justify-content: center;
-cursor: pointer;
-font-size: 18px;
-color: var(--text);
-transition: background 0.25s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-will-change: background, transform;
-}
-
-.menu-btn:hover { transform: scale(1.05); }
-
-.menu-btn:active { background: var(--surface2); transform: scale(0.95); }
 
 .sidebar-header {
 padding: 16px;
@@ -1036,15 +1016,6 @@ pointer-events: none;
 
 /* ── RESPONSIVE ── */
 @media (max-width: 639px) {
-.header {
-display: flex;
-padding: 0 12px;
-}
-
-.header-title {
-font-size: 18px;
-}
-
 .sidebar-item {
 font-size: 13px;
 }
@@ -1060,10 +1031,6 @@ font-size: 14px;
 }
 
 @media (min-width: 640px) and (max-width: 1023px) {
-.header {
-padding: 0 16px;
-}
-
 .sidebar-section {
 padding: 10px 6px;
 }
@@ -1932,13 +1899,13 @@ margin-bottom: 0;
 <header class="top-nav">
   <div class="top-nav-date" id="topNavDate">Loading...</div>
   <nav class="top-nav-circles">
-    <button class="circle-btn" data-page="tasks"       onclick="navigateTo('tasks')"       title="Tasks">&#10003;</button>
-    <button class="circle-btn" data-page="assignments" onclick="navigateTo('assignments')" title="Assignments">&#128203;</button>
+    <button class="circle-btn" data-page="tasks"       onclick="navigateTo('tasks')"       title="Tasks">&#10003;<span class="circle-btn-badge" data-badge="tasks"></span></button>
+    <button class="circle-btn" data-page="assignments" onclick="navigateTo('assignments')" title="Assignments">&#128203;<span class="circle-btn-badge" data-badge="assignments"></span></button>
     <button class="circle-btn"                         onclick="openCalendarModal()"       title="Calendar">&#128197;</button>
     <button class="circle-btn active" data-page="home" onclick="navigateTo('home')"        title="Home">&#8962;</button>
     <button class="circle-btn" data-page="chat"        onclick="navigateTo('chat')"        title="Chat">&#128172;</button>
     <button class="circle-btn" data-page="plan"        onclick="navigateTo('plan')"        title="Plan">&#127919;</button>
-    <button class="circle-btn" data-page="projects"    onclick="navigateTo('projects')"    title="Projects">&#128230;</button>
+    <button class="circle-btn" data-page="projects"    onclick="navigateTo('projects')"    title="Projects">&#128230;<span class="circle-btn-badge" data-badge="projects"></span></button>
   </nav>
   <div class="top-nav-actions">
     <button class="icon-btn" onclick="openChatHistory()" title="History">&#128336;</button>
@@ -2169,10 +2136,29 @@ let assignmentsCache = [];
 let tasksCache = [];
 let projectsCache = [];
 let calendarCache = [];
-let sidebarOpen = window.innerWidth >= 640;
 
-function isMobile() {
-  return window.innerWidth < 640;
+const CONVERSATION_HISTORY_MAX = 200;
+function pushConversation(msg) {
+  conversationHistory.push(msg);
+  if (conversationHistory.length > CONVERSATION_HISTORY_MAX) {
+    conversationHistory.splice(0, conversationHistory.length - CONVERSATION_HISTORY_MAX);
+  }
+}
+
+// Coalesce GET /api/plan-my-day calls for ~30s. Mutations bust the cache via fetchPlanMyDay(true).
+let _planCache = { data: null, ts: 0 };
+const _PLAN_CACHE_TTL = 30000;
+function setPlanCache(data) { _planCache = { data: data, ts: Date.now() }; }
+function bustPlanCache() { _planCache = { data: null, ts: 0 }; }
+async function fetchPlanMyDay(force) {
+  if (!force && _planCache.data && (Date.now() - _planCache.ts) < _PLAN_CACHE_TTL) {
+    return _planCache.data;
+  }
+  const r = await fetch('/api/plan-my-day');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const data = await r.json();
+  setPlanCache(data);
+  return data;
 }
 
 function navigateTo(pageName) {
@@ -2288,8 +2274,7 @@ function loadHomePage() {
   var planEl = document.getElementById('homePlanContent');
   if (planEl) {
     planEl.innerHTML = '<p style="color:var(--text2)">Loading plan...</p>';
-    fetch('/api/plan-my-day')
-    .then(function(r) { return r.json(); })
+    fetchPlanMyDay()
     .then(function(data) {
       if (!data.items || data.items.length === 0) {
         planEl.innerHTML = '<p style="color:var(--text2)">No plan yet. Go to the Plan page to generate one.</p>';
@@ -2335,6 +2320,34 @@ function updateSidebarStats() {
 
   const projectCount = projectsCache.filter(p => p.status === 'active').length;
   safeUpdate('projectBadge', projectCount);
+
+  updateNavBadges();
+}
+
+function updateNavBadges() {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const tasksOverdue = (tasksCache || []).some(t => {
+    if (t.completed || !t.due_date) return false;
+    const due = new Date(t.due_date);
+    return !isNaN(due) && due < today;
+  });
+
+  const asgnOverdue = (assignmentsCache || []).some(a => {
+    if (!a.due_iso) return false;
+    return new Date(a.due_iso) < now;
+  });
+
+  const projectsNeedCheckin = (projectsCache || []).some(p => p.needs_checkin);
+
+  const setBadge = (key, on) => {
+    const el = document.querySelector('[data-badge="' + key + '"]');
+    if (el) el.classList.toggle('visible', !!on);
+  };
+  setBadge('tasks', tasksOverdue);
+  setBadge('assignments', asgnOverdue);
+  setBadge('projects', projectsNeedCheckin);
 }
 
 function openSettings() {
@@ -2484,7 +2497,7 @@ function saveCurrentChat() {
   });
 
   // Keep only last 20 chats
-  if (histories.length > 20) {
+  while (histories.length > 20) {
     histories.pop();
   }
 
@@ -2604,6 +2617,7 @@ async function loadSidebarData() {
       url: '/api/plan-my-day',
       containerId: 'planContent',
       processor: (data) => {
+        setPlanCache(data);
         renderPlan(data);
       }
     }
@@ -2663,45 +2677,69 @@ async function loadProjects() {
   }
 }
 
-function dataChanged(oldData, newData) {
-  if (!oldData || !newData) return true;
-  if (oldData.length !== newData.length) return true;
-
-  // Quick stringified comparison for detecting changes
-  try {
-    const oldStr = JSON.stringify(oldData);
-    const newStr = JSON.stringify(newData);
-    return oldStr !== newStr;
-  } catch (e) {
-    return true;
-  }
+const CLASS_COLORS = ['#FF7F50', '#5cb85c', '#4fb3f6', '#b197fc', '#ffa940', '#e06c75', '#56b6c2', '#d19a66'];
+function classColor(name) {
+  const s = name || '';
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0x7fffffff;
+  return CLASS_COLORS[h % CLASS_COLORS.length];
 }
 
 function renderAssignments() {
   const container = document.getElementById('assignmentsList');
+  if (!container) return;
   if (!assignmentsCache || assignmentsCache.length === 0) {
     container.innerHTML = '<div class="sidebar-item" style="color: var(--text3);">No upcoming assignments</div>';
     return;
   }
 
-  const sorted = assignmentsCache.slice().sort((a, b) => {
-    const dateA = new Date(a.due_iso || '9999-12-31');
-    const dateB = new Date(b.due_iso || '9999-12-31');
-    return dateA - dateB;
+  const now = new Date();
+  // Group by class_name
+  const groups = {};
+  assignmentsCache.forEach(a => {
+    const cls = (a.class_name || 'Uncategorized').trim() || 'Uncategorized';
+    (groups[cls] = groups[cls] || []).push(a);
   });
 
-  container.innerHTML = sorted.slice(0, 8).map(a => `
-    <div class="sidebar-item assignment-item" style="cursor: pointer;" onclick="viewAssignment('${(a.title || '').replace(/'/g, "\\'")}', '${(a.class_name || '').replace(/'/g, "\\'")}', '${(a.due_iso || '').replace(/'/g, "\\'")}', ${a.estimate_minutes || 30})">
-      <div style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
-        <div style="flex: 1;">
-          <div class="sidebar-item-title">${a.title}</div>
-          <div class="sidebar-item-meta">${a.class_name || ''}</div>
-          <div class="sidebar-item-due">${formatDate(a.due_iso)}</div>
-        </div>
-        <button class="complete-btn" onclick="completeAssignment(event, '${a.title.replace(/'/g, "\\'")}', '${(a.class_name || '').replace(/'/g, "\\'")}', ${a.estimate_minutes || 30})" title="Mark as done">✓</button>
-      </div>
-    </div>
-  `).join('');
+  // Sort: classes with the soonest assignment first
+  const classOrder = Object.keys(groups).sort((a, b) => {
+    const ea = Math.min.apply(null, groups[a].map(x => new Date(x.due_iso || '9999-12-31').getTime()));
+    const eb = Math.min.apply(null, groups[b].map(x => new Date(x.due_iso || '9999-12-31').getTime()));
+    return ea - eb;
+  });
+
+  let html = '';
+  classOrder.forEach(cls => {
+    const items = groups[cls].slice().sort((x, y) => new Date(x.due_iso || '9999-12-31') - new Date(y.due_iso || '9999-12-31'));
+    const color = classColor(cls);
+    html += '<div class="assignment-class-header">'
+      + '<span class="class-color-swatch" style="background:' + color + ';"></span>'
+      + '<span>' + escapeHtml(cls) + '</span>'
+      + '<span class="class-count">' + items.length + '</span>'
+      + '</div>';
+
+    html += items.map(a => {
+      const due = a.due_iso ? new Date(a.due_iso) : null;
+      const overdue = due && due < now;
+      const overduePill = overdue ? '<span class="overdue-pill">Overdue</span>' : '';
+      const itemClass = 'sidebar-item assignment-item' + (overdue ? ' assignment-overdue' : '');
+      const safeTitle = (a.title || '').replace(/'/g, "\\'");
+      const safeClass = (a.class_name || '').replace(/'/g, "\\'");
+      const safeDue = (a.due_iso || '').replace(/'/g, "\\'");
+      const est = a.estimate_minutes || 30;
+      return '<div class="' + itemClass + '" style="cursor:pointer;" onclick="viewAssignment(\'' + safeTitle + '\',\'' + safeClass + '\',\'' + safeDue + '\',' + est + ')">'
+        + '<div style="display:flex;align-items:flex-start;gap:8px;justify-content:space-between;">'
+        +   '<div style="flex:1;min-width:0;">'
+        +     '<div class="sidebar-item-title">' + escapeHtml(a.title || '') + overduePill + '</div>'
+        +     '<div class="sidebar-item-due">' + escapeHtml(formatDate(a.due_iso)) + '</div>'
+        +   '</div>'
+        +   '<button class="complete-btn" onclick="completeAssignment(event,\'' + safeTitle + '\',\'' + safeClass + '\',' + est + ')" title="Mark as done">✓</button>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+  });
+
+  container.innerHTML = html;
   updateSidebarStats();
 }
 
@@ -3441,11 +3479,8 @@ function renderPlan(planData) {
             });
             if (response.ok) {
               // Re-render to show updated order
-              const planResp = await fetch('/api/plan-my-day');
-              if (planResp.ok) {
-                const updatedPlan = await planResp.json();
-                renderPlan(updatedPlan);
-              }
+              const updatedPlan = await fetchPlanMyDay(true);
+              renderPlan(updatedPlan);
             }
           } catch (error) {
             console.error('Failed to reorder plan:', error);
@@ -3522,12 +3557,9 @@ async function generatePlan() {
     });
 
     if (response.ok) {
-      const planResp = await fetch('/api/plan-my-day');
-      if (planResp.ok) {
-        const planData = await planResp.json();
-        renderPlan(planData);
-        displayPlanInChat(planData);
-      }
+      const planData = await fetchPlanMyDay(true);
+      renderPlan(planData);
+      displayPlanInChat(planData);
     } else {
       try {
         const error = await response.json();
@@ -3555,11 +3587,8 @@ async function deletePlan() {
     });
 
     if (response.ok) {
-      const planResp = await fetch('/api/plan-my-day');
-      if (planResp.ok) {
-        const planData = await planResp.json();
-        renderPlan(planData);
-      }
+      const planData = await fetchPlanMyDay(true);
+      renderPlan(planData);
     } else {
       alert(`Error deleting plan: HTTP ${response.status}`);
     }
@@ -3956,9 +3985,30 @@ async function getNewsOtherAngles(btn, item) {
 }
 
 let _stockChart = null;
+let _chartJsPromise = null;
+function loadChartJs() {
+  if (typeof Chart !== 'undefined') return Promise.resolve();
+  if (_chartJsPromise) return _chartJsPromise;
+  _chartJsPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => { _chartJsPromise = null; reject(new Error('Chart.js failed to load')); };
+    document.head.appendChild(s);
+  });
+  return _chartJsPromise;
+}
+
 async function loadStockChart(symbol) {
   const canvas = document.getElementById('outlook-stock-chart');
-  if (!canvas || typeof Chart === 'undefined') return;
+  if (!canvas) return;
+  try {
+    await loadChartJs();
+  } catch (e) {
+    console.error(e);
+    return;
+  }
   try {
     const resp = await fetch(`/api/stocks/history?symbol=${encodeURIComponent(symbol)}&range=1mo`);
     const data = await resp.json();
@@ -4284,7 +4334,7 @@ function resizeChatInput() {
   chatInput.style.height = Math.min(chatInput.scrollHeight, 100) + 'px';
 }
 
-chatInput.addEventListener('input', resizeChatInput);
+chatInput.addEventListener('input', debounce(resizeChatInput, 16));
 chatInput.addEventListener('paste', () => setTimeout(resizeChatInput, 0));
 
 async function sendMessage() {
@@ -4307,7 +4357,7 @@ async function sendMessage() {
   triggerHaptic('light');
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
-  conversationHistory.push({ role: 'user', content: message });
+  pushConversation({ role: 'user', content: message });
 
   const loadingBubble = document.createElement('div');
   loadingBubble.className = 'message assistant';
@@ -4411,7 +4461,7 @@ The server prompt also injects a [STOCK_ACTION: ...] token rule and the student'
 
     loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(assistantMessage)}</div>`;
     renderMessageWithDelay(loadingBubble);
-    conversationHistory.push({ role: 'assistant', content: assistantMessage });
+    pushConversation({ role: 'assistant', content: assistantMessage });
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
     // Save chat to history
@@ -4519,7 +4569,7 @@ async function createTaskFromChat(taskData, loadingBubble) {
     }
 
     // Add to conversation history for continuity
-    conversationHistory.push({
+    pushConversation({
       role: 'assistant',
       content: `✓ Task "${taskData.title}" created successfully!`
     });
@@ -4817,32 +4867,23 @@ async function completeTask(event, taskId) {
 }
 
 async function deleteTask(taskId) {
-  if (!confirm('Are you sure you want to delete this task?')) {
-    return;
-  }
+  const idx = tasksCache.findIndex(t => t.id === taskId);
+  if (idx === -1) return;
+  const removed = tasksCache.splice(idx, 1)[0];
+  renderTasks();
+  closeEditModal();
 
-  try {
-    const response = await fetch(`/api/tasks/${taskId}`, {
-      method: 'DELETE'
-    });
-
-    if (response.ok) {
-      closeEditModal();
-      await loadSidebarData();
-
-      const messagesDiv = document.getElementById('chatMessages');
-      const bubble = document.createElement('div');
-      bubble.className = 'message assistant';
-      bubble.innerHTML = `<div class="message-bubble">✓ Task deleted.</div>`;
-      messagesDiv.appendChild(bubble);
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    } else {
-      alert('Failed to delete task');
+  scheduleUndoableDelete(
+    'Task deleted',
+    async () => {
+      const response = await fetch('/api/tasks/' + taskId, { method: 'DELETE' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+    },
+    () => {
+      tasksCache.splice(idx, 0, removed);
+      renderTasks();
     }
-  } catch (e) {
-    console.error('Error deleting task:', e);
-    alert('Error deleting task');
-  }
+  );
 }
 
 // Project management
@@ -5073,31 +5114,25 @@ async function deleteProject(projectId) {
 }
 
 async function deleteProjectConfirm(projectId) {
-  if (!confirm('Delete this project? This action cannot be undone.')) {
-    return;
-  }
+  const idx = projectsCache.findIndex(p => p.id === projectId);
+  if (idx === -1) return;
+  const removed = projectsCache.splice(idx, 1)[0];
+  renderProjects();
+  if (typeof renderProjectsKanban === 'function') renderProjectsKanban();
+  closeEditProjectModal();
 
-  try {
-    const response = await fetch(`/api/projects/${projectId}`, {
-      method: 'DELETE'
-    });
-
-    if (response.ok) {
-      closeEditProjectModal();
-      await loadProjects();
-      const messagesDiv = document.getElementById('chatMessages');
-      const bubble = document.createElement('div');
-      bubble.className = 'message assistant';
-      bubble.innerHTML = `<div class="message-bubble">✓ Project deleted.</div>`;
-      messagesDiv.appendChild(bubble);
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    } else {
-      alert('Failed to delete project');
+  scheduleUndoableDelete(
+    'Project deleted',
+    async () => {
+      const response = await fetch('/api/projects/' + projectId, { method: 'DELETE' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+    },
+    () => {
+      projectsCache.splice(idx, 0, removed);
+      renderProjects();
+      if (typeof renderProjectsKanban === 'function') renderProjectsKanban();
     }
-  } catch (e) {
-    console.error('Error deleting project:', e);
-    alert('Error deleting project');
-  }
+  );
 }
 
 // Recurring tasks management
@@ -5790,6 +5825,48 @@ function showToast(message, type = 'info', duration = 3000) {
   }, duration);
 }
 
+// Soft-delete with an Undo toast. The caller passes:
+//   - label: short human description ("Task deleted", "Project deleted")
+//   - commit: async fn that actually performs the DELETE on the server
+//   - rollback: sync fn that restores local UI state if the user clicks Undo
+// Returns immediately. After 5s, runs commit() unless undo was clicked.
+function scheduleUndoableDelete(label, commit, rollback) {
+  const toast = document.createElement('div');
+  toast.className = 'toast info';
+  toast.style.display = 'flex';
+  toast.style.alignItems = 'center';
+  toast.style.gap = '12px';
+  toast.innerHTML = '<span class="toast-icon">↺</span><span>' + label + '</span>';
+  const btn = document.createElement('button');
+  btn.textContent = 'Undo';
+  btn.style.cssText = 'background:transparent;border:1px solid var(--accent);color:var(--accent);padding:4px 10px;border-radius:var(--r-sm);font-size:12px;font-weight:600;cursor:pointer;';
+  toast.appendChild(btn);
+  document.body.appendChild(toast);
+
+  let cancelled = false;
+  const timer = setTimeout(async () => {
+    if (cancelled) return;
+    try {
+      await commit();
+    } catch (e) {
+      console.error('Undoable delete commit failed:', e);
+      try { rollback(); } catch (_) {}
+      showToast('Could not delete — restored.', 'error', 3000);
+    } finally {
+      toast.classList.add('closing');
+      setTimeout(() => toast.remove(), 300);
+    }
+  }, 5000);
+
+  btn.addEventListener('click', () => {
+    cancelled = true;
+    clearTimeout(timer);
+    try { rollback(); } catch (e) { console.error('Undo rollback failed:', e); }
+    toast.classList.add('closing');
+    setTimeout(() => toast.remove(), 300);
+  });
+}
+
 // Task completion with celebration
 function celebrateCompletion(element) {
   element.classList.add('completing');
@@ -5936,11 +6013,25 @@ async function fetchWithRetry(url, options = {}, retries = 3) {
 }
 
 // Keyboard shortcuts for power users
+function _isTyping(target) {
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+  const tag = (target.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select';
+}
+
 document.addEventListener('keydown', (e) => {
   // Cmd/Ctrl + K for quick search (future enhancement)
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
     e.preventDefault();
     // Implement quick search here
+  }
+  // `/` jumps to chat and focuses the input (skip when already typing somewhere)
+  if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && !_isTyping(e.target)) {
+    e.preventDefault();
+    navigateTo('chat');
+    const input = document.getElementById('chatInput');
+    if (input) input.focus();
   }
   // Escape to close modals
   if (e.key === 'Escape') {
