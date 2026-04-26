@@ -1910,20 +1910,51 @@ def schedule_briefing():
 
 _login_lock = threading.Lock()
 
+def _validate_ip(candidate):
+    if not candidate:
+        return None
+    candidate = candidate.strip()
+    if not candidate:
+        return None
+    try:
+        ipaddress.ip_address(candidate)
+        return candidate
+    except ValueError:
+        return None
+
 def get_client_ip():
-    """Get validated client IP address. ProxyFix middleware handles reverse proxy headers."""
-    ip = request.remote_addr or None
-    if ip:
-        try:
-            ipaddress.ip_address(ip)
+    """Get validated client IP address.
+
+    ProxyFix handles X-Forwarded-For for a single trusted hop, but deployments
+    behind a CDN (Cloudflare, etc.) or multiple proxies need explicit header
+    checks. We try the most reliable proxy headers first, then fall back to
+    request.remote_addr. As a last resort we hash a STABLE identifier
+    (User-Agent only) so the same client maps to the same key across requests.
+    """
+    forwarded_for = request.headers.get('X-Forwarded-For', '')
+    if forwarded_for:
+        # Leftmost entry is the original client; the rest are intermediate proxies.
+        for part in forwarded_for.split(','):
+            ip = _validate_ip(part)
+            if ip:
+                return ip
+
+    for header in ('CF-Connecting-IP', 'True-Client-IP', 'X-Real-IP'):
+        ip = _validate_ip(request.headers.get(header, ''))
+        if ip:
             return ip
-        except ValueError:
-            log.warning(f"Invalid IP format detected from request: {ip}")
-    # If IP is invalid/missing, use hash of request context to avoid shared rate limit state
+
+    ip = _validate_ip(request.remote_addr)
+    if ip:
+        return ip
+
+    if request.remote_addr:
+        log.warning(f"Invalid IP format detected from request: {request.remote_addr}")
+
+    # Stable fallback: only User-Agent, so the same client gets the same key.
+    # Do NOT include Referer/Origin (changes per page) or remote_addr (may rotate).
     user_agent = request.headers.get('User-Agent', '')
-    origin = request.headers.get('Origin', request.headers.get('Referer', ''))
-    context = f"{user_agent}|{origin}|{request.remote_addr}"
-    return f"unknown-{hashlib.sha256(context.encode()).hexdigest()[:12]}"
+    return f"unknown-{hashlib.sha256(user_agent.encode()).hexdigest()[:12]}"
 
 def is_ip_locked(ip_addr):
     """Check if IP is currently locked out."""
