@@ -1985,36 +1985,34 @@ def _validate_ip(candidate):
         return None
 
 def get_client_ip():
-    """Get validated client IP address.
+    """Get a validated, stable client identifier.
 
-    ProxyFix handles X-Forwarded-For for a single trusted hop, but deployments
-    behind a CDN (Cloudflare, etc.) or multiple proxies need explicit header
-    checks. We try the most reliable proxy headers first, then fall back to
-    request.remote_addr. As a last resort we hash a STABLE identifier
-    (User-Agent only) so the same client maps to the same key across requests.
+    Trust order (most-trusted first):
+      1. request.remote_addr — set by ProxyFix from the trusted proxy hop.
+         An attacker cannot forge this when ProxyFix is correctly configured.
+      2. Provider-set headers (CF-Connecting-IP, True-Client-IP, X-Real-IP)
+         — only consulted if remote_addr is missing/invalid. Useful for
+         multi-proxy deployments (e.g. Cloudflare in front of the app).
+      3. Stable fallback: a hash of the User-Agent. Used only when no real
+         IP can be determined. Does NOT include Referer/Origin (changes
+         per page navigation) or remote_addr (may be None/invalid), so the
+         same client maps to the same key across requests.
+
+    We deliberately do NOT take the leftmost X-Forwarded-For value, because
+    that header is client-controllable and would allow IP spoofing.
     """
-    forwarded_for = request.headers.get('X-Forwarded-For', '')
-    if forwarded_for:
-        # Leftmost entry is the original client; the rest are intermediate proxies.
-        for part in forwarded_for.split(','):
-            ip = _validate_ip(part)
-            if ip:
-                return ip
+    ip = _validate_ip(request.remote_addr)
+    if ip:
+        return ip
 
     for header in ('CF-Connecting-IP', 'True-Client-IP', 'X-Real-IP'):
         ip = _validate_ip(request.headers.get(header, ''))
         if ip:
             return ip
 
-    ip = _validate_ip(request.remote_addr)
-    if ip:
-        return ip
-
     if request.remote_addr:
         log.warning(f"Invalid IP format detected from request: {request.remote_addr}")
 
-    # Stable fallback: only User-Agent, so the same client gets the same key.
-    # Do NOT include Referer/Origin (changes per page) or remote_addr (may rotate).
     user_agent = request.headers.get('User-Agent', '')
     return f"unknown-{hashlib.sha256(user_agent.encode()).hexdigest()[:12]}"
 
@@ -2034,7 +2032,12 @@ def is_ip_locked(ip_addr):
     return False
 
 def record_login_attempt(ip_addr, success, username=""):
-    """Record login attempt and update lockout status."""
+    """Record login attempt and update lockout status.
+
+    Tracks failure_count on every failure. Once it reaches 5 consecutive
+    failures, sets locked_until with exponential backoff (15, 30, 60, 120 min...).
+    A successful login clears the counter.
+    """
     try:
         with _login_lock:
             conn = get_db()
@@ -2044,27 +2047,35 @@ def record_login_attempt(ip_addr, success, username=""):
 INSERT INTO login_attempts (ip_address, success, username, user_agent)
 VALUES (%s, %s, %s, %s)""", (ip_addr, success, username[:50] if username else "", request.headers.get('User-Agent', '')[:500]))
 
-            if not success:
-                cur.execute("""
-SELECT COALESCE(failure_count, 0) + 1 as new_count, locked_until
-FROM login_lockouts WHERE ip_address = %s""", (ip_addr,))
-                row = cur.fetchone()
-                new_count = row["new_count"] if row else 1
-
-                if new_count >= 5:
-                    lockout_duration = timedelta(minutes=15 * (2 ** (new_count - 5)))
-                    locked_until = datetime.now(TZ) + lockout_duration
-                    cur.execute("""
-INSERT INTO login_lockouts (ip_address, locked_until, failure_count)
-VALUES (%s, %s, %s)
-ON CONFLICT (ip_address) DO UPDATE SET locked_until = %s, failure_count = %s""",
-                        (ip_addr, locked_until, new_count, locked_until, new_count))
-                    conn.commit()
-                    cur.close()
-                    conn.close()
-                    return {"locked": True, "minutes_remaining": 15}
-            else:
+            if success:
                 cur.execute("DELETE FROM login_lockouts WHERE ip_address = %s", (ip_addr,))
+                conn.commit()
+                cur.close()
+                conn.close()
+                return {"locked": False, "minutes_remaining": 0}
+
+            # Failure: increment counter (UPSERT so the row is created on first failure).
+            # locked_until is seeded with NOW() so is_ip_locked() returns False until threshold.
+            now = datetime.now(TZ)
+            cur.execute("""
+INSERT INTO login_lockouts (ip_address, locked_until, failure_count)
+VALUES (%s, %s, 1)
+ON CONFLICT (ip_address) DO UPDATE
+SET failure_count = login_lockouts.failure_count + 1
+RETURNING failure_count""", (ip_addr, now))
+            new_count = cur.fetchone()["failure_count"]
+
+            if new_count >= 5:
+                lockout_duration = timedelta(minutes=15 * (2 ** (new_count - 5)))
+                locked_until = now + lockout_duration
+                minutes_remaining = max(1, int(lockout_duration.total_seconds() / 60))
+                cur.execute(
+                    "UPDATE login_lockouts SET locked_until = %s WHERE ip_address = %s",
+                    (locked_until, ip_addr))
+                conn.commit()
+                cur.close()
+                conn.close()
+                return {"locked": True, "minutes_remaining": minutes_remaining}
 
             conn.commit()
             cur.close()
@@ -2634,9 +2645,17 @@ def api_lockdown_status():
 
 
 def is_localhost():
-    """Check if request is from localhost (127.0.0.1 or ::1)"""
-    ip = get_client_ip()
-    return ip in ('127.0.0.1', '::1', 'localhost')
+    """Check if request is genuinely from loopback.
+
+    Debug endpoints rely on this. We must not trust forwarded headers here,
+    or an attacker could enable debug routes by spoofing X-Forwarded-For.
+    A request is localhost only when there are no proxy headers AND
+    remote_addr is loopback.
+    """
+    if request.headers.get('X-Forwarded-For') or request.headers.get('X-Real-IP') \
+            or request.headers.get('CF-Connecting-IP') or request.headers.get('True-Client-IP'):
+        return False
+    return request.remote_addr in ('127.0.0.1', '::1')
 
 
 @app.route("/api/test-admin-password")
