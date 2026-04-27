@@ -1926,27 +1926,131 @@ border-radius: 3px;
 margin-bottom: 0;
 }
 
+/* ── Mobile nav dropdown (replaces the circle row on phones) ── */
+.top-nav-mobile { display: none; position: relative; }
+
+.nav-menu-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.nav-menu-toggle:active { background: var(--surface2); }
+.nav-menu-toggle[aria-expanded="true"] { border-color: var(--accent); }
+.nav-menu-toggle-icon { font-size: 16px; line-height: 1; }
+.nav-menu-toggle-label { line-height: 1; }
+.nav-menu-toggle-caret {
+  font-size: 10px;
+  color: var(--text3);
+  transition: transform 0.2s ease;
+  line-height: 1;
+}
+.nav-menu-toggle[aria-expanded="true"] .nav-menu-toggle-caret { transform: rotate(180deg); }
+
+.nav-menu-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 220px;
+  max-width: calc(100vw - 24px);
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 6px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+  z-index: 200;
+  -webkit-overflow-scrolling: touch;
+}
+.nav-menu-dropdown.open {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: navMenuFade 0.15s ease;
+}
+@keyframes navMenuFade {
+  from { opacity: 0; transform: translate(-50%, -4px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.nav-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 12px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.nav-menu-item:hover, .nav-menu-item:focus { background: var(--surface2); outline: none; }
+.nav-menu-item.active { background: var(--accent); color: #fff; }
+.nav-menu-item.active .nav-menu-item-icon { filter: none; }
+.nav-menu-item-icon { font-size: 16px; width: 20px; text-align: center; }
+.nav-menu-divider { height: 1px; background: var(--border); margin: 4px 6px; }
+
+/* Home page plan/timer rows: proper flex so titles don't crowd the time */
+.home-plan-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.home-plan-item:last-child { border-bottom: none; }
+.home-plan-item:hover { background: var(--surface2); }
+.home-plan-time {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 70px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.home-plan-title {
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
 /* ── iPhone / small-screen compaction ──────────────────────────────────
    Desktop styles above are unchanged. These rules tighten paddings,
    gaps, and font sizes for narrow viewports so the app feels native
    on a phone instead of like a scaled-up desktop layout. */
 @media (max-width: 639px) {
-  /* Top nav */
+  /* Top nav: hide the circle row + action icons; show the dropdown selector. */
   .top-nav {
-    padding: 8px 10px;
+    padding: 8px 12px;
     padding-top: max(8px, env(safe-area-inset-top));
   }
   .top-nav-date { display: none; }
-  .top-nav-circles { gap: 5px; }
-  .top-nav-actions { min-width: auto; gap: 2px; }
-  .circle-btn {
-    width: 38px;
-    height: 38px;
-    font-size: 14px;
-    border-width: 1.5px;
-  }
-  .circle-btn.active { transform: scale(1.12); }
-  .circle-btn:hover:not(.active) { transform: scale(1.04); }
+  .top-nav-circles { display: none; }
+  .top-nav-actions { display: none; }
+  .top-nav-mobile { display: block; margin: 0 auto; }
   .icon-btn { font-size: 15px; padding: 4px; }
 
   /* Page padding + safe-area for the home indicator */
@@ -1959,6 +2063,10 @@ margin-bottom: 0;
   .section-title { font-size: 14px; margin: 0 0 2px; }
   .home-section { gap: 8px; }
   .home-grid { gap: 12px; }
+
+  /* Home plan/timer items even tighter */
+  .home-plan-item { font-size: 13px; padding: 6px 0; gap: 8px; }
+  .home-plan-time { font-size: 11px; min-width: 60px; }
 
   /* Outlook cards */
   #homeOutlookContent .outlook-grid { gap: 8px; grid-auto-rows: minmax(80px, auto); }
@@ -2038,6 +2146,25 @@ margin-bottom: 0;
     <button class="circle-btn" data-page="plan"        onclick="navigateTo('plan')"        title="Plan">&#127919;</button>
     <button class="circle-btn" data-page="projects"    onclick="navigateTo('projects')"    title="Projects">&#128230;</button>
   </nav>
+  <div class="top-nav-mobile">
+    <button class="nav-menu-toggle" id="navMenuToggle" onclick="toggleNavMenu(event)" aria-haspopup="true" aria-expanded="false">
+      <span class="nav-menu-toggle-icon" id="navMenuIcon">&#8962;</span>
+      <span class="nav-menu-toggle-label" id="navMenuLabel">Home</span>
+      <span class="nav-menu-toggle-caret">&#9662;</span>
+    </button>
+    <div class="nav-menu-dropdown" id="navMenuDropdown" role="menu">
+      <button class="nav-menu-item" data-page="home"        onclick="navigateTo('home'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#8962;</span>Home</button>
+      <button class="nav-menu-item" data-page="tasks"       onclick="navigateTo('tasks'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#10003;</span>Tasks</button>
+      <button class="nav-menu-item" data-page="assignments" onclick="navigateTo('assignments'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128203;</span>Assignments</button>
+      <button class="nav-menu-item" data-page="chat"        onclick="navigateTo('chat'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128172;</span>Chat</button>
+      <button class="nav-menu-item" data-page="plan"        onclick="navigateTo('plan'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#127919;</span>Plan</button>
+      <button class="nav-menu-item" data-page="projects"    onclick="navigateTo('projects'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
+      <div class="nav-menu-divider"></div>
+      <button class="nav-menu-item" onclick="openCalendarModal(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128197;</span>Calendar</button>
+      <button class="nav-menu-item" onclick="openChatHistory(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128336;</span>History</button>
+      <button class="nav-menu-item" onclick="openSettings(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#9881;</span>Settings</button>
+    </div>
+  </div>
   <div class="top-nav-actions">
     <button class="icon-btn" onclick="openChatHistory()" title="History">&#128336;</button>
     <button class="icon-btn" onclick="openSettings()"    title="Settings">&#9881;</button>
@@ -2273,13 +2400,59 @@ function isMobile() {
   return window.innerWidth < 640;
 }
 
+var NAV_PAGE_META = {
+  home:        { label: 'Home',        icon: '⌂' },
+  tasks:       { label: 'Tasks',       icon: '✓' },
+  assignments: { label: 'Assignments', icon: '📋' },
+  chat:        { label: 'Chat',        icon: '💬' },
+  plan:        { label: 'Plan',        icon: '🎯' },
+  projects:    { label: 'Projects',    icon: '📦' }
+};
+
+function updateNavMenuLabel(pageName) {
+  var meta = NAV_PAGE_META[pageName];
+  if (!meta) return;
+  var label = document.getElementById('navMenuLabel');
+  var icon  = document.getElementById('navMenuIcon');
+  if (label) label.textContent = meta.label;
+  if (icon)  icon.textContent  = meta.icon;
+  document.querySelectorAll('#navMenuDropdown .nav-menu-item[data-page]').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.page === pageName);
+  });
+}
+
+function toggleNavMenu(e) {
+  if (e) e.stopPropagation();
+  var dd = document.getElementById('navMenuDropdown');
+  var tg = document.getElementById('navMenuToggle');
+  if (!dd || !tg) return;
+  var open = dd.classList.toggle('open');
+  tg.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function closeNavMenu() {
+  var dd = document.getElementById('navMenuDropdown');
+  var tg = document.getElementById('navMenuToggle');
+  if (dd) dd.classList.remove('open');
+  if (tg) tg.setAttribute('aria-expanded', 'false');
+}
+
+document.addEventListener('click', function(e) {
+  var dd = document.getElementById('navMenuDropdown');
+  if (!dd || !dd.classList.contains('open')) return;
+  var tg = document.getElementById('navMenuToggle');
+  if (dd.contains(e.target) || (tg && tg.contains(e.target))) return;
+  closeNavMenu();
+});
+
 function navigateTo(pageName) {
   document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
   document.querySelectorAll('.circle-btn').forEach(function(b) { b.classList.remove('active'); });
   var page = document.getElementById('page-' + pageName);
   if (page) page.classList.add('active');
-  var btn = document.querySelector('[data-page="' + pageName + '"]');
+  var btn = document.querySelector('.circle-btn[data-page="' + pageName + '"]');
   if (btn) btn.classList.add('active');
+  updateNavMenuLabel(pageName);
   if (pageName === 'home') loadHomePage();
   else if (pageName === 'tasks') loadSidebarData();
   else if (pageName === 'assignments') loadAssignments();
@@ -2393,9 +2566,11 @@ function loadHomePage() {
         planEl.innerHTML = '<p style="color:var(--text2)">No plan yet. Go to the Plan page to generate one.</p>';
       } else {
         planEl.innerHTML = data.items.map(function(item) {
-          return '<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:14px;">'
-            + '<span style="color:var(--accent);font-size:12px;">' + escapeHtml(to12Hour(item.scheduled_start_time) || '') + '</span> '
-            + '<span style="color:var(--text);">' + escapeHtml(item.item_title || '') + '</span>'
+          var time = escapeHtml(to12Hour(item.scheduled_start_time) || '');
+          var title = escapeHtml(item.item_title || '');
+          return '<div class="home-plan-item" onclick="navigateTo(\'plan\')">'
+            +    '<span class="home-plan-time">' + time + '</span>'
+            +    '<span class="home-plan-title">' + title + '</span>'
             + '</div>';
         }).join('');
       }
