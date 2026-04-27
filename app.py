@@ -2194,6 +2194,30 @@ ON CONFLICT (ip_address) DO UPDATE SET ip_name = EXCLUDED.ip_name, tracked_at = 
         log.warning(f"Error tracking IP name: {e}")
     return False
 
+def prune_login_attempts(retention_days=30):
+    """Delete login_attempts rows older than retention_days. Also clears
+    expired login_lockouts so old rows don't accumulate."""
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "DELETE FROM login_attempts WHERE attempted_at < NOW() - %s::interval",
+            (f"{retention_days} days",))
+        attempts_deleted = cur.rowcount
+        cur.execute("DELETE FROM login_lockouts WHERE locked_until < NOW() - INTERVAL '7 days'")
+        lockouts_deleted = cur.rowcount
+        conn.commit()
+        if attempts_deleted or lockouts_deleted:
+            log.info(f"Pruned {attempts_deleted} old login_attempts, {lockouts_deleted} stale lockouts")
+        return True
+    except Exception as e:
+        conn.rollback()
+        log.warning(f"Error pruning login attempts: {e}")
+    finally:
+        cur.close()
+        conn.close()
+    return False
+
 def is_valid_username(username):
     """Check if a username is a recognized/valid system user."""
     if not username:
