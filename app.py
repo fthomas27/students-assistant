@@ -1900,10 +1900,14 @@ def schedule_briefing():
     # Weekly insight every Sunday at 8 AM
     scheduler.add_job(generate_weekly_insight, "cron", day_of_week="sun", hour=8, minute=0,
                       id="weekly_insight", replace_existing=True)
+    # Prune old login attempts daily at 3 AM (keeps 30 days of history)
+    scheduler.add_job(prune_login_attempts, "cron", hour=3, minute=0,
+                      id="prune_login_attempts", replace_existing=True)
     log.info("Briefing scheduled for %02d:%02d Mountain", hour, minute)
     log.info("Evening debrief scheduled for 18:30 Mountain")
     log.info("Recurring tasks processor scheduled for 00:00 Mountain")
     log.info("Weekly insight scheduled for Sun 08:00 Mountain")
+    log.info("Login attempt cleanup scheduled for 03:00 Mountain")
 
 
 # ── Security Functions ──────────────────────────────────────────────────────────
@@ -2130,6 +2134,28 @@ ON CONFLICT (ip_address) DO UPDATE SET ip_name = EXCLUDED.ip_name, tracked_at = 
         return True
     except Exception as e:
         log.warning(f"Error tracking IP name: {e}")
+    return False
+
+def prune_login_attempts(retention_days=30):
+    """Delete login_attempts rows older than retention_days. Also clears
+    expired login_lockouts so old rows don't accumulate."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM login_attempts WHERE attempted_at < NOW() - %s::interval",
+            (f"{retention_days} days",))
+        attempts_deleted = cur.rowcount
+        cur.execute("DELETE FROM login_lockouts WHERE locked_until < NOW() - INTERVAL '7 days'")
+        lockouts_deleted = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+        if attempts_deleted or lockouts_deleted:
+            log.info(f"Pruned {attempts_deleted} old login_attempts, {lockouts_deleted} stale lockouts")
+        return True
+    except Exception as e:
+        log.warning(f"Error pruning login attempts: {e}")
     return False
 
 def is_valid_username(username):
