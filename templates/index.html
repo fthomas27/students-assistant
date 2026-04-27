@@ -1925,6 +1925,104 @@ border-radius: 3px;
 .timeline-item:last-child {
 margin-bottom: 0;
 }
+
+/* ── iPhone / small-screen compaction ──────────────────────────────────
+   Desktop styles above are unchanged. These rules tighten paddings,
+   gaps, and font sizes for narrow viewports so the app feels native
+   on a phone instead of like a scaled-up desktop layout. */
+@media (max-width: 639px) {
+  /* Top nav */
+  .top-nav {
+    padding: 8px 10px;
+    padding-top: max(8px, env(safe-area-inset-top));
+  }
+  .top-nav-date { display: none; }
+  .top-nav-circles { gap: 5px; }
+  .top-nav-actions { min-width: auto; gap: 2px; }
+  .circle-btn {
+    width: 38px;
+    height: 38px;
+    font-size: 14px;
+    border-width: 1.5px;
+  }
+  .circle-btn.active { transform: scale(1.12); }
+  .circle-btn:hover:not(.active) { transform: scale(1.04); }
+  .icon-btn { font-size: 15px; padding: 4px; }
+
+  /* Page padding + safe-area for the home indicator */
+  .page {
+    padding: 12px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  /* Section spacing */
+  .section-title { font-size: 14px; margin: 0 0 2px; }
+  .home-section { gap: 8px; }
+  .home-grid { gap: 12px; }
+
+  /* Outlook cards */
+  #homeOutlookContent .outlook-grid { gap: 8px; grid-auto-rows: minmax(80px, auto); }
+  .outlook-grid { gap: 8px; }
+  .outlook-card { padding: 10px 12px; min-height: 80px; }
+  .outlook-card h4 { font-size: 11px; margin-bottom: 4px; }
+  .outlook-card .outlook-primary { font-size: 16px; }
+  .outlook-card .outlook-body { font-size: 12px; line-height: 1.35; }
+  .outlook-card .outlook-item { font-size: 11px; }
+  .outlook-card .outlook-meta { font-size: 10px; padding-top: 4px; }
+  .outlook-quote-text { font-size: 12px; }
+  .outlook-quote-author { font-size: 10px; }
+
+  /* Sidebar / lists */
+  .sidebar-item { padding: 8px 10px; font-size: 12px; }
+  .sidebar-section-title { padding: 6px 10px 4px; font-size: 10px; }
+  .sidebar-header { padding: 12px; font-size: 12px; }
+  .section-header { padding: 8px 10px; }
+  .section-badge { font-size: 9px; padding: 1px 5px; }
+
+  /* Stat cards */
+  .stat-card { padding: 8px 6px; }
+  .stat-icon { font-size: 18px; }
+  .stat-count { font-size: 15px; }
+
+  /* Plan / chat-card snippets */
+  .plan-chat-card { padding: 8px 10px; gap: 8px; }
+  .plan-chat-time { font-size: 10px; min-width: 70px; }
+  .plan-chat-title { font-size: 13px; }
+  .plan-chat-meta { font-size: 10px; }
+
+  /* Chat messages */
+  .chat-messages { padding: 12px; gap: 8px; }
+  .message-bubble { padding: 10px 14px; font-size: 15px; line-height: 1.55; }
+
+  /* Modals */
+  .event-detail-header { padding: 14px; }
+  .event-detail-title { font-size: 17px; }
+  .event-detail-close { font-size: 20px; width: 28px; height: 28px; }
+
+  /* Empty state */
+  .empty-state { padding: 16px; }
+  .empty-state-icon { font-size: 36px; margin-bottom: 8px; }
+  .empty-state-text { font-size: 13px; line-height: 1.5; }
+
+  /* Kanban columns shorter */
+  .kanban-column { max-height: 50vh; }
+
+  /* Quick-action buttons more thumb-friendly but visually lighter */
+  .quick-action-btn { padding: 6px 10px; font-size: 11px; }
+
+  /* Header (when shown) */
+  .header { padding: 0 10px; }
+  .header-title { font-size: 17px; }
+  .clock-display { min-width: 90px; font-size: 11px; }
+  .clock-time { font-size: 12px; }
+  .clock-date { font-size: 10px; }
+  .gear-btn, .menu-btn { width: 32px; height: 32px; font-size: 14px; }
+
+  /* Prevent iOS Safari from auto-zooming when an input is focused.
+     iOS only zooms when font-size < 16px on the focused field. We accept
+     a slightly larger input font in exchange for no jarring zoom. */
+  input, select, textarea { font-size: 16px; }
+}
 </style>
 </head>
 <body>

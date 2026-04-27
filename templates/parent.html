@@ -476,6 +476,23 @@ textarea {
 .badge-assignment { background: rgba(255,127,80,0.2); color: var(--accent); }
 .badge-task { background: rgba(92,184,92,0.2); color: var(--green); }
 .badge-private { background: rgba(153,153,153,0.15); color: var(--text3); }
+
+/* ── iPhone / small-screen compaction ────────────────────────────── */
+@media (max-width: 600px) {
+  body { padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  .header { margin-bottom: 20px; padding-bottom: 12px; }
+  .title { font-size: 24px; }
+  .subtitle { font-size: 12px; }
+  .logout-btn { padding: 8px 14px; font-size: 13px; }
+  .form-section { padding: 14px; margin-bottom: 16px; }
+  .form-title { font-size: 15px; margin-bottom: 12px; }
+  .form-group { margin-bottom: 12px; }
+  label { font-size: 11px; margin-bottom: 6px; }
+  textarea { min-height: 80px; }
+  .submit-btn { padding: 10px 16px; }
+  /* Prevent iOS auto-zoom on input focus */
+  input, select, textarea { font-size: 16px; }
+}
 </style>
 </head>
 <body>
