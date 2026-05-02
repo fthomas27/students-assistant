@@ -670,6 +670,34 @@ font-weight: 600;
 .priority-dot.priority-medium   { background: #ffd666; }
 .priority-dot.priority-low      { background: #5cb85c; }
 
+.priority-radio-group {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-top: 4px;
+}
+.priority-radio {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+.priority-radio:hover { background: var(--surface2); }
+.priority-radio.selected {
+  border-color: var(--accent);
+  background: var(--surface2);
+  font-weight: 600;
+}
+
 .plan-item {
 background: linear-gradient(90deg, var(--surface), var(--surface2));
 border-left: 4px solid var(--accent);
@@ -3581,12 +3609,7 @@ function editTask(taskId) {
     </div>
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Priority</label>
-      <select id="editUrgency" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
-        <option value="critical" ${task.urgency === 'critical' ? 'selected' : ''}>● Critical</option>
-        <option value="high" ${task.urgency === 'high' ? 'selected' : ''}>● High</option>
-        <option value="medium" ${task.urgency === 'medium' ? 'selected' : ''}>● Medium</option>
-        <option value="low" ${task.urgency === 'low' ? 'selected' : ''}>● Low</option>
-      </select>
+      ${priorityRadioGroupHTML('editUrgency', task.urgency)}
     </div>
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Due Date</label>
@@ -4818,6 +4841,33 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function priorityRadioGroupHTML(inputId, selected) {
+  const opts = [
+    { value: 'critical', label: 'Critical' },
+    { value: 'high',     label: 'High' },
+    { value: 'medium',   label: 'Medium' },
+    { value: 'low',      label: 'Low' }
+  ];
+  const sel = ['critical','high','medium','low'].includes(selected) ? selected : 'medium';
+  const buttons = opts.map(o =>
+    `<div class="priority-radio ${o.value === sel ? 'selected' : ''}" data-value="${o.value}" onclick="setPriorityRadio('${inputId}','${o.value}')">
+       <span class="priority-dot priority-${o.value}"></span>${o.label}
+     </div>`
+  ).join('');
+  return `<div class="priority-radio-group" id="${inputId}Group">${buttons}</div>
+          <input type="hidden" id="${inputId}" value="${sel}">`;
+}
+
+function setPriorityRadio(inputId, value) {
+  const input = document.getElementById(inputId);
+  if (input) input.value = value;
+  const group = document.getElementById(inputId + 'Group');
+  if (!group) return;
+  group.querySelectorAll('.priority-radio').forEach(el => {
+    el.classList.toggle('selected', el.dataset.value === value);
+  });
+}
+
 function formatMessage(text) {
   let html = escapeHtml(text);
 
@@ -5054,12 +5104,7 @@ function openAddTaskModal() {
     </div>
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Priority</label>
-      <select id="newTaskUrgency" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
-        <option value="low">● Low</option>
-        <option value="medium" selected>● Medium</option>
-        <option value="high">● High</option>
-        <option value="critical">● Critical</option>
-      </select>
+      ${priorityRadioGroupHTML('newTaskUrgency', 'medium')}
     </div>
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Recurrence (optional)</label>
