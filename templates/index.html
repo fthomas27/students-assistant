@@ -3437,26 +3437,115 @@ async function deleteProjectNote(projectId, noteId) {
 }
 
 async function addProjectTask(projectId) {
-  const title = prompt('Enter task title:');
-  if (!title) return;
+  openProjectTaskModal(projectId, null);
+}
+
+function openProjectTaskModal(projectId, existing) {
+  const isEdit = !!existing;
+  const modal = document.createElement('div');
+  modal.id = 'projectTaskModal';
+  modal.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5); z-index: 200;
+    display: flex; align-items: center; justify-content: center;
+    animation: fadeInBackdrop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  `;
+
+  const form = document.createElement('div');
+  form.style.cssText = `
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-sm); padding: 24px; width: 90%; max-width: 400px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    animation: modalSlideInScale 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  `;
+
+  const title = isEdit ? escapeHtml(existing.title || '') : '';
+  const notes = isEdit ? escapeHtml(existing.notes || '') : '';
+  const dueDate = isEdit ? (existing.due_date || '') : '';
+  const status = isEdit ? (existing.status || 'pending') : 'pending';
+
+  form.innerHTML = `
+    <h3 style="margin: 0 0 16px 0; color: var(--text);">${isEdit ? 'Edit' : 'New'} Project Task</h3>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Title</label>
+      <input id="projectTaskTitle" type="text" value="${title}" placeholder="Task title" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+    </div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Due Date</label>
+      <input id="projectTaskDueDate" type="date" value="${dueDate}" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+    </div>
+    <div style="margin-bottom: 12px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Status</label>
+      <select id="projectTaskStatus" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+        <option value="pending"     ${status === 'pending'     ? 'selected' : ''}>Pending</option>
+        <option value="in_progress" ${status === 'in_progress' ? 'selected' : ''}>In Progress</option>
+        <option value="done"        ${status === 'done'        ? 'selected' : ''}>Done</option>
+      </select>
+    </div>
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Notes</label>
+      <textarea id="projectTaskNotes" placeholder="Optional notes" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box; min-height: 60px; font-family: inherit;">${notes}</textarea>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button onclick="closeProjectTaskModal()" style="flex: 1; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); cursor: pointer; font-weight: 600;">Cancel</button>
+      <button onclick="saveProjectTask(${projectId}, ${isEdit ? existing.id : 'null'})" style="flex: 1; padding: 8px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">${isEdit ? 'Save' : 'Create'}</button>
+    </div>
+  `;
+
+  modal.appendChild(form);
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeProjectTaskModal(); });
+  setTimeout(() => { const t = document.getElementById('projectTaskTitle'); if (t) t.focus(); }, 50);
+}
+
+function closeProjectTaskModal() {
+  const modal = document.getElementById('projectTaskModal');
+  if (modal) modal.remove();
+}
+
+async function saveProjectTask(projectId, taskId) {
+  const title = document.getElementById('projectTaskTitle').value.trim();
+  if (!title) { alert('Title cannot be empty'); return; }
+  const due_date = document.getElementById('projectTaskDueDate').value || null;
+  const status = document.getElementById('projectTaskStatus').value;
+  const notes = document.getElementById('projectTaskNotes').value;
+
+  const isEdit = !!taskId;
+  const url = isEdit
+    ? `/api/projects/${projectId}/tasks/${taskId}`
+    : `/api/projects/${projectId}/tasks`;
+  const method = isEdit ? 'PATCH' : 'POST';
 
   try {
-    const response = await fetch(`/api/projects/${projectId}/tasks`, {
-      method: 'POST',
+    const resp = await fetch(url, {
+      method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: title, status: 'pending' }),
+      body: JSON.stringify({ title, due_date, status, notes }),
       credentials: 'same-origin'
     });
-
-    if (response.ok) {
-      await refreshProjectTasks(projectId);
-    } else {
-      const data = await response.json();
-      alert('Failed to add task: ' + (data.error || 'Unknown error'));
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      alert('Failed to save task: ' + (data.error || `HTTP ${resp.status}`));
+      return;
     }
+    closeProjectTaskModal();
+    await refreshProjectTasks(projectId);
   } catch (e) {
-    console.error('Error adding task:', e);
-    alert('Error adding task: ' + e.message);
+    console.error('Error saving project task:', e);
+    alert('Error saving task: ' + e.message);
+  }
+}
+
+async function editProjectTask(projectId, taskId) {
+  try {
+    const resp = await fetch(`/api/projects/${projectId}/tasks`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const task = (data.tasks || []).find(t => t.id === taskId);
+    if (!task) return;
+    openProjectTaskModal(projectId, task);
+  } catch (e) {
+    console.error('Error opening project task editor:', e);
   }
 }
 
@@ -3473,13 +3562,14 @@ async function refreshProjectTasks(projectId) {
 
   if (tasks && tasks.tasks && tasks.tasks.length > 0) {
     tasks.tasks.forEach(task => {
+      const dueStr = task.due_date ? ` · Due ${formatDateMDY(task.due_date)}` : '';
       html += `
         <div style="background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 8px;">
-          <div style="flex: 1;">
+          <div style="flex: 1; cursor: pointer;" onclick="editProjectTask(${projectId}, ${task.id})">
             <div style="font-size: 13px; color: var(--text);">${escapeHtml(task.title)}</div>
-            <div style="font-size: 11px; color: var(--text3);">Status: ${task.status}</div>
+            <div style="font-size: 11px; color: var(--text3);">Status: ${task.status}${dueStr}</div>
           </div>
-          <button onclick="deleteProjectTask(${projectId}, ${task.id})" style="background: none; border: none; color: var(--red); cursor: pointer; font-size: 12px;">✕</button>
+          <button onclick="event.stopPropagation(); deleteProjectTask(${projectId}, ${task.id})" style="background: none; border: none; color: var(--red); cursor: pointer; font-size: 12px;">✕</button>
         </div>
       `;
     });
