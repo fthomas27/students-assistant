@@ -3549,7 +3549,7 @@ function viewTask(taskId) {
   };
 
   const urg = urgencyColors[task.urgency] || { color: '#999999', label: task.urgency };
-  const dueDateStr = task.due_date ? `<strong>Due:</strong> ${task.due_date}<br/>` : '';
+  const dueDateStr = task.due_date ? `<strong>Due:</strong> ${formatDateMDY(task.due_date)}<br/>` : '';
 
   const bubble = document.createElement('div');
   bubble.className = 'message assistant';
@@ -4216,7 +4216,7 @@ function openOutlookCardDetail(kind) {
     const rows = (d.tasks || []).map(t => `
       <div class="outlook-news-item" style="border-left-color:var(--amber);">
         <div class="title">[${escapeHtml(t.urgency || 'low')}] ${escapeHtml(t.title)}</div>
-        ${t.due_date ? `<div class="outlet">Due: ${escapeHtml(t.due_date)}</div>` : ''}
+        ${t.due_date ? `<div class="outlet">Due: ${escapeHtml(formatDateMDY(t.due_date))}</div>` : ''}
         ${t.notes ? `<div class="summary">${escapeHtml(t.notes)}</div>` : ''}
       </div>`).join('');
     _outlookModalShell('Open Tasks', rows || '<div class="outlook-body">No open tasks. Exemplary.</div>');
@@ -4636,6 +4636,19 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' });
 }
 
+function formatDateMDY(dateStr) {
+  if (!dateStr) return '';
+  let d;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (m) {
+    d = new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  } else {
+    d = new Date(dateStr);
+  }
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+}
+
 function formatDueDateLong(dateStr) {
   if (!dateStr) return 'No due date';
   const d = new Date(dateStr);
@@ -4934,7 +4947,7 @@ async function createTaskFromChat(taskData, loadingBubble) {
     const messagesDiv = document.getElementById('chatMessages');
     const confirmBubble = document.createElement('div');
     confirmBubble.className = 'message assistant';
-    const dueDateStr = taskData.due_date ? ` due ${taskData.due_date}` : '';
+    const dueDateStr = taskData.due_date ? ` due ${formatDateMDY(taskData.due_date)}` : '';
     confirmBubble.innerHTML = `<div class="message-bubble">✓ Task <strong>"${escapeHtml(taskData.title)}"</strong> created!${dueDateStr}</div>`;
     messagesDiv.appendChild(confirmBubble);
     renderMessageWithDelay(confirmBubble, 200);
@@ -4988,7 +5001,7 @@ function displayTaskSuggestions(suggestions) {
     bubble.className = 'message assistant';
     const suggestionId = `sugg-${Math.random().toString(36)}`;
 
-    const dueDateStr = sugg.due_date ? ` due ${sugg.due_date}` : '';
+    const dueDateStr = sugg.due_date ? ` due ${formatDateMDY(sugg.due_date)}` : '';
     const urgencyEmoji = sugg.urgency === 'high' ? '🔴' : sugg.urgency === 'medium' ? '🟡' : '🟢';
 
     bubble.innerHTML = `
@@ -5179,7 +5192,7 @@ async function saveNewTask() {
       const messagesDiv = document.getElementById('chatMessages');
       const bubble = document.createElement('div');
       bubble.className = 'message assistant';
-      const dueDateStr = due_date ? ` due ${due_date}` : '';
+      const dueDateStr = due_date ? ` due ${formatDateMDY(due_date)}` : '';
       const recurStr = recurrence ? ` (${recurrence})` : '';
       bubble.innerHTML = `<div class="message-bubble">✓ Task <strong>"${escapeHtml(title)}"</strong> created!${dueDateStr}${recurStr}</div>`;
       messagesDiv.appendChild(bubble);
