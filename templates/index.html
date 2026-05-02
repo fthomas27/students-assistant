@@ -188,6 +188,19 @@ flex-direction: column;
 gap: 12px;
 }
 
+.home-insight-section { border-radius: var(--r); overflow: hidden; }
+.home-insight-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 10px 14px; cursor: pointer; user-select: none;
+  background: var(--purple);
+  color: #fff; font-weight: 600; font-size: 15px;
+  border-radius: var(--r-sm);
+}
+.home-insight-header .chev { transition: transform 0.2s; font-size: 12px; }
+.home-insight-section.collapsed .home-insight-body { display: none; }
+.home-insight-section.collapsed .home-insight-header .chev { transform: rotate(-90deg); }
+.home-insight-body { padding: 12px 4px 0; }
+
 .section-title {
 font-size: 16px;
 font-weight: 600;
@@ -642,6 +655,20 @@ font-weight: 600;
 color: var(--amber);
 font-weight: 600;
 }
+
+.priority-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.priority-dot.priority-critical { background: #ff6b6b; }
+.priority-dot.priority-high     { background: #ffa940; }
+.priority-dot.priority-medium   { background: #ffd666; }
+.priority-dot.priority-low      { background: #5cb85c; }
 
 .plan-item {
 background: linear-gradient(90deg, var(--surface), var(--surface2));
@@ -1975,35 +2002,6 @@ margin-bottom: 0;
 .nav-menu-item-icon { font-size: 16px; width: 20px; text-align: center; }
 .nav-menu-divider { height: 1px; background: var(--border); margin: 4px 6px; }
 
-/* Home page plan/timer rows: proper flex so titles don't crowd the time */
-.home-plan-item {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-.home-plan-item:last-child { border-bottom: none; }
-.home-plan-item:hover { background: var(--surface2); }
-.home-plan-time {
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 600;
-  min-width: 70px;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-.home-plan-title {
-  color: var(--text);
-  flex: 1;
-  min-width: 0;
-  word-wrap: break-word;
-  overflow-wrap: anywhere;
-}
-
 /* ── iPhone / small-screen compaction ──────────────────────────────────
    Desktop styles above are unchanged. These rules tighten paddings,
    gaps, and font sizes for narrow viewports so the app feels native
@@ -2030,10 +2028,6 @@ margin-bottom: 0;
   .section-title { font-size: 14px; margin: 0 0 2px; }
   .home-section { gap: 8px; }
   .home-grid { gap: 12px; }
-
-  /* Home plan/timer items even tighter */
-  .home-plan-item { font-size: 13px; padding: 6px 0; gap: 8px; }
-  .home-plan-time { font-size: 11px; min-width: 60px; }
 
   /* Outlook cards */
   #homeOutlookContent .outlook-grid { gap: 8px; grid-auto-rows: minmax(80px, auto); }
@@ -2243,6 +2237,15 @@ margin-bottom: 0;
 <main class="page-area">
 
 <div class="page active" id="page-home">
+  <section class="home-section home-insight-section collapsed" id="homeWeeklyInsightSection" style="margin-bottom: 16px;">
+    <div class="home-insight-header" onclick="toggleWeeklyInsight()">
+      <span>📊 Weekly Insight</span>
+      <span class="chev">▾</span>
+    </div>
+    <div class="home-insight-body" id="homeWeeklyInsightContent">
+      <p style="color:var(--text2)">Loading...</p>
+    </div>
+  </section>
   <div class="home-grid">
     <section class="home-section">
       <h2 class="section-title">Morning Outlook</h2>
@@ -2292,8 +2295,6 @@ margin-bottom: 0;
         <div class="empty-state-icon">💬</div>
         <div class="empty-state-text">Hey! Ask me anything about your assignments, tasks, projects, or calendar.</div>
         <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 20px;">
-          <button onclick="generateDailyOutlook()" class="quick-action-btn">🌅 Morning Outlook</button>
-          <button onclick="fetchAndShowWeeklyInsight({force:true})" class="quick-action-btn">📊 Weekly Insight</button>
           <button onclick="suggestMessage('What assignments are due soon?')" class="quick-action-btn">Assignments</button>
           <button onclick="suggestMessage('What tasks do I need to do?')" class="quick-action-btn">My tasks</button>
           <button onclick="suggestMessage('What do I have today?')" class="quick-action-btn">Today</button>
@@ -2445,7 +2446,6 @@ function navigateTo(pageName) {
   else if (pageName === 'plan') loadDailyPlan();
   else if (pageName === 'projects') loadProjects();
   else if (pageName === 'chat') {
-    fetchAndShowWeeklyInsight();
     var msgs = document.getElementById('chatMessages');
     if (msgs) msgs.scrollTop = msgs.scrollHeight;
   }
@@ -2521,8 +2521,31 @@ function updateTopNavDate() {
   el.textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric' });
 }
 
+function toggleWeeklyInsight() {
+  var sec = document.getElementById('homeWeeklyInsightSection');
+  if (sec) sec.classList.toggle('collapsed');
+}
+
 function loadHomePage() {
   updateTopNavDate();
+
+  var wkSection = document.getElementById('homeWeeklyInsightSection');
+  var wkBody    = document.getElementById('homeWeeklyInsightContent');
+  if (wkSection && wkBody) {
+    var isSunday = new Date().getDay() === 0;
+    if (isSunday) wkSection.classList.remove('collapsed');
+    else          wkSection.classList.add('collapsed');
+
+    fetch('/api/insight/weekly').then(function(r){ return r.json(); }).then(function(data) {
+      if (!data || !data.content) {
+        wkBody.innerHTML = '<p style="color:var(--text2)">No weekly insight yet. Check back Sunday morning.</p>';
+        return;
+      }
+      wkBody.innerHTML = '<div class="message-bubble" style="border-left:3px solid var(--purple);">' + formatMessage(data.content) + '</div>';
+    }).catch(function() {
+      wkBody.innerHTML = '<p style="color:var(--text2)">Could not load weekly insight.</p>';
+    });
+  }
 
   var outlookEl = document.getElementById('homeOutlookContent');
   if (outlookEl) {
@@ -2549,16 +2572,35 @@ function loadHomePage() {
     .then(function(data) {
       if (!data.items || data.items.length === 0) {
         planEl.innerHTML = '<p style="color:var(--text2)">No plan yet. Go to the Plan page to generate one.</p>';
-      } else {
-        planEl.innerHTML = data.items.map(function(item) {
-          var time = escapeHtml(to12Hour(item.scheduled_start_time) || '');
-          var title = escapeHtml(item.item_title || '');
-          return '<div class="home-plan-item" onclick="navigateTo(\'plan\')">'
-            +    '<span class="home-plan-time">' + time + '</span>'
-            +    '<span class="home-plan-title">' + title + '</span>'
-            + '</div>';
-        }).join('');
+        return;
       }
+      var typeIcon  = { assignment: '📝', task: '✓', calendar: '📅', free_time: '⏱' };
+      var typeLabel = { assignment: 'Assignment', task: 'Task', calendar: 'Event', free_time: 'Free Time' };
+      planEl.innerHTML = data.items.map(function(item, idx) {
+        var start = to12Hour(item.scheduled_start_time) || '';
+        var end   = to12Hour(item.scheduled_end_time) || '';
+        var icon  = typeIcon[item.item_type] || '•';
+        var label = typeLabel[item.item_type] || item.item_type;
+        var metaParts = [label];
+        if (item.estimated_minutes) metaParts.push(item.estimated_minutes + ' min');
+        var meta = metaParts.join(' · ');
+        return '<div class="plan-chat-card" data-type="' + item.item_type + '" data-home-idx="' + idx + '">'
+          +    '<div class="plan-chat-time">' + start + '<br>' + end + '</div>'
+          +    '<div style="flex:1;min-width:0;">'
+          +      '<div class="plan-chat-title">' + icon + ' ' + escapeHtml(item.item_title || '') + '</div>'
+          +      '<div class="plan-chat-meta">' + meta + '</div>'
+          +    '</div>'
+          +    '<button onclick="event.stopPropagation(); deletePlanItem(' + item.id + ')" title="Remove from plan" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:4px 6px;flex-shrink:0;">✕</button>'
+          + '</div>';
+      }).join('');
+      currentPlanItems = data.items;
+      planEl.querySelectorAll('.plan-chat-card').forEach(function(card) {
+        card.addEventListener('click', function(e) {
+          if (e.target.tagName === 'BUTTON') return;
+          var idx = parseInt(card.dataset.homeIdx, 10);
+          showPlanItemDetail(idx);
+        });
+      });
     })
     .catch(function() {
       planEl.innerHTML = '<p style="color:var(--text2)">Could not load plan.</p>';
@@ -3030,13 +3072,14 @@ function renderTasks() {
 
   container.innerHTML = sorted.slice(0, 8).map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
+    const safeUrgency = ['critical','high','medium','low'].includes(t.urgency) ? t.urgency : 'low';
     const isHidden = t.hidden_from_parent;
     const eyeTitle = isHidden ? 'Visible to parent: No — click to show' : 'Visible to parent: Yes — click to hide';
     const eyeStyle = isHidden ? 'color:var(--text3);text-decoration:line-through;' : 'color:var(--text2);';
     return `
       <div class="sidebar-item ${urgencyClass}" data-task-id="${t.id}" data-source="${t.source || 'task'}" data-project-id="${t.project_id || ''}" style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
         <div style="flex: 1; cursor: pointer;" onclick="editTask(${t.id})">
-          <div class="sidebar-item-title">${t.title}</div>
+          <div class="sidebar-item-title"><span class="priority-dot priority-${safeUrgency}"></span>${t.title}</div>
           <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
         </div>
         <div style="display:flex;gap:2px;flex-shrink:0;align-items:center;margin-top:2px;">
@@ -3703,9 +3746,12 @@ function renderPlan(planData) {
     const endFmt   = to12Hour(item.scheduled_end_time);
 
     return `
-      <div class="plan-item" draggable="true" data-item-id="${item.id}" data-order="${idx}" data-plan-idx="${idx}">
-        <div class="plan-item-time">${startFmt} – ${endFmt}</div>
-        <div class="plan-item-title">${icon} ${item.item_title}</div>
+      <div class="plan-item" draggable="true" data-item-id="${item.id}" data-order="${idx}" data-plan-idx="${idx}" style="display:flex;align-items:center;gap:8px;">
+        <div style="flex:1;min-width:0;">
+          <div class="plan-item-time">${startFmt} – ${endFmt}</div>
+          <div class="plan-item-title">${icon} ${item.item_title}</div>
+        </div>
+        <button class="plan-item-delete" onclick="event.stopPropagation(); deletePlanItem(${item.id})" title="Remove from plan" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:4px 6px;flex-shrink:0;">✕</button>
       </div>
     `;
   }).join('');
@@ -3848,6 +3894,25 @@ async function generatePlan() {
     btn.disabled = false;
     btn.textContent = originalText;
     btn.style.opacity = '';
+  }
+}
+
+async function deletePlanItem(itemId) {
+  if (!confirm('Remove this item from your plan?')) return;
+  try {
+    const resp = await fetch(`/api/plan-my-day/items/${itemId}`, { method: 'DELETE' });
+    if (!resp.ok) {
+      alert('Could not remove item.');
+      return;
+    }
+    const data = await fetchPlanMyDay(true);
+    renderPlan(data);
+    if (document.getElementById('page-home').classList.contains('active')) {
+      loadHomePage();
+    }
+  } catch (e) {
+    console.error('Failed to delete plan item:', e);
+    alert('Failed to remove item: ' + e.message);
   }
 }
 

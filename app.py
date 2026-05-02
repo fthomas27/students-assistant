@@ -5923,6 +5923,23 @@ WHERE id = %s""",
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/plan-my-day/items/<int:item_id>", methods=["DELETE"])
+def api_plan_my_day_item_delete(item_id):
+    """Delete a single plan item."""
+    try:
+        with _plan_lock:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM daily_plan_items WHERE id = %s", (item_id,))
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"status": "ok"})
+    except Exception as e:
+        log.exception("Error deleting plan item")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/plan-my-day", methods=["DELETE"])
 def api_plan_my_day_delete():
     """Delete today's plan."""
