@@ -122,6 +122,24 @@ def track_api_usage(response):
     except Exception as e:
         log.warning(f"Error tracking API usage: {e}")
 
+
+def jarvis_persona(audience_name, role_phrase):
+    """Shared Jarvis persona opener for briefing-style prompts.
+
+    role_phrase examples: 'serving', 'delivering the evening debrief for',
+    'delivering the weekly insight for'.
+    """
+    return (
+        "You are Jarvis — the impeccably composed British AI majordomo from the Iron Man films — "
+        f"{role_phrase} {audience_name}, a high school student in Park City, Utah. "
+        "Speak with dry wit, understated humour, and effortless articulacy, as Jarvis speaks to Tony Stark. "
+        "Address the student as 'sir' or by their first name. Use elevated, slightly formal vocabulary "
+        "('Very good, sir.', 'If I may,', 'Might I suggest'). Remain measured and unflappable even when "
+        "delivering bad news. No emoji unless explicitly part of the reference data. Never break character. "
+        "When you mention any due date, render it in long form (e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)') — never a raw ISO timestamp."
+    )
+
+
 _briefing_lock = threading.Lock()
 
 
@@ -1561,13 +1579,7 @@ def generate_briefing(force=False):
             schedule_note = "No school today."
 
         prompt = (
-            "You are Jarvis — the impeccably composed British AI majordomo from the Iron Man films — "
-            "serving %s, a high school student in Park City, Utah. "
-            "Speak with dry wit, understated humour, and effortless articulacy, as Jarvis speaks to Tony Stark. "
-            "Address the student as 'sir' or by their first name. Use elevated, slightly formal vocabulary "
-            "('Very good, sir.', 'If I may,', 'Might I suggest'). Remain measured and unflappable even when "
-            "delivering bad news. No emoji beyond what is specified below. Never break character. "
-            "When you mention any due date, render it in the long form, e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)' — never a raw ISO timestamp.\n\n"
+            jarvis_persona("%s", "serving") + "\n\n"
             "Current time: %s\n"
             "School schedule note: %s\n\n"
             "REFERENCE — Overdue work (NOT quiz/test — never put quizzes/tests in Needs section):\n%s\n\n"
@@ -1691,10 +1703,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         now_str = datetime.now(TZ).strftime("%A, %-m/%-d at %-I:%M %p")
 
         prompt = (
-            "You are Jarvis — the impeccably composed British AI majordomo from the Iron Man films — "
-            "delivering the evening debrief for %s, a high school student in Park City, Utah. "
-            "Speak with dry wit, understated humour, and effortless articulacy. Address the student as 'sir' or by their first name. "
-            "Remain measured and unflappable. Render any due date in long form (e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)'), never a raw ISO timestamp.\n"
+            jarvis_persona("%s", "delivering the evening debrief for") + "\n\n"
             "Current time: %s (evening debrief)\n\n"
             "TODAY'S ACCOMPLISHMENTS:\n%s\n\n"
             "PRODUCTIVITY METRICS:\n%s\n\n"
@@ -1868,11 +1877,7 @@ WHERE status = 'active'""")
         week_label = "%s – %s" % (week_ago.strftime("%b %-d"), today.strftime("%b %-d"))
 
         prompt = (
-            "You are Jarvis — the impeccably composed British AI majordomo from the Iron Man films — "
-            "delivering the weekly insight for %s, a high school student in Park City, Utah. "
-            "Speak with dry wit, understated humour, and effortless articulacy, as Jarvis speaks to Tony Stark. "
-            "Address the student as 'sir' or by their first name. Remain measured and unflappable. "
-            "When you mention any due date, render it in long form (e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)'), never a raw ISO timestamp.\n\n"
+            jarvis_persona("%s", "delivering the weekly insight for") + "\n\n"
             "Current time: %s\n"
             "Reviewing the week of %s.\n\n"
             "WEEK COMPLETIONS (%.1f hours of focused work, %d items):\n%s\n\n"
@@ -4244,27 +4249,38 @@ def api_task_suggestions():
 
         existing_text = "; ".join(list(existing_task_titles)[:10]) or "None"
 
-        # Prompt Claude to suggest tasks
-        prompt = f"""You are a smart student assistant. Analyze the following and suggest 1-3 genuinely useful NEW tasks — but ONLY if they represent real action items the student would actually benefit from.
+        # Prompt Claude to suggest tasks. The default is empty — silence is the
+        # correct answer most days. Only emit a suggestion when withholding it
+        # would clearly hurt the student.
+        prompt = f"""You are reviewing a high school student's situation to decide whether ANY new task should be added to their list. Returning [] is the default and most common correct outcome. Most reviews end with nothing to add. You are not paid by the suggestion.
 
-STRICT RULES:
-- Only suggest a task if it requires real preparation, study, or effort beyond just showing up
-- Do NOT suggest tasks for routine events (sports games, social outings, lunch, etc.) unless there's a specific preparation needed
-- Do NOT suggest tasks that already exist in the existing task list
-- Do NOT suggest tasks for assignments that are already tracked as assignments
-- Only suggest tasks that fall within a 14-day window
-- If nothing genuinely warrants a new task, return an empty array []
-- Max 2 suggestions; quality over quantity
+A suggestion is only justified if ALL of these are true:
+1. There is concrete preparation, study, or drafting work that is NOT already represented in the pending assignments or existing tasks below.
+2. Skipping it would predictably cause the student to be unprepared, late, or to scramble.
+3. You can name the specific artifact or outcome (e.g. "outline for English essay", "review session for AP Chem unit test on Friday") — not a vague "review notes" or "stay organised".
+4. The trigger falls within 14 days.
 
-Good task examples: "Study for AP Chem test", "Draft essay outline for English class", "Prep notes for project presentation"
-Bad task examples: "Attend soccer game", "Go to dentist appointment", "Show up for lunch"
+Disqualifiers — return [] if any of these describe your only candidates:
+- Routine attendance: sports games, dentist, lunch, social events, club meetings (even if on the calendar)
+- Anything already tracked as an assignment or already in the existing task list (even loosely)
+- Filler that exists to "look helpful" with no specific deadline-driven trigger
+- Self-improvement nudges ("review notes", "stay organised", "get ahead")
+
+Quality bar: if you cannot finish the sentence "Without this task, the student will probably miss ___" with a specific named consequence, do not add it.
 
 Pending assignments: {asgn_text}
 Upcoming calendar events: {event_text}
 Existing tasks: {existing_text}
 
-Return ONLY a valid JSON array (no markdown, no explanation):
-[{{"title": "...", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "reason": "one sentence why this is needed"}}]"""
+Output: a JSON array. Almost always []. At most ONE suggestion in normal weeks; TWO only on a genuinely heavy week. Never three. No prose, no apology, no explanation outside the array.
+
+Examples of correct responses:
+
+[]
+
+[{{"title": "Study for AP Chem unit test", "urgency": "high", "due_date": "2026-05-08", "reason": "Test in 5 days and no study task exists yet"}}]
+
+Schema: [{{"title": "...", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "reason": "one sentence: the specific trigger and what would go wrong without this task"}}]"""
 
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
@@ -4315,7 +4331,7 @@ Return ONLY a valid JSON array (no markdown, no explanation):
                     })
 
             log.info(f"/api/task-suggestions: returned {len(valid_suggestions)} suggestions in {time.time()-start:.2f}s")
-            return jsonify({"suggestions": valid_suggestions[:3]})  # Limit to 3 suggestions
+            return jsonify({"suggestions": valid_suggestions[:2]})  # Cap at 2 — empty is the norm
 
         except json.JSONDecodeError as e:
             log.warning(f"Failed to parse suggestions JSON: {content[:100]} - {e}")
