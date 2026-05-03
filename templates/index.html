@@ -2057,17 +2057,52 @@ margin-bottom: 0;
   .home-section { gap: 8px; }
   .home-grid { gap: 12px; }
 
-  /* Outlook cards */
-  #homeOutlookContent .outlook-grid { gap: 8px; grid-auto-rows: minmax(80px, auto); }
-  .outlook-grid { gap: 8px; }
-  .outlook-card { padding: 10px 12px; min-height: 80px; }
-  .outlook-card h4 { font-size: 11px; margin-bottom: 4px; }
-  .outlook-card .outlook-primary { font-size: 16px; }
-  .outlook-card .outlook-body { font-size: 12px; line-height: 1.35; }
-  .outlook-card .outlook-item { font-size: 11px; }
-  .outlook-card .outlook-meta { font-size: 10px; padding-top: 4px; }
-  .outlook-quote-text { font-size: 12px; }
-  .outlook-quote-author { font-size: 10px; }
+  /* Outlook cards — Morning Briefing on phone */
+  #homeOutlookContent .outlook-grid { gap: 10px; grid-auto-rows: auto; }
+  .outlook-grid { gap: 10px; grid-template-columns: 1fr; }
+  .outlook-card {
+    padding: 14px 14px;
+    min-height: 0;
+    border-left-width: 4px;
+  }
+  .outlook-card:active { background: var(--surface); transform: scale(0.99); }
+  .outlook-card h4 { font-size: 12px; margin-bottom: 6px; letter-spacing: 0.4px; }
+  .outlook-card .outlook-primary { font-size: 22px; line-height: 1.1; margin-bottom: 2px; }
+  .outlook-card .outlook-body { font-size: 13px; line-height: 1.4; }
+  /* Allow titles to wrap (up to 2 lines) so assignment names aren't lost */
+  .outlook-card .outlook-item {
+    font-size: 12px;
+    line-height: 1.35;
+    margin: 4px 0;
+    white-space: normal;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .outlook-card .outlook-meta { font-size: 11px; padding-top: 6px; }
+  .outlook-quote-text { font-size: 13px; line-height: 1.45; }
+  .outlook-quote-author { font-size: 11px; margin-top: 8px; }
+
+  /* News card on home: stack entries instead of horizontal scroll. */
+  #homeOutlookContent .outlook-news-list {
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: visible;
+    gap: 8px;
+    padding-bottom: 0;
+  }
+  #homeOutlookContent .outlook-news-entry {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+
+  /* Chat-rendered Morning Outlook: let the grid breathe to full bubble width. */
+  .message.assistant .message-bubble.outlook-bubble {
+    max-width: 100%;
+    width: 100%;
+    padding: 8px;
+  }
 
   /* Sidebar / lists */
   .sidebar-item { padding: 8px 10px; font-size: 12px; }
@@ -4253,7 +4288,7 @@ function displayOutlookInChat(data) {
 
   const gridBubble = document.createElement('div');
   gridBubble.className = 'message assistant';
-  gridBubble.innerHTML = `<div class="message-bubble" style="padding:12px;">${buildOutlookGridHTML(data)}</div>`;
+  gridBubble.innerHTML = `<div class="message-bubble outlook-bubble" style="padding:12px;">${buildOutlookGridHTML(data)}</div>`;
   messagesDiv.appendChild(gridBubble);
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
