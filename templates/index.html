@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Jarvis Student AI</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#FF7F50">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -2159,6 +2161,11 @@ margin-bottom: 0;
 </head>
 <body>
 
+<div id="syncStatusBanner" style="display:none;background:#3a2a10;border-bottom:1px solid #6a4a18;color:#ffc78c;padding:8px 14px;font-family:'DM Sans',sans-serif;font-size:13px;">
+  <span id="syncStatusText"></span>
+  <button type="button" onclick="document.getElementById('syncStatusBanner').style.display='none';" style="float:right;background:transparent;border:0;color:#ffc78c;cursor:pointer;font-size:16px;">&times;</button>
+</div>
+
 <header class="top-nav">
   <div class="top-nav-date" id="topNavDate">Loading...</div>
   <nav class="top-nav-circles">
@@ -2420,6 +2427,39 @@ margin-bottom: 0;
 
 <script>
 const TZ = "{{ tz }}";
+
+(function installCsrfFetch() {
+  const origFetch = window.fetch.bind(window);
+  let csrfToken = null;
+  let csrfPromise = null;
+  function loadToken() {
+    if (csrfPromise) return csrfPromise;
+    csrfPromise = origFetch('/api/csrf-token', { credentials: 'same-origin' })
+      .then(r => r.json())
+      .then(d => { csrfToken = d && d.csrf_token; return csrfToken; })
+      .catch(() => { csrfPromise = null; return null; });
+    return csrfPromise;
+  }
+  loadToken();
+  window.fetch = async function(input, init) {
+    init = init || {};
+    const method = (init.method || (typeof input === 'object' && input && input.method) || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      let url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (url.startsWith('/api/') && url !== '/api/csrf-token' && url !== '/api/login') {
+        if (!csrfToken) { await loadToken(); }
+        if (csrfToken) {
+          const headers = new Headers(init.headers || {});
+          headers.set('X-CSRF-Token', csrfToken);
+          init.headers = headers;
+        }
+      }
+    }
+    if (init.credentials === undefined) init.credentials = 'same-origin';
+    return origFetch(input, init);
+  };
+})();
+
 let conversationHistory = [];
 let assignmentsCache = [];
 let tasksCache = [];
@@ -6569,6 +6609,156 @@ if ('requestIdleCallback' in window) {
     loadSidebarData().catch(e => console.error('Prefetch failed:', e));
   });
 }
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(e => console.warn('SW register failed:', e));
+  });
+}
+
+(async function checkSyncStatus() {
+  try {
+    const r = await fetch('/api/sync-status');
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.issues || !data.issues.length) return;
+    const names = data.issues.map(i => i.feed).join(', ');
+    const banner = document.getElementById('syncStatusBanner');
+    const text = document.getElementById('syncStatusText');
+    if (banner && text) {
+      text.textContent = `Calendar sync issue: ${names} — showing cached data. Last attempt failed; will retry automatically.`;
+      banner.style.display = 'block';
+    }
+  } catch (e) { /* ignore */ }
+})();
+</script>
+
+<div id="pomodoroWidget" style="position:fixed;right:16px;bottom:16px;z-index:9000;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:12px 14px;color:#eee;font-family:'DM Sans',sans-serif;box-shadow:0 8px 28px rgba(0,0,0,0.4);min-width:200px;display:none;">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">
+    <strong style="font-size:13px;letter-spacing:0.5px;">FOCUS TIMER</strong>
+    <button id="pomodoroClose" type="button" style="background:transparent;border:0;color:#777;cursor:pointer;font-size:18px;line-height:1;">&times;</button>
+  </div>
+  <div id="pomodoroDisplay" style="font-size:36px;font-weight:600;text-align:center;font-variant-numeric:tabular-nums;letter-spacing:1px;color:#FF7F50;">25:00</div>
+  <div id="pomodoroStatus" style="font-size:11px;text-align:center;color:#888;margin:4px 0 10px;">Idle</div>
+  <div style="display:flex;gap:6px;justify-content:center;">
+    <input id="pomodoroMinutes" type="number" min="1" max="240" value="25" style="width:54px;padding:4px 6px;background:#0c0c0c;border:1px solid #333;color:#eee;border-radius:6px;font-size:12px;">
+    <button id="pomodoroStart" type="button" style="padding:4px 10px;background:#FF7F50;border:0;color:#000;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;">Start</button>
+    <button id="pomodoroPause" type="button" style="padding:4px 10px;background:#2a2a2a;border:0;color:#eee;border-radius:6px;cursor:pointer;font-size:12px;">Pause</button>
+    <button id="pomodoroStop" type="button" style="padding:4px 10px;background:#2a2a2a;border:0;color:#eee;border-radius:6px;cursor:pointer;font-size:12px;">Reset</button>
+  </div>
+</div>
+<button id="pomodoroOpen" type="button" style="position:fixed;right:16px;bottom:16px;z-index:8999;background:#1a1a1a;border:1px solid #2a2a2a;color:#FF7F50;width:44px;height:44px;border-radius:50%;cursor:pointer;font-size:18px;box-shadow:0 4px 14px rgba(0,0,0,0.4);">⏱</button>
+
+<script>
+(function pomodoroInit() {
+  const widget = document.getElementById('pomodoroWidget');
+  const opener = document.getElementById('pomodoroOpen');
+  const closer = document.getElementById('pomodoroClose');
+  const display = document.getElementById('pomodoroDisplay');
+  const statusEl = document.getElementById('pomodoroStatus');
+  const minutesInput = document.getElementById('pomodoroMinutes');
+  const startBtn = document.getElementById('pomodoroStart');
+  const pauseBtn = document.getElementById('pomodoroPause');
+  const stopBtn = document.getElementById('pomodoroStop');
+  if (!widget || !opener) return;
+
+  let pollHandle = null;
+  let lastState = null;
+  let chimePlayedFor = null;
+
+  function fmt(secs) {
+    secs = Math.max(0, Math.round(secs));
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  }
+
+  function playChime() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = 'sine'; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.05);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1.2);
+      o.start(); o.stop(ctx.currentTime + 1.3);
+    } catch (e) { /* ignore */ }
+  }
+
+  function render(state) {
+    lastState = state;
+    const total = (state.estimate_minutes || 25) * 60;
+    const remaining = total - state.elapsed_seconds;
+    display.textContent = fmt(remaining);
+    if (!state.active) {
+      statusEl.textContent = 'Idle';
+      chimePlayedFor = null;
+    } else if (state.paused) {
+      statusEl.textContent = 'Paused';
+    } else {
+      statusEl.textContent = remaining <= 0 ? 'Complete' : 'Running';
+    }
+    if (state.active && remaining <= 0 && chimePlayedFor !== state.estimate_minutes) {
+      chimePlayedFor = state.estimate_minutes;
+      playChime();
+    }
+  }
+
+  async function fetchState() {
+    try {
+      const r = await fetch('/api/pomodoro/state');
+      if (!r.ok) return;
+      const s = await r.json();
+      render(s);
+    } catch (e) { /* ignore */ }
+  }
+
+  function startPolling() {
+    if (pollHandle) return;
+    pollHandle = setInterval(fetchState, 1000);
+  }
+  function stopPolling() {
+    if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+  }
+
+  opener.addEventListener('click', () => {
+    widget.style.display = 'block';
+    opener.style.display = 'none';
+    fetchState();
+    startPolling();
+  });
+  closer.addEventListener('click', () => {
+    widget.style.display = 'none';
+    opener.style.display = 'block';
+    stopPolling();
+  });
+
+  startBtn.addEventListener('click', async () => {
+    const minutes = parseFloat(minutesInput.value) || 25;
+    await fetch('/api/pomodoro/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ minutes })
+    }).then(r => r.json()).then(render).catch(() => {});
+    startPolling();
+  });
+  pauseBtn.addEventListener('click', async () => {
+    await fetch('/api/pomodoro/pause', { method: 'POST' }).then(r => r.json()).then(render).catch(() => {});
+  });
+  stopBtn.addEventListener('click', async () => {
+    await fetch('/api/pomodoro/stop', { method: 'POST' }).then(r => r.json()).then(render).catch(() => {});
+  });
+
+  fetchState().then(() => {
+    if (lastState && lastState.active) {
+      widget.style.display = 'block';
+      opener.style.display = 'none';
+      startPolling();
+    }
+  });
+})();
 </script>
 
 </body>

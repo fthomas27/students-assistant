@@ -584,6 +584,38 @@ textarea {
 </div>
 
 <script>
+(function installCsrfFetch() {
+  const origFetch = window.fetch.bind(window);
+  let csrfToken = null;
+  let csrfPromise = null;
+  function loadToken() {
+    if (csrfPromise) return csrfPromise;
+    csrfPromise = origFetch('/api/csrf-token', { credentials: 'same-origin' })
+      .then(r => r.json())
+      .then(d => { csrfToken = d && d.csrf_token; return csrfToken; })
+      .catch(() => { csrfPromise = null; return null; });
+    return csrfPromise;
+  }
+  loadToken();
+  window.fetch = async function(input, init) {
+    init = init || {};
+    const method = (init.method || (typeof input === 'object' && input && input.method) || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      let url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (url.startsWith('/api/') && url !== '/api/csrf-token' && url !== '/api/login') {
+        if (!csrfToken) { await loadToken(); }
+        if (csrfToken) {
+          const headers = new Headers(init.headers || {});
+          headers.set('X-CSRF-Token', csrfToken);
+          init.headers = headers;
+        }
+      }
+    }
+    if (init.credentials === undefined) init.credentials = 'same-origin';
+    return origFetch(input, init);
+  };
+})();
+
 let tasks = [];
 let currentFilter = 'all';
 
