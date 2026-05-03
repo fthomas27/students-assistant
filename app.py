@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 from psycopg2 import sql as pgsql
 import requests
 from functools import wraps
@@ -22,6 +23,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from icalendar import Calendar
 import recurring_ical_events
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.events import EVENT_JOB_ERROR
 import anthropic
 try:
     import feedparser
@@ -30,7 +32,8 @@ except ImportError:
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
-app.secret_key = os.environ.get("SECRET_KEY", "finn-dashboard-secret-change-me")
+_SECRET_KEY = os.environ.get("SECRET_KEY")
+app.secret_key = _SECRET_KEY or "finn-dashboard-secret-change-me"
 app.permanent_session_lifetime = timedelta(days=30)
 
 app.config.update(
@@ -85,6 +88,21 @@ FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+if os.environ.get("FLASK_BOOT_DEV") != "1":
+    _bad_secrets = []
+    if not _SECRET_KEY or _SECRET_KEY == "finn-dashboard-secret-change-me":
+        _bad_secrets.append("SECRET_KEY")
+    if not ADMIN_PASSWORD or ADMIN_PASSWORD == "admin-change-me":
+        _bad_secrets.append("ADMIN_PASSWORD")
+    if not PARENT_PASSWORD or PARENT_PASSWORD == "PARENT_PASSWORD":
+        _bad_secrets.append("PARENT_PASSWORD")
+    if _bad_secrets:
+        raise RuntimeError(
+            "Refusing to start: missing or default-valued secrets: "
+            + ", ".join(_bad_secrets)
+            + ". Set these env vars or export FLASK_BOOT_DEV=1 for local dev."
+        )
+
 # Default timezone - will be overridden by config if available
 _TZ_DEFAULT = ZoneInfo("America/Denver")
 
@@ -115,20 +133,68 @@ def track_api_usage(response):
     global _api_usage_cache
     try:
         if hasattr(response, 'usage'):
-            tokens = response.usage.input_tokens + response.usage.output_tokens
+            u = response.usage
+            tokens = u.input_tokens + u.output_tokens
             _api_usage_cache["tokens_used"] = _api_usage_cache.get("tokens_used", 0) + tokens
             _api_usage_cache["last_updated"] = datetime.now(TZ)
-            log.debug(f"Tracked {tokens} tokens. Total: {_api_usage_cache['tokens_used']}")
+            cache_create = getattr(u, "cache_creation_input_tokens", 0) or 0
+            cache_read = getattr(u, "cache_read_input_tokens", 0) or 0
+            if cache_create or cache_read:
+                log.info(
+                    "Anthropic usage: in=%d out=%d cache_create=%d cache_read=%d",
+                    u.input_tokens, u.output_tokens, cache_create, cache_read,
+                )
+            else:
+                log.debug(f"Tracked {tokens} tokens. Total: {_api_usage_cache['tokens_used']}")
     except Exception as e:
         log.warning(f"Error tracking API usage: {e}")
 
 _briefing_lock = threading.Lock()
 
+_scheduler_last_error = {}
+_scheduler_last_error_lock = threading.Lock()
+
+
+def _scheduler_last_error_set(job_id, message):
+    with _scheduler_last_error_lock:
+        _scheduler_last_error["job_id"] = job_id
+        _scheduler_last_error["message"] = message
+        _scheduler_last_error["at"] = datetime.now(TZ).isoformat()
+
+
+def _scheduler_last_error_get():
+    with _scheduler_last_error_lock:
+        return dict(_scheduler_last_error) if _scheduler_last_error else None
+
+
+_CSRF_EXEMPT_PATHS = {
+    '/login', '/logout', '/admin', '/parent',
+    '/api/login', '/api/csrf-token',
+    '/api/test-admin-password', '/api/test-security-code', '/api/test-lockdown-status',
+}
+
+
+@app.before_request
+def require_csrf():
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    path = request.path.rstrip('/')
+    if path in _CSRF_EXEMPT_PATHS or not path.startswith('/api/'):
+        return None
+    if path.startswith('/api/admin/login') or path.startswith('/api/parent/login'):
+        return None
+    expected = session.get('csrf_token')
+    provided = request.headers.get('X-CSRF-Token', '')
+    if not expected or not provided or not secrets.compare_digest(str(expected), str(provided)):
+        log.warning("CSRF check failed for %s %s", request.method, path)
+        return jsonify({"error": "CSRF token missing or invalid"}), 403
+    return None
+
 
 @app.before_request
 def require_auth():
     path = request.path.rstrip('/')
-    if path in ('/login', '/logout', '/admin', '/parent'):
+    if path in ('/login', '/logout', '/admin', '/parent', '/manifest.json', '/sw.js'):
         return None
     if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
         return None
@@ -294,11 +360,79 @@ def fetch_day_calendar_events(d, days_ahead=30):
     return events
 
 
-def get_db():
+_DB_POOL = None
+_DB_POOL_LOCK = threading.Lock()
+
+
+def _normalize_db_url():
     url = os.environ.get("DATABASE_URL", "")
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
-    return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
+    return url
+
+
+def _get_pool():
+    global _DB_POOL
+    if _DB_POOL is None:
+        with _DB_POOL_LOCK:
+            if _DB_POOL is None:
+                _DB_POOL = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1,
+                    maxconn=10,
+                    dsn=_normalize_db_url(),
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                )
+    return _DB_POOL
+
+
+class _PooledConn:
+    """Wraps a pooled psycopg2 connection so .close() returns it to the pool."""
+
+    __slots__ = ("_conn", "_released")
+
+    def __init__(self, conn):
+        self._conn = conn
+        self._released = False
+
+    def close(self):
+        if self._released:
+            return
+        self._released = True
+        try:
+            if self._conn.closed:
+                _get_pool().putconn(self._conn, close=True)
+            else:
+                if self._conn.status != psycopg2.extensions.STATUS_READY:
+                    try:
+                        self._conn.rollback()
+                    except Exception:
+                        pass
+                _get_pool().putconn(self._conn)
+        except Exception as e:
+            log.warning("putconn failed, closing raw connection: %s", e)
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        return self._conn.__enter__()
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._conn.__exit__(exc_type, exc, tb)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def get_db():
+    return _PooledConn(_get_pool().getconn())
 
 
 def init_db():
@@ -340,13 +474,14 @@ def init_db():
             cur.execute(create_sql)
             conn.commit()
         except Exception as e:
-            log.debug(f"Table {table_name} creation: {e}")
+            log.warning(f"Table {table_name} creation failed: {e}")
             conn.rollback()
             try:
                 conn = get_db()
                 cur = conn.cursor()
-            except:
-                pass
+            except Exception as reconnect_err:
+                log.error("init_db reconnect failed: %s", reconnect_err)
+                raise
 
     # Add columns if missing (migrations) - with individual rollbacks
     try:
@@ -505,6 +640,8 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""", (k, str(v)))
 _ical_cache = {}  # url -> (monotonic_time, Calendar)
 _ical_cache_lock = threading.Lock()
 _ical_inflight = {}  # url -> threading.Event for request coalescing
+_ical_last_error = {}  # url -> {"at": iso, "msg": str}
+_ical_sync_lock = threading.Lock()
 ICAL_CACHE_TTL = 300  # 5 minutes
 
 
@@ -573,6 +710,8 @@ def fetch_ical(url):
     except Exception as e:
         log.warning("iCal fetch failed for %s: %s", url, e)
         new_event.set()  # Signal other waiting threads even on failure
+        with _ical_sync_lock:
+            _ical_last_error[url] = {"at": datetime.now(TZ).isoformat(), "msg": str(e)}
         # Return stale cache on failure rather than None
         with _ical_cache_lock:
             if url in _ical_cache:
@@ -1612,7 +1751,7 @@ def generate_briefing(force=False):
         )
 
         try:
-            client = anthropic.Anthropic(api_key=api_key)
+            client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
             message = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=900,
@@ -1635,6 +1774,15 @@ ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content"
 
 
 scheduler = BackgroundScheduler(timezone=TZ)
+
+
+def _on_scheduler_job_error(event):
+    msg = str(event.exception) if event.exception else "unknown"
+    log.error("APScheduler job %s failed: %s", event.job_id, msg, exc_info=event.exception)
+    _scheduler_last_error_set(event.job_id, msg)
+
+
+scheduler.add_listener(_on_scheduler_job_error, EVENT_JOB_ERROR)
 
 
 def generate_evening_debrief():
@@ -1710,7 +1858,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         ) % (name, now_str, done_text, metrics_text, time_breakdown, remaining_text, tasks_text)
 
         try:
-            client = anthropic.Anthropic(api_key=api_key)
+            client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
             message = client.messages.create(model="claude-sonnet-4-6", max_tokens=600,
                                              messages=[{"role": "user", "content": prompt}])
             track_api_usage(message)
@@ -1900,7 +2048,7 @@ WHERE status = 'active'""")
         )
 
         try:
-            client = anthropic.Anthropic(api_key=api_key)
+            client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
             message = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=900,
@@ -2840,6 +2988,157 @@ def api_csrf_token():
     return jsonify({"csrf_token": session.get('csrf_token')})
 
 
+@app.route("/api/sync-status")
+def api_sync_status():
+    """Report which calendar feeds last failed to fetch and when."""
+    label_for = {
+        CANVAS_ICAL_URL: "Canvas",
+        PERSONAL_ICAL_URL: "Personal",
+        SPORTS_ICAL_URL: "Sports",
+        RED_DAY_ICAL_URL: "Red Day",
+        WHITE_DAY_ICAL_URL: "White Day",
+    }
+    cutoff = datetime.now(TZ) - timedelta(hours=6)
+    issues = []
+    with _ical_sync_lock:
+        snapshot = dict(_ical_last_error)
+    for url, info in snapshot.items():
+        try:
+            at = datetime.fromisoformat(info["at"])
+        except Exception:
+            continue
+        if at < cutoff:
+            continue
+        issues.append({
+            "feed": label_for.get(url, "Calendar"),
+            "at": info["at"],
+            "message": info.get("msg", ""),
+        })
+    return jsonify({"issues": issues})
+
+
+def _pomodoro_row():
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, estimate_minutes, started_at, paused_at, accumulated_seconds, active "
+                    "FROM timer_state WHERE id = 1")
+        row = cur.fetchone()
+        cur.close()
+        return row
+    finally:
+        conn.close()
+
+
+def _pomodoro_state_payload(row):
+    if not row:
+        return {"active": False, "paused": False, "elapsed_seconds": 0, "estimate_minutes": 25}
+    elapsed = float(row["accumulated_seconds"] or 0)
+    paused = row["active"] and row["paused_at"] is not None
+    if row["active"] and not paused and row["started_at"] is not None:
+        elapsed += (datetime.now(TZ) - row["started_at"]).total_seconds()
+    return {
+        "active": bool(row["active"]),
+        "paused": bool(paused),
+        "elapsed_seconds": max(0, int(elapsed)),
+        "estimate_minutes": float(row["estimate_minutes"] or 25),
+    }
+
+
+@app.route("/api/pomodoro/state")
+def api_pomodoro_state():
+    return jsonify(_pomodoro_state_payload(_pomodoro_row()))
+
+
+@app.route("/api/pomodoro/start", methods=["POST"])
+def api_pomodoro_start():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        minutes = float(data.get("minutes", 25))
+    except (TypeError, ValueError):
+        minutes = 25.0
+    if minutes <= 0 or minutes > 240:
+        return jsonify({"error": "minutes must be between 0 and 240"}), 400
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE timer_state SET estimate_minutes=%s, started_at=NOW(), "
+            "paused_at=NULL, accumulated_seconds=0, active=TRUE, "
+            "assignment_uid='', assignment_title='Pomodoro', class_name='' "
+            "WHERE id=1",
+            (minutes,),
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+    return jsonify(_pomodoro_state_payload(_pomodoro_row()))
+
+
+@app.route("/api/pomodoro/pause", methods=["POST"])
+def api_pomodoro_pause():
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT active, paused_at, started_at, accumulated_seconds FROM timer_state WHERE id=1")
+        row = cur.fetchone()
+        if not row or not row["active"]:
+            cur.close()
+            return jsonify(_pomodoro_state_payload(row))
+        if row["paused_at"] is None:
+            elapsed = float(row["accumulated_seconds"] or 0)
+            if row["started_at"] is not None:
+                elapsed += (datetime.now(TZ) - row["started_at"]).total_seconds()
+            cur.execute(
+                "UPDATE timer_state SET paused_at=NOW(), accumulated_seconds=%s WHERE id=1",
+                (elapsed,),
+            )
+        else:
+            cur.execute(
+                "UPDATE timer_state SET paused_at=NULL, started_at=NOW() WHERE id=1",
+            )
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+    return jsonify(_pomodoro_state_payload(_pomodoro_row()))
+
+
+@app.route("/api/pomodoro/stop", methods=["POST"])
+def api_pomodoro_stop():
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE timer_state SET active=FALSE, paused_at=NULL, started_at=NULL, "
+            "accumulated_seconds=0 WHERE id=1"
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+    return jsonify(_pomodoro_state_payload(_pomodoro_row()))
+
+
+@app.route("/manifest.json")
+def pwa_manifest():
+    return (
+        render_template("manifest.json"),
+        200,
+        {"Content-Type": "application/manifest+json"},
+    )
+
+
+@app.route("/sw.js")
+def pwa_service_worker():
+    return (
+        render_template("sw.js"),
+        200,
+        {"Content-Type": "application/javascript", "Service-Worker-Allowed": "/"},
+    )
+
+
 @app.route("/")
 def index():
     return render_template("index.html", tz=str(get_tz()))
@@ -3221,7 +3520,7 @@ def _generate_workout_core(intensity, location, api_key):
         )
 
         try:
-            client = anthropic.Anthropic(api_key=api_key)
+            client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
             message = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=2000,
@@ -3318,7 +3617,7 @@ def api_workout_log_custom():
         return jsonify({"error": "Add your Anthropic API key in Railway environment to log workouts."}), 500
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
         categorize_prompt = (
             "The athlete has documented the following training session:\n\n"
             '"%s"\n\n'
@@ -3439,7 +3738,7 @@ def api_workout_regenerate():
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
         message = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=2000,
@@ -4266,7 +4565,7 @@ Existing tasks: {existing_text}
 Return ONLY a valid JSON array (no markdown, no explanation):
 [{{"title": "...", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "reason": "one sentence why this is needed"}}]"""
 
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
         message = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=512,
@@ -5185,7 +5484,7 @@ def api_chat():
         return jsonify({"error": "ANTHROPIC_API_KEY not configured in Railway environment."}), 500
     try:
         now_chat = datetime.now(TZ)
-        system_prompt = (
+        system_static = (
             "You are Jarvis — the same Jarvis that serves Tony Stark in the Iron Man films: a highly intelligent, "
             "impeccably composed British AI majordomo. You speak with dry wit, understated humour, and effortless "
             "articulacy. Address the student as 'sir' or by their first name when known. "
@@ -5198,12 +5497,15 @@ def api_chat():
             "homework help (math with worked steps, science, history, English, languages, CS with runnable code), "
             "writing, research, advice, conversation, fitness talk, recommendations, jokes. "
             "Decline only genuinely harmful or illegal requests.\n\n"
-            "AUTHORITATIVE DATE & TIME — Today is %s. Current local time (Utah/Mountain): %s. "
-            "Use this in all temporal reasoning. When mentioning due dates, always render in full human-readable form "
+            "TEMPORAL FORMATTING — When mentioning due dates, always render in full human-readable form "
             "e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)'. Never show raw ISO timestamps.\n\n"
             "FORMATTING — Use **bold** for every important term, name, date, and key fact. "
             "Use ## for major sections, ### for sub-sections. Use - bullet points for lists of 2+ items. "
             "Never write more than two sentences in a row without a header, bullet, or bold term breaking it up.\n\n"
+            "BELL SCHEDULE REFERENCE (Park City High School) — "
+            "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
+            "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM. "
+            "School year runs Aug 18, 2025 – Jun 5, 2026. Timezone is America/Denver (Mountain Time).\n\n"
             "TOOL USE — You have direct tools to take real actions in this app. Use them proactively and precisely:\n"
             "- TASKS: When the student mentions finishing, completing, or doing a task, call complete_task immediately "
             "using the task ID from your context. If the task ID is unclear, call get_tasks first to look it up, "
@@ -5220,6 +5522,11 @@ def api_chat():
             "- Always confirm what you did in natural Jarvis character after calling a tool. "
             "Never call a tool the student did not ask for. Read back the key details before confirming so the "
             "student can catch any error."
+        )
+
+        system_dynamic = (
+            "AUTHORITATIVE DATE & TIME — Today is %s. Current local time (Utah/Mountain): %s. "
+            "Use this in all temporal reasoning."
         ) % (now_chat.strftime("%A, %-m/%-d/%Y"), now_chat.strftime("%-I:%M %p %Z"))
 
         # Inject school schedule context
@@ -5229,7 +5536,7 @@ def api_chat():
             school_hours = get_school_hours(today)
             if school_hours:
                 sh, sm, eh, em = school_hours
-                system_prompt += (
+                system_dynamic += (
                     "\n\nSCHOOL — Today is a %s day at Park City High School. "
                     "School runs 7:%02d AM – %d:%02d %s. "
                     "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
@@ -5237,7 +5544,7 @@ def api_chat():
                 ) % (dtype.title(), sm, eh % 12 or 12, em, "AM" if eh < 12 else "PM")
             else:
                 dow = today.weekday()
-                system_prompt += "\n\nSCHOOL — " + ("Today is a weekend — no school." if dow >= 5 else "Today is a no-school day (holiday or break).")
+                system_dynamic += "\n\nSCHOOL — " + ("Today is a weekend — no school." if dow >= 5 else "Today is a no-school day (holiday or break).")
         except Exception:
             pass
 
@@ -5262,9 +5569,9 @@ def api_chat():
                                 a["title"], a["class_name"], a["due_display"], (a.get("due_iso") or "")[:10],
                             ) for a in asgn_list
                         )
-                        system_prompt += "\n\nUPCOMING ASSIGNMENTS (not yet completed): " + asgn_text + "."
+                        system_dynamic += "\n\nUPCOMING ASSIGNMENTS (not yet completed): " + asgn_text + "."
                     else:
-                        system_prompt += "\n\nAll Canvas assignments are completed."
+                        system_dynamic += "\n\nAll Canvas assignments are completed."
         except Exception:
             log.warning("/api/chat could not fetch assignments for context")
 
@@ -5294,17 +5601,17 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                         (" — " + (t["notes"] or "")[:80]) if t["notes"] else "")
                     for t in tasks
                 )
-                system_prompt += "\n\nPENDING TASKS (use task tools to act; IDs are authoritative): " + tasks_text + "."
+                system_dynamic += "\n\nPENDING TASKS (use task tools to act; IDs are authoritative): " + tasks_text + "."
             if proj_tasks:
                 pt_text = "; ".join(
                     "%s (project: %s, assigned: %s, status: %s)" % (
                         t["task"], t["project"], t["assignee"] or "unassigned", t["status"])
                     for t in proj_tasks
                 )
-                system_prompt += " Project tasks: " + pt_text + "."
+                system_dynamic += " Project tasks: " + pt_text + "."
             if proj_notes:
                 pn_text = "; ".join("%s: %s" % (n["project"], n["note"][:100]) for n in proj_notes)
-                system_prompt += " Recent project notes: " + pn_text + "."
+                system_dynamic += " Recent project notes: " + pn_text + "."
         except Exception:
             log.warning("/api/chat could not fetch tasks for context")
 
@@ -5315,9 +5622,9 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                 h_text = "; ".join(
                     "%s qty=%s avg_cost=$%.2f" % (sym, h["qty"], h["avg_cost"]) for sym, h in port.items()
                 )
-                system_prompt += "\n\nSTOCK HOLDINGS (from recorded transactions): " + h_text + "."
+                system_dynamic += "\n\nSTOCK HOLDINGS (from recorded transactions): " + h_text + "."
             else:
-                system_prompt += "\n\nNo stock holdings recorded yet."
+                system_dynamic += "\n\nNo stock holdings recorded yet."
         except Exception:
             log.warning("/api/chat could not load portfolio for context")
 
@@ -5332,15 +5639,20 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                         (" stop=$" + str(n["stop_loss"])) if n["stop_loss"] is not None else "",
                     ) for n in _notes
                 )
-                system_prompt += " Stock notes on file: " + n_text + "."
+                system_dynamic += " Stock notes on file: " + n_text + "."
         except Exception:
             log.warning("/api/chat could not load stock notes for context")
 
         # ── Agentic loop: extended thinking + tool use ──────────────────────
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
         messages_loop = list(messages)
         response = None
         actions_taken = []
+
+        system_blocks = [
+            {"type": "text", "text": system_static, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": system_dynamic},
+        ]
 
         for _iteration in range(10):
             response = client.beta.messages.create(
@@ -5348,7 +5660,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                 max_tokens=16000,
                 thinking={"type": "enabled", "budget_tokens": 10000},
                 tools=JARVIS_TOOLS,
-                system=system_prompt,
+                system=system_blocks,
                 messages=messages_loop,
                 betas=["interleaved-thinking-2025-05-14"],
             )
@@ -5718,7 +6030,7 @@ def api_plan_my_day_generate():
                 conn.close()
                 return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
 
-            client = anthropic.Anthropic(api_key=api_key)
+            client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
             def _fmt_cal(e):
                 if e.get("all_day"):
                     return "- %s: All Day" % e["title"]
@@ -6206,7 +6518,7 @@ def api_stocks_research():
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
         message = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=900,
@@ -6445,7 +6757,7 @@ def api_outlook_news_detail():
         return jsonify({"synthesis": "_(Claude synthesis unavailable — API key not configured.)_"}), 200
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
         prompt = (
             "A news story was just surfaced to the student in their Morning Outlook:\n\n"
             f"Headline: {title}\n"
@@ -6483,15 +6795,6 @@ def api_outlook_news_detail():
     except Exception as e:
         log.exception("news-detail synthesis failed")
         return jsonify({"error": str(e)}), 500
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# WITHINGS DATA SYNC FUNCTIONS
-# ──────────────────────────────────────────────────────────────────────────────
-
-# ──────────────────────────────────────────────────────────────────────────────
-# GOOGLE FIT DATA SYNC FUNCTIONS
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 # Initialize database if available
