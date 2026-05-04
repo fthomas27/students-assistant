@@ -1328,14 +1328,38 @@ color: white;
 font-weight: 600;
 }
 
+.calendar-day.selected {
+background: var(--surface2);
+color: var(--text);
+font-weight: 600;
+box-shadow: inset 0 0 0 2px var(--text3);
+}
+
+.calendar-day.today.selected {
+background: var(--accent);
+color: white;
+box-shadow: inset 0 0 0 2px white;
+}
+
 .calendar-day.has-event::after {
 content: '';
 position: absolute;
-width: 4px;
-height: 4px;
+width: 6px;
+height: 6px;
 background: var(--amber);
 border-radius: 50%;
-bottom: 4px;
+bottom: 6px;
+left: 50%;
+transform: translateX(-50%);
+box-shadow: 0 0 0 2px var(--surface);
+}
+
+.calendar-day.today.has-event::after {
+box-shadow: 0 0 0 2px var(--accent);
+}
+
+.calendar-day.selected.has-event::after {
+box-shadow: 0 0 0 2px var(--surface2);
 }
 
 .calendar-day-num {
@@ -1393,10 +1417,10 @@ margin-top: 4px;
 /* Desktop: calendar takes the full viewport with calendar-left / schedule-right.
    Mobile (≤639px) keeps the centered popup defined above. */
 @media (min-width: 640px) {
-  .calendar-modal-backdrop.visible {
+  #calendarBackdrop.visible {
     background: var(--bg);
   }
-  .calendar-modal {
+  #calendarModal {
     top: 0;
     left: 0;
     transform: none;
@@ -1410,26 +1434,37 @@ margin-top: 4px;
     display: none;
     flex-direction: column;
   }
-  .calendar-modal.visible {
+  #calendarModal.visible {
     display: flex;
+    animation: calendarFadeIn 0.2s ease-out;
   }
-  .calendar-modal-body {
+  #calendarModal .calendar-modal-body {
     flex: 1;
     min-height: 0;
     display: grid;
     grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
   }
-  .calendar-modal-body .calendar-grid {
+  #calendarModal .calendar-grid {
     min-height: 0;
     align-content: start;
     overflow: auto;
   }
-  .calendar-modal-body .calendar-events-list {
+  #calendarModal .calendar-events-list {
     border-top: none;
     border-left: 1px solid var(--border);
     max-height: none;
     overflow-y: auto;
   }
+}
+
+@keyframes calendarFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes calendarFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 /* Event Detail Modal */
@@ -2347,8 +2382,8 @@ margin-bottom: 0;
     <h2 id="projectDetailsTitle">Loading...</h2>
     <button class="calendar-nav-btn" onclick="closeProjectDetailsModal()" title="Close">✕</button>
   </div>
-  <div id="projectDetailsContent" style="padding: 16px; color: var(--text); text-align: center;">
-    <div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div>
+  <div id="projectDetailsContent" style="padding: 16px; color: var(--text); min-height: 320px; transition: opacity 0.2s ease-out;">
+    <div style="text-align: center; padding-top: 80px;"><div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div></div>
   </div>
 </div>
 
@@ -3395,20 +3430,21 @@ async function openProjectDetailsModal(projectId) {
   try {
     const modal = document.getElementById('projectDetailsModal');
     const backdrop = document.getElementById('projectDetailsBackdrop');
-
-    modal.classList.add('visible');
-    backdrop.classList.add('visible');
-    document.getElementById('projectDetailsContent').innerHTML = '<div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div>';
+    const content = document.getElementById('projectDetailsContent');
 
     const project = projectsCache.find(p => p.id === projectId);
     if (!project) {
-      modal.classList.remove('visible');
-      backdrop.classList.remove('visible');
       alert('Project not found');
       return;
     }
 
     document.getElementById('projectDetailsTitle').textContent = project.title || 'Project';
+    content.style.opacity = '0';
+    content.innerHTML = '<div style="text-align: center; padding-top: 80px;"><div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div></div>';
+
+    modal.classList.add('visible');
+    backdrop.classList.add('visible');
+    requestAnimationFrame(() => { content.style.opacity = '1'; });
 
     const [notesRes, tasksRes] = await Promise.all([
       fetch(`/api/projects/${projectId}/notes`),
@@ -3432,6 +3468,7 @@ async function openProjectDetailsModal(projectId) {
     let html = `
       ${project.description ? `<div style="color: var(--text2); margin-bottom: 16px;">${escapeHtml(project.description)}</div>` : ''}
 
+      ${project.status !== 'done' ? `
       <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px;" data-section="project-checkin">
         <div style="min-width: 0;">
           <div style="font-size: 12px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 2px;">Check-in</div>
@@ -3439,7 +3476,7 @@ async function openProjectDetailsModal(projectId) {
           <div style="font-size: 11px; color: var(--text3);">Every ${checkinInterval} day${checkinInterval === 1 ? '' : 's'}${checkinIsOverdue ? ' &mdash; overdue' : ''}</div>
         </div>
         <button onclick="checkInProject(${projectId})" style="${checkinPillStyle}border-radius:var(--r-sm);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0;">✓ Check in</button>
-      </div>
+      </div>` : ''}
 
       <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 16px;" data-section="project-notes">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -3489,10 +3526,10 @@ async function openProjectDetailsModal(projectId) {
 
     html += '</div>';
 
-    document.getElementById('projectDetailsContent').innerHTML = html;
+    content.style.opacity = '0';
+    content.innerHTML = html;
     modal.dataset.projectId = projectId;
-    modal.classList.add('visible');
-    document.getElementById('projectDetailsBackdrop').classList.add('visible');
+    requestAnimationFrame(() => { content.style.opacity = '1'; });
   } catch (e) {
     console.error('Error loading project details:', e);
     alert('Failed to load project details: ' + e.message);
@@ -6162,6 +6199,7 @@ async function deleteRecurringTaskConfirm(taskId) {
 let calendarCurrentDate = new Date();
 let calendarEventsByDate = {};
 let currentDayEvents = [];
+let calendarSelectedKey = null;
 
 function openCalendarModal() {
   closeProjectDetailsModal();
@@ -6199,25 +6237,31 @@ function closeCalendarModal() {
   const modal = document.getElementById('calendarModal');
   const backdrop = document.getElementById('calendarBackdrop');
   if (!modal.classList.contains('visible')) return;
-  modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
-  backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
+  const isDesktop = window.matchMedia('(min-width: 640px)').matches;
+  modal.style.animation = isDesktop
+    ? 'calendarFadeOut 0.2s ease-out forwards'
+    : 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
+  backdrop.style.transition = 'background 0.2s ease-out';
   backdrop.style.background = 'rgba(0,0,0,0)';
+  const duration = isDesktop ? 200 : 300;
   setTimeout(() => {
     modal.classList.remove('visible');
     backdrop.classList.remove('visible');
     modal.style.animation = '';
     backdrop.style.transition = '';
     backdrop.style.background = '';
-  }, 300);
+  }, duration);
 }
 
 function previousMonth() {
   calendarCurrentDate.setMonth(calendarCurrentDate.getMonth() - 1);
+  calendarSelectedKey = null;
   renderCalendarModal();
 }
 
 function nextMonth() {
   calendarCurrentDate.setMonth(calendarCurrentDate.getMonth() + 1);
+  calendarSelectedKey = null;
   renderCalendarModal();
 }
 
@@ -6279,6 +6323,10 @@ function renderCalendarModal() {
       day.classList.add('today');
     }
 
+    if (calendarSelectedKey === dateKey) {
+      day.classList.add('selected');
+    }
+
     if (eventsOnDay.length > 0) {
       day.classList.add('has-event');
     }
@@ -6306,6 +6354,18 @@ async function showCalendarEvents(day, month, year, events) {
     weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric'
   });
   const isoDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+  const newSelectedKey = `${year}-${month}-${day}`;
+  if (calendarSelectedKey !== newSelectedKey) {
+    calendarSelectedKey = newSelectedKey;
+    const grid = document.getElementById('calendarGrid');
+    if (grid) {
+      grid.querySelectorAll('.calendar-day.selected').forEach(el => el.classList.remove('selected'));
+      const cells = grid.querySelectorAll('.calendar-day:not(.other-month)');
+      const cell = cells[day - 1];
+      if (cell) cell.classList.add('selected');
+    }
+  }
 
   currentDayEvents = events.sort((a, b) => new Date(a.start_iso) - new Date(b.start_iso));
 
