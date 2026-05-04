@@ -986,6 +986,74 @@ border: 1px solid var(--border);
 border-radius: var(--r) calc(var(--r) - 4px) calc(var(--r) - 4px) var(--r);
 }
 
+.message.assistant .message-bubble:has(.chat-table-wrap) {
+max-width: 95%;
+}
+
+.chat-table-wrap {
+margin: 10px 0;
+overflow-x: auto;
+border-radius: var(--r-sm);
+border: 1px solid var(--border);
+background: var(--bg);
+}
+
+.chat-table {
+width: 100%;
+border-collapse: collapse;
+font-size: 13.5px;
+line-height: 1.5;
+}
+
+.chat-table thead th {
+background: var(--surface2);
+color: var(--text);
+font-weight: 600;
+text-align: left;
+padding: 10px 12px;
+font-size: 11px;
+text-transform: uppercase;
+letter-spacing: 0.6px;
+border-bottom: 2px solid var(--accent);
+white-space: nowrap;
+}
+
+.chat-table tbody td {
+padding: 10px 12px;
+border-top: 1px solid var(--border);
+vertical-align: top;
+color: var(--text2);
+}
+
+.chat-table tbody tr:first-child td {
+border-top: none;
+}
+
+.chat-table tbody td:first-child {
+font-weight: 600;
+color: var(--text);
+white-space: nowrap;
+}
+
+.chat-table tbody tr:nth-child(even) td {
+background: rgba(255,255,255,0.015);
+}
+
+.chat-hr {
+border: none;
+border-top: 1px solid var(--border);
+margin: 14px 0;
+}
+
+.chat-blockquote {
+border-left: 3px solid var(--accent);
+padding: 4px 12px;
+margin: 8px 0;
+color: var(--text2);
+background: rgba(255,255,255,0.02);
+border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+
 .loading-dot {
 display: inline-block;
 width: 8px;
@@ -1328,14 +1396,38 @@ color: white;
 font-weight: 600;
 }
 
+.calendar-day.selected {
+background: var(--surface2);
+color: var(--text);
+font-weight: 600;
+box-shadow: inset 0 0 0 2px var(--text3);
+}
+
+.calendar-day.today.selected {
+background: var(--accent);
+color: white;
+box-shadow: inset 0 0 0 2px white;
+}
+
 .calendar-day.has-event::after {
 content: '';
 position: absolute;
-width: 4px;
-height: 4px;
+width: 6px;
+height: 6px;
 background: var(--amber);
 border-radius: 50%;
-bottom: 4px;
+bottom: 6px;
+left: 50%;
+transform: translateX(-50%);
+box-shadow: 0 0 0 2px var(--surface);
+}
+
+.calendar-day.today.has-event::after {
+box-shadow: 0 0 0 2px var(--accent);
+}
+
+.calendar-day.selected.has-event::after {
+box-shadow: 0 0 0 2px var(--surface2);
 }
 
 .calendar-day-num {
@@ -1393,10 +1485,10 @@ margin-top: 4px;
 /* Desktop: calendar takes the full viewport with calendar-left / schedule-right.
    Mobile (≤639px) keeps the centered popup defined above. */
 @media (min-width: 640px) {
-  .calendar-modal-backdrop.visible {
+  #calendarBackdrop.visible {
     background: var(--bg);
   }
-  .calendar-modal {
+  #calendarModal {
     top: 0;
     left: 0;
     transform: none;
@@ -1410,26 +1502,37 @@ margin-top: 4px;
     display: none;
     flex-direction: column;
   }
-  .calendar-modal.visible {
+  #calendarModal.visible {
     display: flex;
+    animation: calendarFadeIn 0.2s ease-out;
   }
-  .calendar-modal-body {
+  #calendarModal .calendar-modal-body {
     flex: 1;
     min-height: 0;
     display: grid;
     grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
   }
-  .calendar-modal-body .calendar-grid {
+  #calendarModal .calendar-grid {
     min-height: 0;
     align-content: start;
     overflow: auto;
   }
-  .calendar-modal-body .calendar-events-list {
+  #calendarModal .calendar-events-list {
     border-top: none;
     border-left: 1px solid var(--border);
     max-height: none;
     overflow-y: auto;
   }
+}
+
+@keyframes calendarFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes calendarFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 /* Event Detail Modal */
@@ -2347,8 +2450,8 @@ margin-bottom: 0;
     <h2 id="projectDetailsTitle">Loading...</h2>
     <button class="calendar-nav-btn" onclick="closeProjectDetailsModal()" title="Close">✕</button>
   </div>
-  <div id="projectDetailsContent" style="padding: 16px; color: var(--text); text-align: center;">
-    <div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div>
+  <div id="projectDetailsContent" style="padding: 16px; color: var(--text); min-height: 320px; transition: opacity 0.2s ease-out;">
+    <div style="text-align: center; padding-top: 80px;"><div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div></div>
   </div>
 </div>
 
@@ -3395,20 +3498,21 @@ async function openProjectDetailsModal(projectId) {
   try {
     const modal = document.getElementById('projectDetailsModal');
     const backdrop = document.getElementById('projectDetailsBackdrop');
-
-    modal.classList.add('visible');
-    backdrop.classList.add('visible');
-    document.getElementById('projectDetailsContent').innerHTML = '<div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div>';
+    const content = document.getElementById('projectDetailsContent');
 
     const project = projectsCache.find(p => p.id === projectId);
     if (!project) {
-      modal.classList.remove('visible');
-      backdrop.classList.remove('visible');
       alert('Project not found');
       return;
     }
 
     document.getElementById('projectDetailsTitle').textContent = project.title || 'Project';
+    content.style.opacity = '0';
+    content.innerHTML = '<div style="text-align: center; padding-top: 80px;"><div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div></div>';
+
+    modal.classList.add('visible');
+    backdrop.classList.add('visible');
+    requestAnimationFrame(() => { content.style.opacity = '1'; });
 
     const [notesRes, tasksRes] = await Promise.all([
       fetch(`/api/projects/${projectId}/notes`),
@@ -3432,6 +3536,7 @@ async function openProjectDetailsModal(projectId) {
     let html = `
       ${project.description ? `<div style="color: var(--text2); margin-bottom: 16px;">${escapeHtml(project.description)}</div>` : ''}
 
+      ${project.status !== 'done' ? `
       <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px;" data-section="project-checkin">
         <div style="min-width: 0;">
           <div style="font-size: 12px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 2px;">Check-in</div>
@@ -3439,7 +3544,7 @@ async function openProjectDetailsModal(projectId) {
           <div style="font-size: 11px; color: var(--text3);">Every ${checkinInterval} day${checkinInterval === 1 ? '' : 's'}${checkinIsOverdue ? ' &mdash; overdue' : ''}</div>
         </div>
         <button onclick="checkInProject(${projectId})" style="${checkinPillStyle}border-radius:var(--r-sm);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0;">✓ Check in</button>
-      </div>
+      </div>` : ''}
 
       <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 16px;" data-section="project-notes">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -3489,10 +3594,10 @@ async function openProjectDetailsModal(projectId) {
 
     html += '</div>';
 
-    document.getElementById('projectDetailsContent').innerHTML = html;
+    content.style.opacity = '0';
+    content.innerHTML = html;
     modal.dataset.projectId = projectId;
-    modal.classList.add('visible');
-    document.getElementById('projectDetailsBackdrop').classList.add('visible');
+    requestAnimationFrame(() => { content.style.opacity = '1'; });
   } catch (e) {
     console.error('Error loading project details:', e);
     alert('Failed to load project details: ' + e.message);
@@ -5065,6 +5170,22 @@ The server prompt also injects a [STOCK_ACTION: ...] token rule and the student'
       showStockToast(data.stock_note_symbol ? `Note filed for ${data.stock_note_symbol}.` : 'Stock note saved.');
     }
 
+    // If server created a project (often with seeded tasks), refresh and toast
+    if (data.project_created) {
+      loadProjects();
+      const t = data.project_created_title;
+      const n = data.project_created_task_count;
+      const msg = t
+        ? (n ? `Project "${t}" created with ${n} task${n === 1 ? '' : 's'}.` : `Project "${t}" created.`)
+        : 'Project created.';
+      showToast(msg, 'success', 2400);
+    }
+
+    // If server added a task to an existing project, refresh
+    if (data.project_task_added) {
+      loadProjects();
+    }
+
     loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(assistantMessage)}</div>`;
     renderMessageWithDelay(loadingBubble);
     pushConversation({ role: 'assistant', content: assistantMessage });
@@ -5113,36 +5234,116 @@ function setPriorityRadio(inputId, value) {
   });
 }
 
+function formatInline(text) {
+  // Apply only inline markdown to a snippet (used inside table cells).
+  let h = escapeHtml(text);
+  h = h.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/__(.*?)__/g, '<strong>$1</strong>');
+  h = h.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  h = h.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
+  h = h.replace(/`([^`]+)`/g, '<code style="background:var(--surface2);padding:2px 6px;border-radius:4px;font-family:monospace;font-size:12px;color:var(--accent);">$1</code>');
+  return h;
+}
+
 function formatMessage(text) {
+  if (text == null) return '';
+  text = String(text);
+
+  // 1. Extract fenced code blocks before any other processing so their content
+  //    is preserved verbatim and not mangled by inline rules.
+  const codeBlocks = [];
+  text = text.replace(/```([\s\S]*?)```/g, (_, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push(code);
+    return `CODE${idx}`;
+  });
+
+  // 2. Extract markdown tables (header row, separator row, zero+ data rows).
+  const tables = [];
+  const lines = text.split('\n');
+  const out = [];
+  let i = 0;
+  const isPipeRow = s => /^\s*\|.*\|\s*$/.test(s);
+  const isSepRow = s => /^\s*\|[\s\-:|]+\|\s*$/.test(s) && /-/.test(s);
+  while (i < lines.length) {
+    if (i + 1 < lines.length && isPipeRow(lines[i]) && isSepRow(lines[i + 1])) {
+      const header = lines[i].trim().replace(/^\||\|$/g, '').split('|').map(s => s.trim());
+      const rows = [];
+      let j = i + 2;
+      while (j < lines.length && isPipeRow(lines[j])) {
+        rows.push(lines[j].trim().replace(/^\||\|$/g, '').split('|').map(s => s.trim()));
+        j++;
+      }
+      const idx = tables.length;
+      tables.push({ header, rows });
+      out.push(`TABLE${idx}`);
+      i = j;
+    } else {
+      out.push(lines[i]);
+      i++;
+    }
+  }
+  text = out.join('\n');
+
+  // 3. Escape and apply block + inline markdown.
   let html = escapeHtml(text);
 
-  // Handle headers — sizes deliberately large so they stand out from 16px body text
-  html = html.replace(/^### (.*?)$/gm, '<h3 style="font-size:18px;font-weight:700;margin:14px 0 6px 0;color:var(--text);">$1</h3>');
-  html = html.replace(/^## (.*?)$/gm,  '<h2 style="font-size:22px;font-weight:800;margin:18px 0 8px 0;color:var(--text);border-bottom:2px solid var(--accent);padding-bottom:4px;">$1</h2>');
-  html = html.replace(/^# (.*?)$/gm,   '<h1 style="font-size:26px;font-weight:800;margin:20px 0 10px 0;color:var(--accent);">$1</h1>');
+  // Headers
+  html = html.replace(/^### (.*?)$/gm, '<h3 style="font-size:17px;font-weight:700;margin:14px 0 6px 0;color:var(--text);">$1</h3>');
+  html = html.replace(/^## (.*?)$/gm,  '<h2 style="font-size:20px;font-weight:700;margin:16px 0 8px 0;color:var(--text);border-bottom:1px solid var(--border);padding-bottom:6px;">$1</h2>');
+  html = html.replace(/^# (.*?)$/gm,   '<h1 style="font-size:24px;font-weight:800;margin:18px 0 10px 0;color:var(--accent);">$1</h1>');
 
-  // Handle bold and italic
+  // Horizontal rule (must come before line breaks; allow whitespace either side)
+  html = html.replace(/^\s*(?:---+|\*\*\*+|___+)\s*$/gm, '<hr class="chat-hr">');
+
+  // Blockquotes — single line `> text`
+  html = html.replace(/^&gt; (.*?)$/gm, '<div class="chat-blockquote">$1</div>');
+
+  // Bold and italic
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/__(.*?)__/g, '<strong>$1</strong>');
   html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-  html = html.replace(/_(.*?)_/g, '<em>$1</em>');
+  html = html.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
 
-  // Handle bullet lists — wrap all consecutive li runs in one ul
+  // Bullet lists — wrap consecutive `<li>` runs in a single `<ul>`
   html = html.replace(/^[\-\*] (.*?)$/gm, '<li>$1</li>');
+  // Numbered lists
+  html = html.replace(/^\d+\. (.*?)$/gm, '<li>$1</li>');
   html = html.replace(/(<li>[\s\S]*?<\/li>)(\n<li>[\s\S]*?<\/li>)*/g, (m) =>
     `<ul style="list-style:disc;padding-left:22px;margin:6px 0;">${m}</ul>`);
 
-  // Handle numbered lists
-  html = html.replace(/^\d+\. (.*?)$/gm, '<li>$1</li>');
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code style="background:var(--surface2);padding:2px 6px;border-radius:4px;font-family:monospace;font-size:12px;color:var(--accent);">$1</code>');
 
-  // Handle line breaks
+  // Line breaks
   html = html.replace(/\n/g, '<br>');
 
-  // Handle code blocks
-  html = html.replace(/```([\s\S]*?)```/g, '<div style="background: var(--surface2); border-left: 3px solid var(--accent); padding: 8px; margin: 8px 0; font-family: monospace; font-size: 12px; color: var(--text2); overflow-x: auto;">$1</div>');
+  // 4. Restore tables (cells get inline markdown applied).
+  html = html.replace(/TABLE(\d+)/g, (_, idx) => {
+    const t = tables[parseInt(idx, 10)];
+    if (!t) return '';
+    let h = '<div class="chat-table-wrap"><table class="chat-table">';
+    h += '<thead><tr>' + t.header.map(c => `<th>${formatInline(c)}</th>`).join('') + '</tr></thead>';
+    h += '<tbody>' + t.rows.map(r =>
+      '<tr>' + r.map(c => `<td>${formatInline(c)}</td>`).join('') + '</tr>'
+    ).join('') + '</tbody>';
+    h += '</table></div>';
+    return h;
+  });
 
-  // Handle inline code
-  html = html.replace(/`([^`]+)`/g, '<code style="background: var(--surface2); padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; color: var(--accent);">$1</code>');
+  // 5. Restore code blocks.
+  html = html.replace(/CODE(\d+)/g, (_, idx) => {
+    const code = codeBlocks[parseInt(idx, 10)] || '';
+    return `<pre style="background:var(--surface2);border-left:3px solid var(--accent);padding:10px 12px;margin:8px 0;font-family:monospace;font-size:12.5px;color:var(--text2);overflow-x:auto;border-radius:var(--r-sm);white-space:pre-wrap;">${escapeHtml(code).trim()}</pre>`;
+  });
+
+  // 6. Tidy <br> tags adjacent to block-level elements that already break flow.
+  html = html.replace(/(<\/(?:h1|h2|h3|ul|pre)>)<br>/g, '$1');
+  html = html.replace(/<br>(<(?:h1|h2|h3|ul|hr|pre)\b)/g, '$1');
+  html = html.replace(/<br>(<div class="chat-(?:table-wrap|blockquote))/g, '$1');
+  html = html.replace(/(<\/div>)<br>(?=<div class="chat-)/g, '$1');
+  html = html.replace(/(<hr[^>]*>)<br>/g, '$1');
+  html = html.replace(/<br>(<hr\b)/g, '$1');
 
   return html;
 }
@@ -6162,6 +6363,7 @@ async function deleteRecurringTaskConfirm(taskId) {
 let calendarCurrentDate = new Date();
 let calendarEventsByDate = {};
 let currentDayEvents = [];
+let calendarSelectedKey = null;
 
 function openCalendarModal() {
   closeProjectDetailsModal();
@@ -6199,25 +6401,31 @@ function closeCalendarModal() {
   const modal = document.getElementById('calendarModal');
   const backdrop = document.getElementById('calendarBackdrop');
   if (!modal.classList.contains('visible')) return;
-  modal.style.animation = 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
-  backdrop.style.transition = 'background 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
+  const isDesktop = window.matchMedia('(min-width: 640px)').matches;
+  modal.style.animation = isDesktop
+    ? 'calendarFadeOut 0.2s ease-out forwards'
+    : 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
+  backdrop.style.transition = 'background 0.2s ease-out';
   backdrop.style.background = 'rgba(0,0,0,0)';
+  const duration = isDesktop ? 200 : 300;
   setTimeout(() => {
     modal.classList.remove('visible');
     backdrop.classList.remove('visible');
     modal.style.animation = '';
     backdrop.style.transition = '';
     backdrop.style.background = '';
-  }, 300);
+  }, duration);
 }
 
 function previousMonth() {
   calendarCurrentDate.setMonth(calendarCurrentDate.getMonth() - 1);
+  calendarSelectedKey = null;
   renderCalendarModal();
 }
 
 function nextMonth() {
   calendarCurrentDate.setMonth(calendarCurrentDate.getMonth() + 1);
+  calendarSelectedKey = null;
   renderCalendarModal();
 }
 
@@ -6279,6 +6487,10 @@ function renderCalendarModal() {
       day.classList.add('today');
     }
 
+    if (calendarSelectedKey === dateKey) {
+      day.classList.add('selected');
+    }
+
     if (eventsOnDay.length > 0) {
       day.classList.add('has-event');
     }
@@ -6306,6 +6518,18 @@ async function showCalendarEvents(day, month, year, events) {
     weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric'
   });
   const isoDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+  const newSelectedKey = `${year}-${month}-${day}`;
+  if (calendarSelectedKey !== newSelectedKey) {
+    calendarSelectedKey = newSelectedKey;
+    const grid = document.getElementById('calendarGrid');
+    if (grid) {
+      grid.querySelectorAll('.calendar-day.selected').forEach(el => el.classList.remove('selected'));
+      const cells = grid.querySelectorAll('.calendar-day:not(.other-month)');
+      const cell = cells[day - 1];
+      if (cell) cell.classList.add('selected');
+    }
+  }
 
   currentDayEvents = events.sort((a, b) => new Date(a.start_iso) - new Date(b.start_iso));
 
