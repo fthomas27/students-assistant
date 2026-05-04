@@ -1139,6 +1139,76 @@ transform: scale(1);
 pointer-events: none;
 }
 
+.voice-btn {
+width: 36px;
+height: 36px;
+border: 1px solid var(--border);
+background: var(--surface);
+color: var(--text2);
+border-radius: 50%;
+display: flex;
+align-items: center;
+justify-content: center;
+cursor: pointer;
+font-size: 16px;
+transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+flex-shrink: 0;
+position: relative;
+}
+
+.voice-btn:hover {
+background: var(--surface2);
+color: var(--text);
+}
+
+.voice-btn.active {
+background: var(--accent);
+color: white;
+border-color: var(--accent);
+box-shadow: 0 0 0 3px rgba(255, 127, 80, 0.18);
+}
+
+.voice-btn.active::after {
+content: '';
+position: absolute;
+inset: -4px;
+border-radius: 50%;
+border: 1px solid var(--accent);
+animation: voicePulse 1.6s ease-in-out infinite;
+opacity: 0.6;
+}
+
+.voice-btn.speaking {
+background: var(--green);
+color: white;
+border-color: var(--green);
+}
+
+@keyframes voicePulse {
+0%   { transform: scale(1);    opacity: 0.6; }
+50%  { transform: scale(1.18); opacity: 0;   }
+100% { transform: scale(1.18); opacity: 0;   }
+}
+
+.voice-status {
+position: absolute;
+bottom: 100%;
+right: 0;
+margin-bottom: 6px;
+background: var(--surface2);
+border: 1px solid var(--border);
+border-radius: var(--r-sm);
+padding: 4px 10px;
+font-size: 11px;
+color: var(--text2);
+white-space: nowrap;
+display: none;
+}
+
+.voice-btn.active .voice-status {
+display: block;
+}
+
 /* ── RESPONSIVE ── */
 @media (max-width: 639px) {
 .sidebar-item {
@@ -2525,8 +2595,10 @@ margin-bottom: 0;
     </div>
     <div class="chat-input-area">
       <textarea class="chat-input" id="chatInput" placeholder="Ask me anything..." rows="1"></textarea>
+      <button class="voice-btn" id="voiceBtn" type="button" onclick="toggleVoiceMode()" title="Voice mode (spoken replies)" aria-label="Toggle voice mode">🔊</button>
       <button class="send-btn" id="sendBtn" type="button" onclick="sendMessage()">→</button>
     </div>
+    <audio id="voicePlayer" preload="none"></audio>
   </div>
 </div>
 
@@ -5048,6 +5120,81 @@ function resizeChatInput() {
 chatInput.addEventListener('input', debounce(resizeChatInput, 16));
 chatInput.addEventListener('paste', () => setTimeout(resizeChatInput, 0));
 
+// ── Voice mode (ElevenLabs TTS) ──────────────────────────────────────────
+let voiceMode = localStorage.getItem('voiceMode') === '1';
+let _voiceAudioUrl = null;
+
+function _voiceBtn() { return document.getElementById('voiceBtn'); }
+function _voicePlayer() { return document.getElementById('voicePlayer'); }
+
+function _renderVoiceButton() {
+  const btn = _voiceBtn();
+  if (!btn) return;
+  btn.classList.toggle('active', voiceMode);
+  btn.title = voiceMode ? 'Voice mode on — replies will be spoken' : 'Voice mode (spoken replies)';
+  btn.textContent = voiceMode ? '🔊' : '🔇';
+  if (voiceMode) {
+    chatInput.setAttribute('placeholder', 'Speak with Jarvis…');
+  } else {
+    chatInput.setAttribute('placeholder', 'Ask me anything...');
+  }
+}
+
+function toggleVoiceMode() {
+  voiceMode = !voiceMode;
+  localStorage.setItem('voiceMode', voiceMode ? '1' : '0');
+  _renderVoiceButton();
+  if (!voiceMode) stopVoicePlayback();
+  triggerHaptic('light');
+  showToast(voiceMode ? 'Voice mode on — replies will be spoken.' : 'Voice mode off.', 'success', 1600);
+}
+
+function stopVoicePlayback() {
+  const a = _voicePlayer();
+  if (a && !a.paused) { try { a.pause(); a.currentTime = 0; } catch (_) {} }
+  if (_voiceAudioUrl) { try { URL.revokeObjectURL(_voiceAudioUrl); } catch (_) {} _voiceAudioUrl = null; }
+  const btn = _voiceBtn();
+  if (btn) btn.classList.remove('speaking');
+}
+
+async function speakReply(text) {
+  if (!text || !text.trim()) return;
+  stopVoicePlayback();
+  const btn = _voiceBtn();
+  try {
+    const resp = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      console.warn('TTS failed:', resp.status, err);
+      if (resp.status === 503) {
+        showToast('Voice unavailable — ELEVENLABS_API_KEY not set on the server.', 'error', 4000);
+      } else {
+        showToast('Voice playback failed.', 'error', 2400);
+      }
+      return;
+    }
+    const blob = await resp.blob();
+    _voiceAudioUrl = URL.createObjectURL(blob);
+    const a = _voicePlayer();
+    a.src = _voiceAudioUrl;
+    a.onplay = () => { if (btn) btn.classList.add('speaking'); };
+    a.onpause = () => { if (btn) btn.classList.remove('speaking'); };
+    a.onended = () => { stopVoicePlayback(); };
+    await a.play();
+  } catch (e) {
+    console.error('speakReply failed', e);
+    showToast('Voice playback failed.', 'error', 2400);
+  }
+}
+
+// Render initial voice button state. The script runs at the end of body,
+// so the element is in the DOM regardless of DOMContentLoaded timing.
+_renderVoiceButton();
+
 async function sendMessage() {
   const message = chatInput.value.trim();
   if (!message) return;
@@ -5084,6 +5231,7 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: conversationHistory,
+        voice_mode: voiceMode,
         system: `You are Jarvis, a full-range personal AI assistant for ${customName} — the impeccably composed British majordomo from the Iron Man films. You are a capable, general-purpose intelligence: answer ANY reasonable question the student asks, not only scheduling or task questions.
 
 Scope — help with any of the following, with equal competence:
@@ -5190,6 +5338,11 @@ The server prompt also injects a [STOCK_ACTION: ...] token rule and the student'
     renderMessageWithDelay(loadingBubble);
     pushConversation({ role: 'assistant', content: assistantMessage });
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+    // If voice mode is on, speak the reply.
+    if (voiceMode && assistantMessage && assistantMessage.trim()) {
+      speakReply(assistantMessage);
+    }
 
     // Save chat to history
     saveCurrentChat();
