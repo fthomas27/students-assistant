@@ -5170,6 +5170,22 @@ The server prompt also injects a [STOCK_ACTION: ...] token rule and the student'
       showStockToast(data.stock_note_symbol ? `Note filed for ${data.stock_note_symbol}.` : 'Stock note saved.');
     }
 
+    // If server created a project (often with seeded tasks), refresh and toast
+    if (data.project_created) {
+      loadProjects();
+      const t = data.project_created_title;
+      const n = data.project_created_task_count;
+      const msg = t
+        ? (n ? `Project "${t}" created with ${n} task${n === 1 ? '' : 's'}.` : `Project "${t}" created.`)
+        : 'Project created.';
+      showToast(msg, 'success', 2400);
+    }
+
+    // If server added a task to an existing project, refresh
+    if (data.project_task_added) {
+      loadProjects();
+    }
+
     loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(assistantMessage)}</div>`;
     renderMessageWithDelay(loadingBubble);
     pushConversation({ role: 'assistant', content: assistantMessage });

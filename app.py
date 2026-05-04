@@ -5222,6 +5222,53 @@ JARVIS_TOOLS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "create_project",
+        "description": (
+            "Create a multi-day or multi-step project, optionally seeded with sub-tasks. "
+            "Use this for STUDY PLANS that span more than one day, multi-phase work "
+            "(planning + research + execution), application processes, or any effort "
+            "with three or more logical sub-steps. Do NOT use for single atomic tasks — "
+            "use create_task for those. Pass the initial sub-tasks via the `tasks` array "
+            "in one call rather than a long sequence of create_task calls."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Project name, e.g. 'AP Calc BC + Spanish Exam Prep'"},
+                "description": {"type": "string", "description": "1-2 sentence summary of the project's goal and scope"},
+                "checkin_interval_days": {"type": "integer", "description": "Days between check-ins; default 7, use 3 for active short projects, 14 for slow ones"},
+                "tasks": {
+                    "type": "array",
+                    "description": "Initial sub-tasks for the project. Each is an object with title, optional due_date (YYYY-MM-DD), and optional notes.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "due_date": {"type": "string", "description": "YYYY-MM-DD"},
+                            "notes": {"type": "string"},
+                        },
+                        "required": ["title"],
+                    },
+                },
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "add_project_task",
+        "description": "Add a single sub-task to an existing project. Use the project_id from get_projects.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer"},
+                "title": {"type": "string"},
+                "due_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "notes": {"type": "string"},
+            },
+            "required": ["project_id", "title"],
+        },
+    },
+    {
         "name": "get_workout_history",
         "description": "Get recent workout history (last 12 sessions) including focus area, intensity, location, and athlete notes.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
@@ -5456,6 +5503,86 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             cur.close(); conn.close()
             return {"projects": projects, "tasks": proj_tasks, "notes": proj_notes}
 
+        elif name == "create_project":
+            title = str(inputs.get("title", "")).strip()[:300]
+            if not title:
+                return {"error": "title is required"}
+            description = str(inputs.get("description", ""))[:2000]
+            try:
+                checkin = int(inputs.get("checkin_interval_days", 7))
+            except (TypeError, ValueError):
+                checkin = 7
+            checkin = max(1, min(90, checkin))
+            tasks_in = inputs.get("tasks") or []
+            if not isinstance(tasks_in, list):
+                tasks_in = []
+
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO projects (title, description, status, lead, members, "
+                "checkin_interval_days, completion_pct, last_checkin) "
+                "VALUES (%s, %s, 'active', '', '', %s, 0, NOW()) RETURNING id",
+                (title, description, checkin),
+            )
+            project_id = cur.fetchone()["id"]
+
+            seeded = []
+            for t in tasks_in[:40]:
+                if not isinstance(t, dict):
+                    continue
+                ttitle = str(t.get("title", "")).strip()[:300]
+                if not ttitle:
+                    continue
+                cur.execute(
+                    "INSERT INTO project_tasks (project_id, title, notes, assignee, status, due_date) "
+                    "VALUES (%s, %s, %s, '', 'pending', %s) RETURNING id",
+                    (project_id, ttitle, str(t.get("notes", ""))[:2000], t.get("due_date") or None),
+                )
+                seeded.append({"id": cur.fetchone()["id"], "title": ttitle})
+
+            conn.commit(); cur.close(); conn.close()
+            log.info(f"Jarvis tool: created project '{title}' id={project_id} with {len(seeded)} tasks")
+            return {
+                "status": "created",
+                "project_id": project_id,
+                "title": title,
+                "task_count": len(seeded),
+                "tasks": seeded,
+            }
+
+        elif name == "add_project_task":
+            try:
+                project_id = int(inputs.get("project_id", 0))
+            except (TypeError, ValueError):
+                return {"error": "project_id must be an integer"}
+            title = str(inputs.get("title", "")).strip()[:300]
+            if not title:
+                return {"error": "title is required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT id, title FROM projects WHERE id=%s", (project_id,))
+            row = cur.fetchone()
+            if not row:
+                cur.close(); conn.close()
+                return {"error": f"project_id {project_id} not found"}
+            cur.execute(
+                "INSERT INTO project_tasks (project_id, title, notes, assignee, status, due_date) "
+                "VALUES (%s, %s, %s, '', 'pending', %s) RETURNING id",
+                (project_id, title, str(inputs.get("notes", ""))[:2000], inputs.get("due_date") or None),
+            )
+            task_id = cur.fetchone()["id"]
+            project_title = row["title"]
+            conn.commit(); cur.close(); conn.close()
+            log.info(f"Jarvis tool: added task '{title}' id={task_id} to project {project_id}")
+            return {
+                "status": "added",
+                "project_id": project_id,
+                "project_title": project_title,
+                "project_task_id": task_id,
+                "title": title,
+            }
+
         elif name == "get_workout_history":
             conn = get_db()
             cur = conn.cursor()
@@ -5523,6 +5650,14 @@ def api_chat():
             "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM. "
             "School year runs Aug 18, 2025 – Jun 5, 2026. Timezone is America/Denver (Mountain Time).\n\n"
             "TOOL USE — You have direct tools to take real actions in this app. Use them proactively and precisely:\n"
+            "- TASKS vs PROJECTS — This distinction matters:\n"
+            "  • A TASK is a single, atomic thing the student does in one sitting "
+            "(\"study Euler's method tonight\", \"email coach about practice\", \"buy printer ink\"). Use create_task.\n"
+            "  • A PROJECT is a multi-day or multi-phase effort with several logical sub-steps "
+            "(a study plan covering multiple days, an application, a research paper, an exam-prep schedule). "
+            "Use create_project, and pass the initial sub-tasks via the `tasks` array in a SINGLE call. "
+            "Do NOT spam create_task calls to build out a multi-day plan — the student will end up with a wall of tasks. "
+            "If the student asks for a study plan that spans more than one day, ALWAYS use create_project.\n"
             "- TASKS: When the student mentions finishing, completing, or doing a task, call complete_task immediately "
             "using the task ID from your context. If the task ID is unclear, call get_tasks first to look it up, "
             "then complete it — do not ask the student for the ID. When they want to add a task, call create_task. "
@@ -5535,6 +5670,11 @@ def api_chat():
             "- ASSIGNMENTS: When the student says they finished or submitted an assignment, call complete_assignment.\n"
             "- WORKOUTS: When the student asks for a workout, call generate_workout with an appropriate intensity "
             "(ask if unsure) and location (home or gym).\n"
+            "- TOOL RESULTS ARE AUTHORITATIVE. When a tool returns a JSON result with status \"created\", "
+            "\"completed\", \"recorded\", \"saved\", \"added\", or similar success markers, the action HAS BEEN TAKEN — "
+            "the row is in the database. Do not tell the student you couldn't do it, that you'll do it later, "
+            "or that something failed. Read the result, confirm plainly with the title and any returned IDs, "
+            "and move on. If a tool returns an error field, only then surface it.\n"
             "- Always confirm what you did in natural Jarvis character after calling a tool. "
             "Never call a tool the student did not ask for. Read back the key details before confirming so the "
             "student can catch any error."
@@ -5736,11 +5876,15 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
         stock_note_saved = any(a["tool"] == "save_stock_note" and a["result"].get("status") == "saved" for a in actions_taken)
         assignment_completed = any(a["tool"] == "complete_assignment" and a["result"].get("status") == "logged" for a in actions_taken)
         workout_generated = any(a["tool"] == "generate_workout" and "plan" in a["result"] for a in actions_taken)
+        project_created = any(a["tool"] == "create_project" and a["result"].get("status") == "created" for a in actions_taken)
+        project_task_added = any(a["tool"] == "add_project_task" and a["result"].get("status") == "added" for a in actions_taken)
 
         completed_title = next((a["result"].get("title") for a in actions_taken if a["tool"] == "complete_task"), None)
         deleted_title = next((a["result"].get("title") for a in actions_taken if a["tool"] == "delete_task"), None)
         stock_note_symbol = next((a["result"].get("symbol") for a in actions_taken if a["tool"] == "save_stock_note"), None)
         workout_log_id = next((a["result"].get("log_id") for a in actions_taken if a["tool"] == "generate_workout"), None)
+        project_created_title = next((a["result"].get("title") for a in actions_taken if a["tool"] == "create_project"), None)
+        project_created_task_count = next((a["result"].get("task_count") for a in actions_taken if a["tool"] == "create_project"), None)
 
         return jsonify({
             "content": content,
@@ -5755,6 +5899,10 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
             "assignment_completed": assignment_completed,
             "workout_generated": workout_generated,
             "workout_log_id": workout_log_id,
+            "project_created": project_created,
+            "project_created_title": project_created_title,
+            "project_created_task_count": project_created_task_count,
+            "project_task_added": project_task_added,
         })
     except Exception:
         log.exception("/api/chat failed")
