@@ -1388,6 +1388,50 @@ font-size: 12px;
 margin-top: 4px;
 }
 
+.calendar-modal-body { display: block; }
+
+/* Desktop: calendar takes the full viewport with calendar-left / schedule-right.
+   Mobile (≤639px) keeps the centered popup defined above. */
+@media (min-width: 640px) {
+  .calendar-modal-backdrop.visible {
+    background: var(--bg);
+  }
+  .calendar-modal {
+    top: 0;
+    left: 0;
+    transform: none;
+    width: 100vw;
+    height: 100vh;
+    max-width: none;
+    max-height: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    display: none;
+    flex-direction: column;
+  }
+  .calendar-modal.visible {
+    display: flex;
+  }
+  .calendar-modal-body {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
+  }
+  .calendar-modal-body .calendar-grid {
+    min-height: 0;
+    align-content: start;
+    overflow: auto;
+  }
+  .calendar-modal-body .calendar-events-list {
+    border-top: none;
+    border-left: 1px solid var(--border);
+    max-height: none;
+    overflow-y: auto;
+  }
+}
+
 /* Event Detail Modal */
 .event-detail-modal-backdrop {
 display: none;
@@ -2192,11 +2236,13 @@ margin-bottom: 0;
       <button class="nav-menu-item" data-page="projects"    onclick="navigateTo('projects'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
       <div class="nav-menu-divider"></div>
       <button class="nav-menu-item" onclick="openCalendarModal(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128197;</span>Calendar</button>
+      <button class="nav-menu-item" onclick="document.getElementById('pomodoroOpen').click(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#9201;</span>Focus Timer</button>
       <button class="nav-menu-item" onclick="openChatHistory(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128336;</span>History</button>
       <button class="nav-menu-item" onclick="openSettings(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#9881;</span>Settings</button>
     </div>
   </div>
   <div class="top-nav-actions">
+    <button class="icon-btn" id="pomodoroOpen" type="button" title="Focus Timer">&#9201;</button>
     <button class="icon-btn" onclick="openChatHistory()" title="History">&#128336;</button>
     <button class="icon-btn" onclick="openSettings()"    title="Settings">&#9881;</button>
   </div>
@@ -2288,8 +2334,10 @@ margin-bottom: 0;
       <button class="calendar-nav-btn" onclick="closeCalendarModal()" title="Close">✕</button>
     </div>
   </div>
-  <div class="calendar-grid" id="calendarGrid"></div>
-  <div class="calendar-events-list" id="calendarEventsList"></div>
+  <div class="calendar-modal-body">
+    <div class="calendar-grid" id="calendarGrid"></div>
+    <div class="calendar-events-list" id="calendarEventsList"></div>
+  </div>
 </div>
 
 <!-- Project Details Modal -->
@@ -3177,8 +3225,9 @@ function renderTasks() {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
     const safeUrgency = ['critical','high','medium','low'].includes(t.urgency) ? t.urgency : 'low';
     const isHidden = t.hidden_from_parent;
-    const eyeTitle = isHidden ? 'Visible to parent: No — click to show' : 'Visible to parent: Yes — click to hide';
-    const eyeStyle = isHidden ? 'color:var(--text3);text-decoration:line-through;' : 'color:var(--text2);';
+    const eyeIcon = isHidden ? '🙈' : '👁';
+    const eyeTitle = isHidden ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide';
+    const eyeStyle = isHidden ? 'opacity:0.65;' : 'opacity:1;';
     return `
       <div class="sidebar-item ${urgencyClass}" data-task-id="${t.id}" data-source="${t.source || 'task'}" data-project-id="${t.project_id || ''}" style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
         <div style="flex: 1; cursor: pointer;" onclick="editTask(${t.id})">
@@ -3186,7 +3235,7 @@ function renderTasks() {
           <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
         </div>
         <div style="display:flex;gap:2px;flex-shrink:0;align-items:center;margin-top:2px;">
-          ${t.source !== 'project_task' ? `<button onclick="toggleTaskHidden(event,${t.id},${!isHidden})" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;${eyeStyle}" title="${eyeTitle}">👁</button>` : ''}
+          ${t.source !== 'project_task' ? `<button class="vis-toggle" onclick="toggleTaskHidden(event,${t.id},${!isHidden})" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;${eyeStyle}transition:transform 0.15s, opacity 0.15s;" title="${eyeTitle}">${eyeIcon}</button>` : ''}
           <button class="complete-btn" onclick="completeTask(event, ${t.id})" style="background: none; border: none; color: var(--text2); cursor: pointer; font-size: 16px; padding: 2px 6px;" title="Mark as done">✓</button>
         </div>
       </div>
@@ -3259,7 +3308,7 @@ function renderProjectsKanban() {
         + '<div class="kanban-card-footer">'
         +   '<div class="kanban-progress-track"><div class="kanban-progress-fill" style="width:' + pct + '%;"></div></div>'
         +   '<span>' + pct + '%</span>'
-        +   '<button onclick="event.stopPropagation();toggleProjectHidden(' + p.id + ',' + !p.hidden_from_parent + ')" style="background:none;border:none;cursor:pointer;padding:0 2px;font-size:13px;line-height:1;" title="' + (p.hidden_from_parent ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide') + '">' + (p.hidden_from_parent ? '🔒' : '👁') + '</button>'
+        +   '<button class="vis-toggle" onclick="event.stopPropagation();toggleProjectHidden(' + p.id + ',' + !p.hidden_from_parent + ')" style="background:none;border:none;cursor:pointer;padding:0 2px;font-size:13px;line-height:1;transition:transform 0.15s, opacity 0.15s;opacity:' + (p.hidden_from_parent ? '0.65' : '1') + ';" title="' + (p.hidden_from_parent ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide') + '">' + (p.hidden_from_parent ? '🙈' : '👁') + '</button>'
         + '</div>'
         + '</div>';
     }).join('');
@@ -3371,8 +3420,26 @@ async function openProjectDetailsModal(projectId) {
       tasksRes.json()
     ]);
 
+    const lastCheckinDisplay = project.last_checkin
+      ? new Date(project.last_checkin).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+      : 'Never';
+    const checkinInterval = project.checkin_interval_days || 7;
+    const checkinIsOverdue = !!project.needs_checkin;
+    const checkinPillStyle = checkinIsOverdue
+      ? 'background:rgba(255,107,107,0.15);border:1px solid var(--red);color:var(--red);'
+      : 'background:var(--surface2);border:1px solid var(--border);color:var(--text2);';
+
     let html = `
       ${project.description ? `<div style="color: var(--text2); margin-bottom: 16px;">${escapeHtml(project.description)}</div>` : ''}
+
+      <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px;" data-section="project-checkin">
+        <div style="min-width: 0;">
+          <div style="font-size: 12px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 2px;">Check-in</div>
+          <div style="font-size: 13px; color: var(--text);">Last: <strong>${lastCheckinDisplay}</strong></div>
+          <div style="font-size: 11px; color: var(--text3);">Every ${checkinInterval} day${checkinInterval === 1 ? '' : 's'}${checkinIsOverdue ? ' &mdash; overdue' : ''}</div>
+        </div>
+        <button onclick="checkInProject(${projectId})" style="${checkinPillStyle}border-radius:var(--r-sm);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0;">✓ Check in</button>
+      </div>
 
       <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 16px;" data-section="project-notes">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -5647,27 +5714,70 @@ async function saveEditProject(projectId) {
   }
 }
 
+function _flipVisToggle(btn, hide) {
+  if (!btn) return;
+  btn.textContent = hide ? '🙈' : '👁';
+  btn.style.opacity = hide ? '0.65' : '1';
+  btn.title = hide ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide';
+  btn.style.transform = 'scale(1.25)';
+  setTimeout(() => { if (btn) btn.style.transform = ''; }, 180);
+}
+
 async function toggleProjectHidden(projectId, hide) {
+  const btn = (window.event && window.event.target && window.event.target.closest('.vis-toggle')) || null;
+  _flipVisToggle(btn, hide);
   try {
-    await fetch(`/api/projects/${projectId}`, {
+    const res = await fetch(`/api/projects/${projectId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hidden_from_parent: hide })
     });
+    if (!res.ok) throw new Error('toggle failed');
     await loadProjects();
-  } catch (e) { console.error('toggleProjectHidden failed', e); }
+  } catch (e) {
+    console.error('toggleProjectHidden failed', e);
+    _flipVisToggle(btn, !hide); // revert
+    if (typeof showToast === 'function') showToast('Could not update visibility', 'error');
+  }
+}
+
+async function checkInProject(projectId) {
+  try {
+    const res = await fetch(`/api/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ checkin_now: true })
+    });
+    if (!res.ok) throw new Error('Check-in failed');
+    await loadProjects();
+    const modal = document.getElementById('projectDetailsModal');
+    if (modal && modal.classList.contains('visible')) {
+      openProjectDetailsModal(projectId);
+    }
+    if (typeof showToast === 'function') showToast('Checked in', 'success', 1800);
+  } catch (e) {
+    console.error('checkInProject failed', e);
+    if (typeof showToast === 'function') showToast('Check-in failed', 'error');
+  }
 }
 
 async function toggleTaskHidden(event, taskId, hide) {
   event.stopPropagation();
+  const btn = event.currentTarget && event.currentTarget.closest('.vis-toggle');
+  _flipVisToggle(btn, hide);
   try {
-    await fetch(`/api/tasks/${taskId}`, {
+    const res = await fetch(`/api/tasks/${taskId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hidden_from_parent: hide })
     });
+    if (!res.ok) throw new Error('toggle failed');
     await loadSidebarData();
-  } catch (e) { console.error('toggleTaskHidden failed', e); }
+  } catch (e) {
+    console.error('toggleTaskHidden failed', e);
+    _flipVisToggle(btn, !hide); // revert
+    if (typeof showToast === 'function') showToast('Could not update visibility', 'error');
+  }
 }
 
 async function deleteProject(projectId) {
@@ -6633,7 +6743,7 @@ if ('serviceWorker' in navigator) {
 })();
 </script>
 
-<div id="pomodoroWidget" style="position:fixed;right:16px;bottom:16px;z-index:9000;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:12px 14px;color:#eee;font-family:'DM Sans',sans-serif;box-shadow:0 8px 28px rgba(0,0,0,0.4);min-width:200px;display:none;">
+<div id="pomodoroWidget" style="position:fixed;right:16px;top:64px;z-index:9000;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:12px 14px;color:#eee;font-family:'DM Sans',sans-serif;box-shadow:0 8px 28px rgba(0,0,0,0.4);min-width:200px;display:none;">
   <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">
     <strong style="font-size:13px;letter-spacing:0.5px;">FOCUS TIMER</strong>
     <button id="pomodoroClose" type="button" style="background:transparent;border:0;color:#777;cursor:pointer;font-size:18px;line-height:1;">&times;</button>
@@ -6647,8 +6757,6 @@ if ('serviceWorker' in navigator) {
     <button id="pomodoroStop" type="button" style="padding:4px 10px;background:#2a2a2a;border:0;color:#eee;border-radius:6px;cursor:pointer;font-size:12px;">Reset</button>
   </div>
 </div>
-<button id="pomodoroOpen" type="button" style="position:fixed;right:16px;bottom:16px;z-index:8999;background:#1a1a1a;border:1px solid #2a2a2a;color:#FF7F50;width:44px;height:44px;border-radius:50%;cursor:pointer;font-size:18px;box-shadow:0 4px 14px rgba(0,0,0,0.4);">⏱</button>
-
 <script>
 (function pomodoroInit() {
   const widget = document.getElementById('pomodoroWidget');
@@ -6724,14 +6832,18 @@ if ('serviceWorker' in navigator) {
   }
 
   opener.addEventListener('click', () => {
-    widget.style.display = 'block';
-    opener.style.display = 'none';
-    fetchState();
-    startPolling();
+    const isOpen = widget.style.display === 'block';
+    if (isOpen) {
+      widget.style.display = 'none';
+      stopPolling();
+    } else {
+      widget.style.display = 'block';
+      fetchState();
+      startPolling();
+    }
   });
   closer.addEventListener('click', () => {
     widget.style.display = 'none';
-    opener.style.display = 'block';
     stopPolling();
   });
 
@@ -6754,7 +6866,6 @@ if ('serviceWorker' in navigator) {
   fetchState().then(() => {
     if (lastState && lastState.active) {
       widget.style.display = 'block';
-      opener.style.display = 'none';
       startPolling();
     }
   });
