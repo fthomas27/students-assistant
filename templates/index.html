@@ -1184,6 +1184,49 @@ color: white;
 border-color: var(--green);
 }
 
+.mic-btn {
+width: 36px;
+height: 36px;
+border: 1px solid var(--border);
+background: var(--surface);
+color: var(--text2);
+border-radius: 50%;
+display: flex;
+align-items: center;
+justify-content: center;
+cursor: pointer;
+font-size: 16px;
+transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+flex-shrink: 0;
+position: relative;
+}
+
+.mic-btn:hover {
+background: var(--surface2);
+color: var(--text);
+}
+
+.mic-btn.listening {
+background: var(--red);
+color: white;
+border-color: var(--red);
+}
+
+.mic-btn.listening::after {
+content: '';
+position: absolute;
+inset: -4px;
+border-radius: 50%;
+border: 1px solid var(--red);
+animation: voicePulse 1.2s ease-in-out infinite;
+opacity: 0.8;
+}
+
+.mic-btn[disabled] {
+opacity: 0.4;
+cursor: not-allowed;
+}
+
 @keyframes voicePulse {
 0%   { transform: scale(1);    opacity: 0.6; }
 50%  { transform: scale(1.18); opacity: 0;   }
@@ -2595,6 +2638,7 @@ margin-bottom: 0;
     </div>
     <div class="chat-input-area">
       <textarea class="chat-input" id="chatInput" placeholder="Ask me anything..." rows="1"></textarea>
+      <button class="mic-btn" id="micBtn" type="button" onclick="toggleDictation()" title="Hold or click to dictate" aria-label="Dictate a message">🎤</button>
       <button class="voice-btn" id="voiceBtn" type="button" onclick="toggleVoiceMode()" title="Voice mode (spoken replies)" aria-label="Toggle voice mode">🔊</button>
       <button class="send-btn" id="sendBtn" type="button" onclick="sendMessage()">→</button>
     </div>
@@ -3403,10 +3447,16 @@ function renderTasks() {
     const eyeIcon = isHidden ? '🙈' : '👁';
     const eyeTitle = isHidden ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide';
     const eyeStyle = isHidden ? 'opacity:0.65;' : 'opacity:1;';
+    const projectBadge = t.source === 'project_task' && t.project_title
+      ? `<span style="display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;background:rgba(255,127,80,0.12);color:var(--accent);padding:1px 6px;border-radius:4px;margin-right:6px;">${escapeHtml(t.project_title)}</span>`
+      : '';
+    const clickHandler = t.source === 'project_task'
+      ? `onclick="openProjectDetailsModal(${t.project_id})"`
+      : `onclick="editTask(${t.id})"`;
     return `
       <div class="sidebar-item ${urgencyClass}" data-task-id="${t.id}" data-source="${t.source || 'task'}" data-project-id="${t.project_id || ''}" style="display: flex; align-items: flex-start; gap: 8px; justify-content: space-between;">
-        <div style="flex: 1; cursor: pointer;" onclick="editTask(${t.id})">
-          <div class="sidebar-item-title"><span class="priority-dot priority-${safeUrgency}"></span>${t.title}</div>
+        <div style="flex: 1; cursor: pointer;" ${clickHandler}>
+          <div class="sidebar-item-title"><span class="priority-dot priority-${safeUrgency}"></span>${projectBadge}${t.title}</div>
           <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
         </div>
         <div style="display:flex;gap:2px;flex-shrink:0;align-items:center;margin-top:2px;">
@@ -5183,7 +5233,17 @@ async function speakReply(text) {
     a.src = _voiceAudioUrl;
     a.onplay = () => { if (btn) btn.classList.add('speaking'); };
     a.onpause = () => { if (btn) btn.classList.remove('speaking'); };
-    a.onended = () => { stopVoicePlayback(); };
+    a.onended = () => {
+      stopVoicePlayback();
+      // Hands-free continuation: if voice mode is still on and the user
+      // hasn't started typing a new message, re-open the mic so the
+      // conversation can flow without tapping anything.
+      if (voiceMode && _SpeechRecognition && !chatInput.value.trim() && !_dictating) {
+        setTimeout(() => {
+          if (voiceMode && !chatInput.value.trim() && !_dictating) startDictation();
+        }, 350);
+      }
+    };
     await a.play();
   } catch (e) {
     console.error('speakReply failed', e);
@@ -5194,6 +5254,122 @@ async function speakReply(text) {
 // Render initial voice button state. The script runs at the end of body,
 // so the element is in the DOM regardless of DOMContentLoaded timing.
 _renderVoiceButton();
+
+// ── Speech-to-text dictation (Web Speech API) ─────────────────────────────
+const _SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let _recognition = null;
+let _dictating = false;
+let _dictationBaseText = '';
+let _autoSendOnFinalTimer = null;
+
+function _micBtn() { return document.getElementById('micBtn'); }
+
+function _renderMicButton() {
+  const btn = _micBtn();
+  if (!btn) return;
+  if (!_SpeechRecognition) {
+    btn.disabled = true;
+    btn.title = 'Speech recognition not supported in this browser';
+    btn.style.display = 'none';
+    return;
+  }
+  btn.classList.toggle('listening', _dictating);
+  btn.title = _dictating ? 'Listening — tap to stop' : 'Tap to dictate';
+  btn.textContent = _dictating ? '⏺' : '🎤';
+}
+
+function _ensureRecognition() {
+  if (_recognition) return _recognition;
+  if (!_SpeechRecognition) return null;
+  const r = new _SpeechRecognition();
+  r.continuous = true;
+  r.interimResults = true;
+  r.lang = (navigator.language || 'en-US');
+  r.maxAlternatives = 1;
+
+  r.onresult = (ev) => {
+    let interim = '';
+    let finalText = '';
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const res = ev.results[i];
+      if (res.isFinal) finalText += res[0].transcript;
+      else interim += res[0].transcript;
+    }
+    if (finalText) {
+      _dictationBaseText = (_dictationBaseText + ' ' + finalText).trim();
+    }
+    const merged = (_dictationBaseText + ' ' + interim).trim();
+    chatInput.value = merged;
+    chatInput.dispatchEvent(new Event('input'));
+    if (_autoSendOnFinalTimer) clearTimeout(_autoSendOnFinalTimer);
+    if (finalText) {
+      // If voice mode is on, auto-send after a 1.2s pause so the user can keep speaking.
+      if (voiceMode) {
+        _autoSendOnFinalTimer = setTimeout(() => {
+          if (_dictating) stopDictation();
+          if (chatInput.value.trim()) sendMessage();
+        }, 1200);
+      }
+    }
+  };
+
+  r.onerror = (ev) => {
+    console.warn('SpeechRecognition error', ev.error);
+    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+      showToast('Microphone permission denied.', 'error', 3500);
+    } else if (ev.error === 'no-speech') {
+      // Not really an error — the user simply did not speak.
+    } else if (ev.error !== 'aborted') {
+      showToast('Dictation error: ' + ev.error, 'error', 3000);
+    }
+    _dictating = false;
+    _renderMicButton();
+  };
+
+  r.onend = () => {
+    _dictating = false;
+    _renderMicButton();
+  };
+
+  _recognition = r;
+  return r;
+}
+
+function startDictation() {
+  const r = _ensureRecognition();
+  if (!r) {
+    showToast('Speech recognition not supported in this browser.', 'error', 3000);
+    return;
+  }
+  // If voice mode is playing audio, stop it so the mic does not pick it up.
+  stopVoicePlayback();
+  _dictationBaseText = chatInput.value.trim();
+  if (_dictationBaseText) _dictationBaseText += ' ';
+  try {
+    r.start();
+    _dictating = true;
+    _renderMicButton();
+    triggerHaptic('light');
+  } catch (e) {
+    console.warn('Could not start dictation', e);
+  }
+}
+
+function stopDictation() {
+  if (_autoSendOnFinalTimer) { clearTimeout(_autoSendOnFinalTimer); _autoSendOnFinalTimer = null; }
+  if (_recognition && _dictating) {
+    try { _recognition.stop(); } catch (_) {}
+  }
+  _dictating = false;
+  _renderMicButton();
+}
+
+function toggleDictation() {
+  if (_dictating) stopDictation();
+  else startDictation();
+}
+
+_renderMicButton();
 
 async function sendMessage() {
   const message = chatInput.value.trim();
