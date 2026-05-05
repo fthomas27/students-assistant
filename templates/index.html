@@ -5232,29 +5232,53 @@ function _stripMarkdownForSpeech(text) {
 }
 
 let _browserVoice = null;
+
+// Names that are unambiguously male UK voices across the major TTS engines.
+const _UK_MALE_NAMES = /\b(Daniel|Oliver|Arthur|Reed|Brian|George|Thomas|Ryan|Harry|Noah|Liam|Arnold|UK English Male|British English Male)\b/i;
+// Common female voice names to avoid when we have to fall back to a generic
+// en-GB pick. Defensive list — better to skip a male voice than ship a
+// female one when the user explicitly asked for male UK.
+const _FEMALE_NAMES = /\b(Hazel|Sonia|Susan|Serena|Kate|Fiona|Karen|Moira|Tessa|Veena|Samantha|Allison|Ava|Joanna|Salli|Kimberly|Amy|Emma|Libby|Sonia|Mia|Ariana|Aria|Nora|Rachel|Jenny|Female)\b/i;
+
 function _pickBrowserVoice() {
   if (!('speechSynthesis' in window)) return null;
   if (_browserVoice) return _browserVoice;
   const voices = window.speechSynthesis.getVoices() || [];
   if (!voices.length) return null;
-  // Prefer a British male voice (Daniel / Google UK English Male) to match
-  // the Jarvis register, then fall back to any en-GB or en-US voice.
+
+  // Strict → permissive cascade. The user wants a male UK voice; UK
+  // outweighs gender-correctness, then we look further afield.
   const prefs = [
-    v => /Daniel|Oliver|Arthur|UK English Male/i.test(v.name) && /^en/i.test(v.lang),
+    // 1. Ideal: en-GB + a known male voice name.
+    v => /^en-GB/i.test(v.lang) && _UK_MALE_NAMES.test(v.name),
+    // 2. Likely male UK: en-GB voice that isn't on the female blacklist.
+    v => /^en-GB/i.test(v.lang) && !_FEMALE_NAMES.test(v.name),
+    // 3. Last-resort UK: any en-GB voice (even if it might be female).
     v => /^en-GB/i.test(v.lang),
+    // 4. Male English voice from a non-UK locale (US / AU / etc).
+    v => /^en/i.test(v.lang) && _UK_MALE_NAMES.test(v.name),
+    // 5. Any English voice that isn't obviously female.
+    v => /^en/i.test(v.lang) && !_FEMALE_NAMES.test(v.name),
+    // 6. Any English voice.
     v => /^en/i.test(v.lang),
-    () => true,
   ];
   for (const pref of prefs) {
     const v = voices.find(pref);
-    if (v) { _browserVoice = v; return v; }
+    if (v) {
+      _browserVoice = v;
+      console.log('[voice] picked browser voice:', v.name, v.lang);
+      return v;
+    }
   }
-  return voices[0] || null;
+  _browserVoice = voices[0] || null;
+  return _browserVoice;
 }
 
 if ('speechSynthesis' in window) {
-  // Voice list often loads asynchronously. Reset our cached pick when it does.
+  // Voice list often loads asynchronously. Reset and re-pick when it does.
   window.speechSynthesis.onvoiceschanged = () => { _browserVoice = null; _pickBrowserVoice(); };
+  // Kick off an initial load so the list is ready when the user sends.
+  try { window.speechSynthesis.getVoices(); } catch (_) {}
 }
 
 let _browserSpeakWarned = false;
