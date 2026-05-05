@@ -5203,8 +5203,89 @@ function stopVoicePlayback() {
   const a = _voicePlayer();
   if (a && !a.paused) { try { a.pause(); a.currentTime = 0; } catch (_) {} }
   if (_voiceAudioUrl) { try { URL.revokeObjectURL(_voiceAudioUrl); } catch (_) {} _voiceAudioUrl = null; }
+  if ('speechSynthesis' in window) {
+    try { window.speechSynthesis.cancel(); } catch (_) {}
+  }
   const btn = _voiceBtn();
   if (btn) btn.classList.remove('speaking');
+}
+
+function _stripMarkdownForSpeech(text) {
+  if (!text) return '';
+  let s = String(text);
+  s = s.replace(/```[\s\S]*?```/g, ' ');
+  s = s.replace(/`([^`]+)`/g, '$1');
+  s = s.replace(/^\s*\|.*\|\s*$/gm, '');
+  s = s.replace(/^\s*#{1,6}\s*/gm, '');
+  s = s.replace(/^\s*(?:---+|\*\*\*+|___+)\s*$/gm, '');
+  s = s.replace(/^\s*[\-\*\+]\s+/gm, '');
+  s = s.replace(/^\s*\d+[\.\)]\s+/gm, '');
+  s = s.replace(/^\s*>\s?/gm, '');
+  s = s.replace(/\*\*(.+?)\*\*/g, '$1');
+  s = s.replace(/__(.+?)__/g, '$1');
+  s = s.replace(/\*(.+?)\*/g, '$1');
+  s = s.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+  s = s.replace(/\n{2,}/g, '. ');
+  s = s.replace(/\s*\n\s*/g, ' ');
+  s = s.replace(/\s{2,}/g, ' ');
+  return s.trim();
+}
+
+let _browserVoice = null;
+function _pickBrowserVoice() {
+  if (!('speechSynthesis' in window)) return null;
+  if (_browserVoice) return _browserVoice;
+  const voices = window.speechSynthesis.getVoices() || [];
+  if (!voices.length) return null;
+  // Prefer a British male voice (Daniel / Google UK English Male) to match
+  // the Jarvis register, then fall back to any en-GB or en-US voice.
+  const prefs = [
+    v => /Daniel|Oliver|Arthur|UK English Male/i.test(v.name) && /^en/i.test(v.lang),
+    v => /^en-GB/i.test(v.lang),
+    v => /^en/i.test(v.lang),
+    () => true,
+  ];
+  for (const pref of prefs) {
+    const v = voices.find(pref);
+    if (v) { _browserVoice = v; return v; }
+  }
+  return voices[0] || null;
+}
+
+if ('speechSynthesis' in window) {
+  // Voice list often loads asynchronously. Reset our cached pick when it does.
+  window.speechSynthesis.onvoiceschanged = () => { _browserVoice = null; _pickBrowserVoice(); };
+}
+
+let _browserSpeakWarned = false;
+function speakWithBrowser(text) {
+  const spoken = _stripMarkdownForSpeech(text);
+  if (!spoken) return false;
+  if (!('speechSynthesis' in window)) return false;
+  const btn = _voiceBtn();
+  try {
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(spoken.slice(0, 1800));
+    const v = _pickBrowserVoice();
+    if (v) { u.voice = v; u.lang = v.lang; }
+    u.rate = 1.0;
+    u.pitch = 1.0;
+    u.onstart = () => { if (btn) btn.classList.add('speaking'); };
+    u.onend = () => {
+      if (btn) btn.classList.remove('speaking');
+      if (voiceMode && _SpeechRecognition && !chatInput.value.trim() && !_dictating) {
+        setTimeout(() => {
+          if (voiceMode && !chatInput.value.trim() && !_dictating) startDictation();
+        }, 350);
+      }
+    };
+    u.onerror = () => { if (btn) btn.classList.remove('speaking'); };
+    window.speechSynthesis.speak(u);
+    return true;
+  } catch (e) {
+    console.warn('Browser TTS failed', e);
+    return false;
+  }
 }
 
 async function speakReply(text) {
@@ -5220,10 +5301,22 @@ async function speakReply(text) {
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       console.warn('TTS failed:', resp.status, err);
-      if (resp.status === 503) {
-        showToast('Voice unavailable — ELEVENLABS_API_KEY not set on the server.', 'error', 4000);
-      } else {
-        showToast('Voice playback failed.', 'error', 2400);
+      // Fall back to the browser's built-in voice. Quality is lower but it
+      // works without paying for an ElevenLabs plan.
+      const usedBrowser = speakWithBrowser(text);
+      if (usedBrowser && !_browserSpeakWarned) {
+        _browserSpeakWarned = true;
+        if (err && err.code === 'free_tier_blocked') {
+          showToast('Using browser voice — ElevenLabs free tier blocks server IPs. Upgrade to a paid plan for the studio voice.', 'info', 5500);
+        } else if (err && err.code === 'auth_failed') {
+          showToast('Using browser voice — ElevenLabs API key was rejected.', 'info', 4500);
+        } else if (resp.status === 503) {
+          showToast('Using browser voice — ElevenLabs not configured on the server.', 'info', 4500);
+        } else {
+          showToast('Using browser voice — ElevenLabs unavailable.', 'info', 3500);
+        }
+      } else if (!usedBrowser) {
+        showToast('Voice playback failed and browser voice is unavailable.', 'error', 3000);
       }
       return;
     }
@@ -5247,7 +5340,9 @@ async function speakReply(text) {
     await a.play();
   } catch (e) {
     console.error('speakReply failed', e);
-    showToast('Voice playback failed.', 'error', 2400);
+    // Network error or the server is down — try the browser fallback.
+    const usedBrowser = speakWithBrowser(text);
+    if (!usedBrowser) showToast('Voice playback failed.', 'error', 2400);
   }
 }
 

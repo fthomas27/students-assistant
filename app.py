@@ -6009,10 +6009,44 @@ def api_tts():
             },
         }
         r = requests.post(url, json=payload, headers=headers, timeout=45)
-        if r.status_code != 200:
-            log.error("ElevenLabs TTS failed: %d %s", r.status_code, r.text[:200])
-            return jsonify({"error": "TTS upstream returned %d" % r.status_code}), 502
-        return Response(r.content, mimetype="audio/mpeg")
+        if r.status_code == 200:
+            return Response(r.content, mimetype="audio/mpeg")
+
+        # Try to read the structured error so we can give the client
+        # something more useful than "the upstream returned 401".
+        body_text = r.text or ""
+        upstream_status = "unknown"
+        try:
+            j = r.json()
+            detail = j.get("detail")
+            if isinstance(detail, dict):
+                upstream_status = str(detail.get("status") or "unknown")
+        except (ValueError, AttributeError):
+            pass
+
+        log.error("ElevenLabs TTS failed: %d status=%s body=%s",
+                  r.status_code, upstream_status, body_text[:200])
+
+        # ElevenLabs blocks free-tier traffic from data-center IPs (Railway,
+        # Render, etc). Surface that distinctly so the browser can fall back
+        # to native speechSynthesis.
+        if upstream_status == "detected_unusual_activity" or (
+            r.status_code == 401 and "detected_unusual_activity" in body_text
+        ):
+            return jsonify({
+                "error": "ElevenLabs free tier blocked this server's IP. Upgrade to a paid plan, or rely on the in-browser voice fallback.",
+                "code": "free_tier_blocked",
+                "upstream_status": upstream_status,
+            }), 503
+
+        if r.status_code == 401:
+            return jsonify({"error": "ElevenLabs rejected the API key.", "code": "auth_failed"}), 503
+        if r.status_code == 429:
+            return jsonify({"error": "ElevenLabs rate limit exceeded.", "code": "rate_limited"}), 429
+        return jsonify({
+            "error": "TTS upstream returned %d" % r.status_code,
+            "code": "upstream_error",
+        }), 502
     except requests.RequestException:
         log.exception("/api/tts upstream error")
         return jsonify({"error": "TTS upstream unreachable"}), 502
