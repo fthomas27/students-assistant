@@ -2642,7 +2642,6 @@ margin-bottom: 0;
       <button class="voice-btn" id="voiceBtn" type="button" onclick="toggleVoiceMode()" title="Voice mode (spoken replies)" aria-label="Toggle voice mode">🔊</button>
       <button class="send-btn" id="sendBtn" type="button" onclick="sendMessage()">→</button>
     </div>
-    <audio id="voicePlayer" preload="none"></audio>
   </div>
 </div>
 
@@ -5170,12 +5169,10 @@ function resizeChatInput() {
 chatInput.addEventListener('input', debounce(resizeChatInput, 16));
 chatInput.addEventListener('paste', () => setTimeout(resizeChatInput, 0));
 
-// ── Voice mode (ElevenLabs TTS) ──────────────────────────────────────────
+// ── Voice mode (browser speechSynthesis) ─────────────────────────────────
 let voiceMode = localStorage.getItem('voiceMode') === '1';
-let _voiceAudioUrl = null;
 
 function _voiceBtn() { return document.getElementById('voiceBtn'); }
-function _voicePlayer() { return document.getElementById('voicePlayer'); }
 
 function _renderVoiceButton() {
   const btn = _voiceBtn();
@@ -5200,9 +5197,6 @@ function toggleVoiceMode() {
 }
 
 function stopVoicePlayback() {
-  const a = _voicePlayer();
-  if (a && !a.paused) { try { a.pause(); a.currentTime = 0; } catch (_) {} }
-  if (_voiceAudioUrl) { try { URL.revokeObjectURL(_voiceAudioUrl); } catch (_) {} _voiceAudioUrl = null; }
   if ('speechSynthesis' in window) {
     try { window.speechSynthesis.cancel(); } catch (_) {}
   }
@@ -5281,7 +5275,6 @@ if ('speechSynthesis' in window) {
   try { window.speechSynthesis.getVoices(); } catch (_) {}
 }
 
-let _browserSpeakWarned = false;
 function speakWithBrowser(text) {
   const spoken = _stripMarkdownForSpeech(text);
   if (!spoken) return false;
@@ -5312,62 +5305,11 @@ function speakWithBrowser(text) {
   }
 }
 
-async function speakReply(text) {
+function speakReply(text) {
   if (!text || !text.trim()) return;
   stopVoicePlayback();
-  const btn = _voiceBtn();
-  try {
-    const resp = await fetch('/api/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      console.warn('TTS failed:', resp.status, err);
-      // Fall back to the browser's built-in voice. Quality is lower but it
-      // works without paying for an ElevenLabs plan.
-      const usedBrowser = speakWithBrowser(text);
-      if (usedBrowser && !_browserSpeakWarned) {
-        _browserSpeakWarned = true;
-        if (err && err.code === 'free_tier_blocked') {
-          showToast('Using browser voice — ElevenLabs free tier blocks server IPs. Upgrade to a paid plan for the studio voice.', 'info', 5500);
-        } else if (err && err.code === 'auth_failed') {
-          showToast('Using browser voice — ElevenLabs API key was rejected.', 'info', 4500);
-        } else if (resp.status === 503) {
-          showToast('Using browser voice — ElevenLabs not configured on the server.', 'info', 4500);
-        } else {
-          showToast('Using browser voice — ElevenLabs unavailable.', 'info', 3500);
-        }
-      } else if (!usedBrowser) {
-        showToast('Voice playback failed and browser voice is unavailable.', 'error', 3000);
-      }
-      return;
-    }
-    const blob = await resp.blob();
-    _voiceAudioUrl = URL.createObjectURL(blob);
-    const a = _voicePlayer();
-    a.src = _voiceAudioUrl;
-    a.onplay = () => { if (btn) btn.classList.add('speaking'); };
-    a.onpause = () => { if (btn) btn.classList.remove('speaking'); };
-    a.onended = () => {
-      stopVoicePlayback();
-      // Hands-free continuation: if voice mode is still on and the user
-      // hasn't started typing a new message, re-open the mic so the
-      // conversation can flow without tapping anything.
-      if (voiceMode && _SpeechRecognition && !chatInput.value.trim() && !_dictating) {
-        setTimeout(() => {
-          if (voiceMode && !chatInput.value.trim() && !_dictating) startDictation();
-        }, 350);
-      }
-    };
-    await a.play();
-  } catch (e) {
-    console.error('speakReply failed', e);
-    // Network error or the server is down — try the browser fallback.
-    const usedBrowser = speakWithBrowser(text);
-    if (!usedBrowser) showToast('Voice playback failed.', 'error', 2400);
-  }
+  const ok = speakWithBrowser(text);
+  if (!ok) showToast('Voice playback unavailable in this browser.', 'error', 2400);
 }
 
 // Render initial voice button state. The script runs at the end of body,
