@@ -5540,7 +5540,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                     continue
                 cur.execute(
                     "INSERT INTO project_tasks (project_id, title, notes, assignee, status, due_date) "
-                    "VALUES (%s, %s, %s, '', 'pending', %s) RETURNING id",
+                    "VALUES (%s, %s, %s, 'me', 'pending', %s) RETURNING id",
                     (project_id, ttitle, str(t.get("notes", ""))[:2000], t.get("due_date") or None),
                 )
                 seeded.append({"id": cur.fetchone()["id"], "title": ttitle})
@@ -5572,7 +5572,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 return {"error": f"project_id {project_id} not found"}
             cur.execute(
                 "INSERT INTO project_tasks (project_id, title, notes, assignee, status, due_date) "
-                "VALUES (%s, %s, %s, '', 'pending', %s) RETURNING id",
+                "VALUES (%s, %s, %s, 'me', 'pending', %s) RETURNING id",
                 (project_id, title, str(inputs.get("notes", ""))[:2000], inputs.get("due_date") or None),
             )
             task_id = cur.fetchone()["id"]
