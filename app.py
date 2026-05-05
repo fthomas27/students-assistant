@@ -5622,7 +5622,6 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
 def api_chat():
     data = request.get_json(force=True) or {}
     messages = data.get("messages", [])
-    voice_mode = bool(data.get("voice_mode"))
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         return jsonify({"error": "ANTHROPIC_API_KEY not configured in Railway environment."}), 500
@@ -5810,20 +5809,6 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
             {"type": "text", "text": system_static, "cache_control": {"type": "ephemeral"}},
             {"type": "text", "text": system_dynamic},
         ]
-
-        if voice_mode:
-            voice_block = (
-                "VOICE MODE — This reply will be read aloud by text-to-speech, so write for the EAR, not the eye. "
-                "Override every formatting rule above for this turn:\n"
-                "- NO markdown of any kind. No asterisks, no hashes, no pipes, no dashes as bullets, no triple-backtick code, no horizontal rules, no tables.\n"
-                "- NO bullet points, numbered lists, or headings. Speak in flowing prose.\n"
-                "- Keep it SHORT — usually two to four sentences, one tight paragraph. If the student asks for something inherently long, give the headline aloud and offer to send the detail in writing.\n"
-                "- Use natural spoken English: contractions ('I'll', 'you're', 'we're'), light connective tissue ('Right then,', 'So,', 'Actually,'), and the occasional pause via a comma.\n"
-                "- Render numbers, times, and dates as a person would say them: 'five thirty in the afternoon', 'Tuesday the twenty-first', not '5:30 PM' or '4/21/2026'.\n"
-                "- If you must enumerate, do it conversationally: 'First X, then Y, and finally Z.'\n"
-                "- Do not call action tools (create_task, complete_task, etc.) unless the student explicitly asked you to act. In voice mode, prefer answering and confirming before acting."
-            )
-            system_blocks.append({"type": "text", "text": voice_block})
 
         for _iteration in range(10):
             response = client.beta.messages.create(
