@@ -125,6 +125,116 @@ def test_chat_system_prompt_has_cache_block(client):
     assert "system_dynamic" in src
 
 
+def test_tasks_get_includes_all_project_tasks(client, monkeypatch):
+    """All project tasks from active projects should sync into /api/tasks,
+    regardless of assignee, and include project_id/project_title linkage."""
+    c, flask_app = client
+
+    now = datetime(2026, 5, 6, 12, 0, 0)
+
+    class StubCursor(FakeCursor):
+        def __init__(self):
+            super().__init__()
+            self._call = 0
+            self._rows = []
+
+        def execute(self, sql, *_args, **_kwargs):
+            self._call += 1
+            sql_l = (sql or "").lower()
+            if "from tasks" in sql_l and "project_tasks" not in sql_l:
+                self._rows = [
+                    {
+                        "id": 1, "title": "Regular task", "notes": "",
+                        "urgency": "low", "completed": False,
+                        "completed_at": None, "due_date": None,
+                        "created_at": now, "project_id": None,
+                        "project_title": None, "hidden_from_parent": False,
+                    },
+                ]
+            elif "from project_tasks" in sql_l:
+                self._rows = [
+                    {
+                        "id": 10, "title": "Linked PT (assignee=me)",
+                        "notes": "", "urgency": "medium", "completed": False,
+                        "completed_at": None, "due_date": None,
+                        "created_at": now, "project_id": 7,
+                        "assignee": "me", "project_title": "Science Fair",
+                        "hidden_from_parent": False,
+                    },
+                    {
+                        "id": 11, "title": "Linked PT (assignee=teammate)",
+                        "notes": "", "urgency": "medium", "completed": False,
+                        "completed_at": None, "due_date": None,
+                        "created_at": now, "project_id": 7,
+                        "assignee": "Alex", "project_title": "Science Fair",
+                        "hidden_from_parent": False,
+                    },
+                    {
+                        "id": 12, "title": "Linked PT (no assignee)",
+                        "notes": "", "urgency": "medium", "completed": False,
+                        "completed_at": None, "due_date": None,
+                        "created_at": now, "project_id": 7,
+                        "assignee": "", "project_title": "Science Fair",
+                        "hidden_from_parent": False,
+                    },
+                ]
+            else:
+                self._rows = []
+
+        def fetchall(self):
+            return list(self._rows)
+
+    class StubConn(FakeConn):
+        def cursor(self):
+            return StubCursor()
+
+    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+
+    resp = c.get("/api/tasks")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    tasks = data["tasks"]
+
+    project_tasks = [t for t in tasks if t.get("source") == "project_task"]
+    regular_tasks = [t for t in tasks if t.get("source") == "task"]
+
+    # All three project tasks should sync, regardless of assignee
+    assert len(project_tasks) == 3, f"expected 3 project tasks, got {project_tasks}"
+    assert len(regular_tasks) == 1
+
+    assignees = {t["title"]: t.get("assignee", "") for t in project_tasks}
+    assert "Linked PT (assignee=me)" in assignees
+    assert "Linked PT (assignee=teammate)" in assignees
+    assert "Linked PT (no assignee)" in assignees
+
+    # Each project task preserves linkage back to its project
+    for t in project_tasks:
+        assert t["project_id"] == 7
+        assert t["project_title"] == "Science Fair"
+
+
+def test_tasks_get_query_has_no_assignee_filter(client):
+    """Guard against regressing the project-task sync to assignee-only.
+
+    A previous version filtered project tasks to assignee IN ('me','finn');
+    the sync should now surface every project task on an active project.
+    """
+    _, flask_app = client
+    src = open(flask_app.__file__).read()
+    # Locate the api_tasks_get handler and inspect only its body
+    idx = src.find("def api_tasks_get(")
+    assert idx > 0
+    end = src.find("\n@app.route", idx)
+    body = src[idx:end if end > 0 else len(src)]
+    assert "FROM project_tasks pt" in body
+    assert "LOWER(pt.assignee) IN" not in body, (
+        "api_tasks_get should not filter project tasks by assignee — "
+        "every project task on an active project must sync"
+    )
+
+
 def test_pomodoro_state_default(client, monkeypatch):
     c, flask_app = client
 
