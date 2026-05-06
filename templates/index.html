@@ -1763,6 +1763,16 @@ from { opacity: 1; transform: translateX(0) translateY(0); }
 to { opacity: 0; transform: translateX(100%) translateY(0); }
 }
 
+/* ── Reduced-motion accessibility ── */
+@media (prefers-reduced-motion: reduce) {
+*, *::before, *::after {
+animation-duration: 0.01ms !important;
+animation-iteration-count: 1 !important;
+transition-duration: 0.01ms !important;
+scroll-behavior: auto !important;
+}
+}
+
 /* ── Loading States ── */
 .loading-spinner {
 display: inline-block;

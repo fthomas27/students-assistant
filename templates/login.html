@@ -40,15 +40,33 @@ position: relative;
 overflow: hidden;
 }
 
-/* subtle background texture */
+/* subtle animated aurora background */
 body::before {
 content: '';
 position: fixed;
-inset: 0;
+inset: -20%;
 background:
-radial-gradient(ellipse 60% 50% at 20% 20%, rgba(124,106,247,0.06) 0%, transparent 70%),
-radial-gradient(ellipse 50% 40% at 80% 80%, rgba(124,106,247,0.04) 0%, transparent 70%);
+radial-gradient(ellipse 50% 40% at 25% 30%, rgba(255,127,80,0.10) 0%, transparent 65%),
+radial-gradient(ellipse 45% 35% at 75% 70%, rgba(124,106,247,0.08) 0%, transparent 65%),
+radial-gradient(ellipse 35% 30% at 55% 50%, rgba(255,153,102,0.05) 0%, transparent 70%);
 pointer-events: none;
+filter: blur(20px);
+animation: auroraDrift 28s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite alternate;
+will-change: transform;
+}
+
+@keyframes auroraDrift {
+0%   { transform: translate3d(0, 0, 0) rotate(0deg); }
+100% { transform: translate3d(2%, -1.5%, 0) rotate(4deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+body::before { animation: none; }
+.login-card { animation: none; }
+.field-input.error { animation: none; }
+.error-msg.show { animation: none; }
+.field-input:focus { transform: none; transition: border-color 0.2s, box-shadow 0.2s; }
+.submit-btn:hover { transform: none; }
 }
 
 .login-card {
