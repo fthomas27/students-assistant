@@ -4057,15 +4057,18 @@ FROM tasks ORDER BY completed ASC,
     CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
     created_at ASC""")
         rows = [dict(r) for r in cur.fetchall()]
-        # Also include project tasks assigned to "Me"
+        # Sync all project tasks from active projects into the main task list,
+        # preserving project linkage via project_id/project_title. The two
+        # queries draw from separate tables (tasks vs. project_tasks) so this
+        # union does not duplicate rows even if invoked repeatedly.
         cur.execute("""
 SELECT pt.id, pt.title, pt.notes, 'medium' as urgency,
        (pt.status = 'done') as completed, NULL as completed_at, pt.due_date,
-       pt.created_at, pt.project_id, p.title as project_title,
+       pt.created_at, pt.project_id, pt.assignee, p.title as project_title,
        p.hidden_from_parent
 FROM project_tasks pt
 JOIN projects p ON p.id = pt.project_id
-WHERE p.status = 'active' AND LOWER(pt.assignee) IN ('me', 'finn')
+WHERE p.status = 'active'
 ORDER BY pt.created_at ASC""")
         proj_rows = [dict(r) for r in cur.fetchall()]
         cur.close()
