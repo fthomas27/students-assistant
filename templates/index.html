@@ -3324,7 +3324,7 @@ function renderTasks() {
     return (urgencyMap[b.urgency] || 0) - (urgencyMap[a.urgency] || 0);
   });
 
-  container.innerHTML = sorted.slice(0, 8).map(t => {
+  container.innerHTML = sorted.map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
     const safeUrgency = ['critical','high','medium','low'].includes(t.urgency) ? t.urgency : 'low';
     const isHidden = t.hidden_from_parent;
