@@ -168,6 +168,8 @@ def jarvis_persona(audience_name, role_phrase):
 
 
 _briefing_lock = threading.Lock()
+_debrief_lock = threading.Lock()
+_weekly_insight_lock = threading.Lock()
 
 _scheduler_last_error = {}
 _scheduler_last_error_lock = threading.Lock()
@@ -1799,7 +1801,7 @@ scheduler.add_listener(_on_scheduler_job_error, EVENT_JOB_ERROR)
 
 def generate_evening_debrief():
     """Generate a 7 PM evening debrief summarizing the day."""
-    with _briefing_lock:
+    with _debrief_lock:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:
             log.warning("Evening debrief: ANTHROPIC_API_KEY not set")
@@ -1888,7 +1890,7 @@ ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content"
 
 def generate_weekly_insight(force=False):
     """Generate the Sunday-morning weekly insight: review of last 7 days and look ahead."""
-    with _briefing_lock:
+    with _weekly_insight_lock:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:
             log.warning("Weekly insight: ANTHROPIC_API_KEY not set")
@@ -2528,9 +2530,10 @@ def login():
         # 1. System is in lockdown, OR
         # 2. IP is blocked
         if is_locked_down or ip_is_blocked:
-            sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
-            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
-            log.warning(f"Login security code attempt: username={username}, is_admin={is_admin}, is_parent={is_parent}, ip_blocked={ip_is_blocked}, locked_down={is_locked_down}, received_hash={sc_hash}, env_hash={env_hash}")
+            log.warning(
+                "Login security code attempt: username=%s, is_admin=%s, is_parent=%s, ip_blocked=%s, locked_down=%s",
+                username, is_admin, is_parent, ip_is_blocked, is_locked_down,
+            )
             if expected_password and secrets.compare_digest(password.strip(), expected_password) and secrets.compare_digest(security_code.strip(), security_code_env):
                 record_login_attempt(ip_addr, True, username)
                 session.permanent = True
@@ -2595,10 +2598,6 @@ def admin():
     log.info(f"Admin login: password={bool(password)}, security_code={bool(security_code)}, locked_down={is_locked_down}")
 
     if password and not security_code:
-        pwd_hash = hashlib.sha256(password.encode()).hexdigest()[:8]
-        admin_hash = hashlib.sha256(ADMIN_PASSWORD.encode()).hexdigest()[:8]
-        log.info(f"Login attempt: password_hash={pwd_hash}, admin_hash={admin_hash}, match={password.strip() == ADMIN_PASSWORD}")
-
         # Check if admin password
         if secrets.compare_digest(password.strip(), ADMIN_PASSWORD):
             if is_locked_down:
@@ -2645,12 +2644,11 @@ def admin():
                 log.error("SECURITY_CODE environment variable not set. Cannot process security code.")
                 return jsonify({"error": "Security code not configured"}), 500
 
-            sc_hash = hashlib.sha256(security_code.strip().encode()).hexdigest()[:8]
-            env_hash = hashlib.sha256(security_code_env.encode()).hexdigest()[:8]
-            log.warning(f"Security code attempt: received_hash={sc_hash}, env_hash={env_hash}, pwd_match={password.strip() == ADMIN_PASSWORD or password.strip() == APP_PASSWORD}")
-
             # Check admin password with security code
-            if password.strip() == ADMIN_PASSWORD and security_code.strip() == security_code_env:
+            if (
+                secrets.compare_digest(password.strip(), ADMIN_PASSWORD)
+                and secrets.compare_digest(security_code.strip(), security_code_env)
+            ):
                 record_login_attempt(ip_addr, True, "admin")
                 session.permanent = True
                 session["admin_authenticated"] = True
@@ -2658,7 +2656,11 @@ def admin():
                 return jsonify({"status": "ok", "redirect": "/admin"})
 
             # Check app password with security code
-            if APP_PASSWORD and password.strip() == APP_PASSWORD and security_code.strip() == security_code_env:
+            if (
+                APP_PASSWORD
+                and secrets.compare_digest(password.strip(), APP_PASSWORD)
+                and secrets.compare_digest(security_code.strip(), security_code_env)
+            ):
                 record_login_attempt(ip_addr, True, "user")
                 session.permanent = True
                 session["authenticated"] = True
@@ -6964,28 +6966,34 @@ def api_outlook_news_detail():
         return jsonify({"error": str(e)}), 500
 
 
+# Boot-time side effects: DB init, env-key seeding, and the background scheduler.
+# Set FLASK_SKIP_BOOT=1 to skip all of these (tests, import-only tooling).
+_SKIP_BOOT = os.environ.get("FLASK_SKIP_BOOT") == "1"
+
 # Initialize database if available
-try:
-    init_db()
-    log.info("Database initialized successfully")
-except Exception as e:
-    log.warning(f"Database initialization failed: {e}. Running in limited mode.")
+if not _SKIP_BOOT:
+    try:
+        init_db()
+        log.info("Database initialized successfully")
+    except Exception as e:
+        log.warning(f"Database initialization failed: {e}. Running in limited mode.")
 
 # Seed API key from env var into DB so it persists across deploys
-try:
-    _env_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if _env_api_key and not get_config().get("anthropic_api_key", ""):
-        set_config({"anthropic_api_key": _env_api_key})
-        log.info("Seeded ANTHROPIC_API_KEY from environment into DB config")
-except Exception as e:
-    log.warning(f"Could not seed API key: {e}")
+if not _SKIP_BOOT:
+    try:
+        _env_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if _env_api_key and not get_config().get("anthropic_api_key", ""):
+            set_config({"anthropic_api_key": _env_api_key})
+            log.info("Seeded ANTHROPIC_API_KEY from environment into DB config")
+    except Exception as e:
+        log.warning(f"Could not seed API key: {e}")
 
 # Guard: only start scheduler and background briefing in the first/main worker.
 # With gunicorn --workers 1 this always runs. With multiple workers it only runs
 # in the first gunicorn worker (SERVER_SOFTWARE is set before fork).
 try:
     _worker_id = os.environ.get("GUNICORN_WORKER_ID", "0")
-    if _worker_id in ("", "0", "1"):
+    if not _SKIP_BOOT and _worker_id in ("", "0", "1"):
         schedule_briefing()
         scheduler.start()
         threading.Thread(target=generate_briefing, daemon=True).start()

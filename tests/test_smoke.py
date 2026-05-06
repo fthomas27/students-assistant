@@ -13,6 +13,7 @@ from unittest import mock
 import pytest
 
 os.environ.setdefault("FLASK_BOOT_DEV", "1")
+os.environ.setdefault("FLASK_SKIP_BOOT", "1")
 os.environ.setdefault("DATABASE_URL", "postgresql://stub:stub@localhost/stub")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -261,3 +262,39 @@ def test_pomodoro_state_default(client, monkeypatch):
     data = resp.get_json()
     assert data["active"] is False
     assert data["estimate_minutes"] == 25.0
+
+
+def test_briefing_locks_are_independent(client):
+    """Briefing, debrief, and weekly insight should not contend on a single lock."""
+    _, flask_app = client
+    assert flask_app._briefing_lock is not flask_app._debrief_lock
+    assert flask_app._briefing_lock is not flask_app._weekly_insight_lock
+    assert flask_app._debrief_lock is not flask_app._weekly_insight_lock
+
+
+def test_admin_login_uses_constant_time_compare(client):
+    """Admin login source should not use raw == on password/security_code values."""
+    _, flask_app = client
+    src = open(flask_app.__file__).read()
+    # No bare equality on the secret values themselves remains in the source.
+    assert "password.strip() == ADMIN_PASSWORD" not in src
+    assert "password.strip() == APP_PASSWORD" not in src
+    assert "security_code.strip() == security_code_env" not in src
+    # And constant-time comparisons are present.
+    assert "secrets.compare_digest" in src
+
+
+def test_no_password_or_security_code_hash_logging(client):
+    """Sensitive token hashes should not be written to the log stream."""
+    _, flask_app = client
+    src = open(flask_app.__file__).read()
+    for needle in ("password_hash=", "admin_hash=", "received_hash=", "env_hash="):
+        assert needle not in src, f"Sensitive hash log marker still present: {needle}"
+
+
+def test_reduced_motion_styles_present(client):
+    """Primary templates should respect the prefers-reduced-motion media query."""
+    c, _ = client
+    for path in ("/login",):
+        body = c.get(path).get_data(as_text=True)
+        assert "prefers-reduced-motion" in body
