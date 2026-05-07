@@ -6492,10 +6492,13 @@ let calendarCurrentDate = new Date();
 let calendarEventsByDate = {};
 let currentDayEvents = [];
 let calendarSelectedKey = null;
+let _calendarPrevActiveBtn = null; // circle-btn that was active before calendar opened
 
-function openCalendarModal() {
-  closeProjectDetailsModal();
-  calendarCurrentDate = new Date(); // Reset to today for consistency
+function _openCalendarShared() {
+  // Deactivate whichever page button is currently lit and remember it
+  _calendarPrevActiveBtn = document.querySelector('.circle-btn.active:not(#calendarNavBtn)') || null;
+  document.querySelectorAll('.circle-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('calendarNavBtn')?.classList.add('active');
   const modal = document.getElementById('calendarModal');
   const backdrop = document.getElementById('calendarBackdrop');
   modal.style.animation = '';
@@ -6503,7 +6506,12 @@ function openCalendarModal() {
   backdrop.style.background = '';
   modal.classList.add('visible');
   backdrop.classList.add('visible');
-  document.getElementById('calendarNavBtn')?.classList.add('active');
+}
+
+function openCalendarModal() {
+  closeProjectDetailsModal();
+  calendarCurrentDate = new Date(); // Reset to today for consistency
+  _openCalendarShared();
   renderCalendarModal();
 
   const dateKey = `${calendarCurrentDate.getFullYear()}-${calendarCurrentDate.getMonth()}-${calendarCurrentDate.getDate()}`;
@@ -6514,14 +6522,7 @@ function openCalendarModal() {
 function openCalendarModalOnDate(year, month, day) {
   closeProjectDetailsModal();
   calendarCurrentDate = new Date(year, month, day);
-  const modal = document.getElementById('calendarModal');
-  const backdrop = document.getElementById('calendarBackdrop');
-  modal.style.animation = '';
-  backdrop.style.transition = '';
-  backdrop.style.background = '';
-  modal.classList.add('visible');
-  backdrop.classList.add('visible');
-  document.getElementById('calendarNavBtn')?.classList.add('active');
+  _openCalendarShared();
   renderCalendarModal();
   const dateKey = `${year}-${month}-${day}`;
   showCalendarEvents(day, month, year, calendarEventsByDate[dateKey] || []);
@@ -6532,6 +6533,11 @@ function closeCalendarModal() {
   const backdrop = document.getElementById('calendarBackdrop');
   if (!modal.classList.contains('visible')) return;
   document.getElementById('calendarNavBtn')?.classList.remove('active');
+  // Restore whichever page was active before the calendar opened
+  if (_calendarPrevActiveBtn) {
+    _calendarPrevActiveBtn.classList.add('active');
+    _calendarPrevActiveBtn = null;
+  }
   const isDesktop = window.matchMedia('(min-width: 640px)').matches;
   modal.style.animation = isDesktop
     ? 'calendarFadeOut 0.2s ease-out forwards'
