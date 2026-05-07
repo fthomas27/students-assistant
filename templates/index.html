@@ -423,6 +423,69 @@ text-align: center;
 padding: 16px 8px;
 }
 
+.kanban-tasks-toggle {
+display: flex;
+align-items: center;
+gap: 5px;
+background: none;
+border: none;
+color: var(--text3);
+font-size: 11px;
+font-weight: 600;
+text-transform: uppercase;
+letter-spacing: 0.06em;
+cursor: pointer;
+padding: 0;
+transition: color 0.15s;
+}
+.kanban-tasks-toggle:hover { color: var(--accent); }
+.kanban-tasks-toggle .ktg-arrow { transition: transform 0.2s; display: inline-block; }
+.kanban-tasks-toggle.open .ktg-arrow { transform: rotate(90deg); }
+
+.kanban-tasks-list {
+display: none;
+margin-top: 8px;
+border-top: 1px solid var(--border);
+padding-top: 8px;
+}
+.kanban-tasks-list.open { display: block; }
+
+.kanban-task-row {
+display: flex;
+align-items: center;
+gap: 8px;
+padding: 5px 0;
+border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.kanban-task-row:last-child { border-bottom: none; }
+.kanban-task-check {
+width: 16px;
+height: 16px;
+border: 1.5px solid var(--border2);
+border-radius: 4px;
+background: var(--surface2);
+cursor: pointer;
+flex-shrink: 0;
+display: flex;
+align-items: center;
+justify-content: center;
+transition: background 0.15s, border-color 0.15s;
+}
+.kanban-task-check.done {
+background: var(--green);
+border-color: var(--green);
+}
+.kanban-task-label {
+font-size: 12px;
+color: var(--text2);
+flex: 1;
+line-height: 1.3;
+}
+.kanban-task-label.done {
+text-decoration: line-through;
+color: var(--text3);
+}
+
 /* ── NEWS CARD (Home, featured) ── */
 #homeOutlookContent .outlook-news-list {
 display: flex;
@@ -2333,7 +2396,7 @@ margin-bottom: 0;
   <nav class="top-nav-circles">
     <button class="circle-btn" data-page="tasks"       onclick="navigateTo('tasks')"       title="Tasks">&#10003;<span class="circle-btn-badge" data-badge="tasks"></span></button>
     <button class="circle-btn" data-page="assignments" onclick="navigateTo('assignments')" title="Assignments">&#128203;<span class="circle-btn-badge" data-badge="assignments"></span></button>
-    <button class="circle-btn"                         onclick="openCalendarModal()"       title="Calendar">&#128197;</button>
+    <button class="circle-btn" id="calendarNavBtn"      onclick="openCalendarModal()"       title="Calendar">&#128197;</button>
     <button class="circle-btn active" data-page="home" onclick="navigateTo('home')"        title="Home">&#8962;</button>
     <button class="circle-btn" data-page="chat"        onclick="navigateTo('chat')"        title="Chat">&#128172;</button>
     <button class="circle-btn" data-page="plan"        onclick="navigateTo('plan')"        title="Plan">&#127919;</button>
@@ -2449,7 +2512,6 @@ margin-bottom: 0;
       <button class="calendar-nav-btn" onclick="previousMonth()" title="Previous month">←</button>
       <div class="calendar-month-year" id="calendarMonthYear"></div>
       <button class="calendar-nav-btn" onclick="nextMonth()" title="Next month">→</button>
-      <button class="calendar-nav-btn" onclick="closeCalendarModal()" title="Close">✕</button>
     </div>
   </div>
   <div class="calendar-modal-body">
@@ -2702,6 +2764,7 @@ document.addEventListener('click', function(e) {
 });
 
 function navigateTo(pageName) {
+  closeCalendarModal();
   document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
   document.querySelectorAll('.circle-btn').forEach(function(b) { b.classList.remove('active'); });
   var page = document.getElementById('page-' + pageName);
@@ -3401,24 +3464,88 @@ function renderProjectsKanban() {
       return;
     }
     cols[status].innerHTML = list.map(p => {
-      const pct = Math.max(0, Math.min(100, parseInt(p.completion_pct, 10) || 0));
       const needsCheckin = p.needs_checkin ? '<span class="kanban-checkin-dot" title="Check-in overdue"></span>' : '';
-      const hiddenIcon = p.hidden_from_parent
-        ? '<span style="font-size:11px;color:var(--text3);margin-left:4px;" title="Hidden from parent">🔒</span>'
-        : '<span style="font-size:11px;color:var(--text3);margin-left:4px;opacity:0.4;" title="Visible to parent">👁</span>';
       return '<div class="kanban-card" draggable="true" data-project-id="' + p.id + '">'
         + '<div class="kanban-card-title">' + escapeHtml(p.title || '') + needsCheckin + '</div>'
         + (p.description ? '<div class="kanban-card-desc">' + escapeHtml(p.description) + '</div>' : '')
-        + '<div class="kanban-card-footer">'
-        +   '<div class="kanban-progress-track"><div class="kanban-progress-fill" style="width:' + pct + '%;"></div></div>'
-        +   '<span>' + pct + '%</span>'
+        + '<div class="kanban-card-footer" style="justify-content:space-between;">'
+        +   '<button class="kanban-tasks-toggle" id="ktg-' + p.id + '" onclick="event.stopPropagation();toggleKanbanTasks(' + p.id + ',this)">'
+        +     '<span class="ktg-arrow">▶</span> Tasks'
+        +   '</button>'
         +   '<button class="vis-toggle" onclick="event.stopPropagation();toggleProjectHidden(' + p.id + ',' + !p.hidden_from_parent + ')" style="background:none;border:none;cursor:pointer;padding:0 2px;font-size:13px;line-height:1;transition:transform 0.15s, opacity 0.15s;opacity:' + (p.hidden_from_parent ? '0.65' : '1') + ';" title="' + (p.hidden_from_parent ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide') + '">' + (p.hidden_from_parent ? '🙈' : '👁') + '</button>'
         + '</div>'
+        + '<div class="kanban-tasks-list" id="ktl-' + p.id + '"></div>'
         + '</div>';
     }).join('');
   });
 
   wireKanbanInteractions();
+}
+
+async function toggleKanbanTasks(projectId, btn) {
+  const list = document.getElementById('ktl-' + projectId);
+  if (!list) return;
+  const isOpen = list.classList.contains('open');
+  if (isOpen) {
+    list.classList.remove('open');
+    btn.classList.remove('open');
+    return;
+  }
+  btn.classList.add('open');
+  list.classList.add('open');
+  if (list.dataset.loaded) return; // already fetched
+  list.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:4px 0;">Loading…</div>';
+  try {
+    const resp = await fetch('/api/projects/' + projectId + '/tasks');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const tasks = data.tasks || [];
+    list.dataset.loaded = '1';
+    renderKanbanTaskList(projectId, tasks, list);
+  } catch (e) {
+    list.innerHTML = '<div style="color:var(--red);font-size:12px;">Failed to load tasks</div>';
+  }
+}
+
+function renderKanbanTaskList(projectId, tasks, container) {
+  if (tasks.length === 0) {
+    container.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:4px 0;">No tasks yet</div>';
+    return;
+  }
+  container.innerHTML = tasks.map(t => {
+    const done = t.status === 'done';
+    const dueStr = t.due_date ? ' · ' + formatDateMDY(t.due_date) : '';
+    return '<div class="kanban-task-row" id="ktr-' + t.id + '">'
+      + '<div class="kanban-task-check' + (done ? ' done' : '') + '" onclick="event.stopPropagation();completeKanbanTask(' + projectId + ',' + t.id + ',this)">'
+      +   (done ? '<svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>' : '')
+      + '</div>'
+      + '<span class="kanban-task-label' + (done ? ' done' : '') + '">' + escapeHtml(t.title) + '<span style="color:var(--text3);font-size:10px;">' + escapeHtml(dueStr) + '</span></span>'
+      + '</div>';
+  }).join('');
+}
+
+async function completeKanbanTask(projectId, taskId, checkEl) {
+  if (checkEl.classList.contains('done')) return;
+  checkEl.classList.add('done');
+  checkEl.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>';
+  const label = checkEl.closest('.kanban-task-row')?.querySelector('.kanban-task-label');
+  if (label) label.classList.add('done');
+  try {
+    await fetch('/api/projects/' + projectId + '/tasks/' + taskId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'done' }),
+      credentials: 'same-origin'
+    });
+    // Reload the task list so the card reflects the updated state
+    const list = document.getElementById('ktl-' + projectId);
+    if (list) { delete list.dataset.loaded; }
+    const resp = await fetch('/api/projects/' + projectId + '/tasks');
+    const data = await resp.json();
+    if (list) renderKanbanTaskList(projectId, data.tasks || [], list);
+  } catch (e) {
+    console.error('Failed to complete project task:', e);
+  }
 }
 
 function wireKanbanInteractions() {
@@ -6376,6 +6503,7 @@ function openCalendarModal() {
   backdrop.style.background = '';
   modal.classList.add('visible');
   backdrop.classList.add('visible');
+  document.getElementById('calendarNavBtn')?.classList.add('active');
   renderCalendarModal();
 
   const dateKey = `${calendarCurrentDate.getFullYear()}-${calendarCurrentDate.getMonth()}-${calendarCurrentDate.getDate()}`;
@@ -6393,6 +6521,7 @@ function openCalendarModalOnDate(year, month, day) {
   backdrop.style.background = '';
   modal.classList.add('visible');
   backdrop.classList.add('visible');
+  document.getElementById('calendarNavBtn')?.classList.add('active');
   renderCalendarModal();
   const dateKey = `${year}-${month}-${day}`;
   showCalendarEvents(day, month, year, calendarEventsByDate[dateKey] || []);
@@ -6402,6 +6531,7 @@ function closeCalendarModal() {
   const modal = document.getElementById('calendarModal');
   const backdrop = document.getElementById('calendarBackdrop');
   if (!modal.classList.contains('visible')) return;
+  document.getElementById('calendarNavBtn')?.classList.remove('active');
   const isDesktop = window.matchMedia('(min-width: 640px)').matches;
   modal.style.animation = isDesktop
     ? 'calendarFadeOut 0.2s ease-out forwards'
