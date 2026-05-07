@@ -2333,7 +2333,7 @@ margin-bottom: 0;
   <nav class="top-nav-circles">
     <button class="circle-btn" data-page="tasks"       onclick="navigateTo('tasks')"       title="Tasks">&#10003;<span class="circle-btn-badge" data-badge="tasks"></span></button>
     <button class="circle-btn" data-page="assignments" onclick="navigateTo('assignments')" title="Assignments">&#128203;<span class="circle-btn-badge" data-badge="assignments"></span></button>
-    <button class="circle-btn"                         onclick="openCalendarModal()"       title="Calendar">&#128197;</button>
+    <button class="circle-btn" id="calendarNavBtn"      onclick="openCalendarModal()"       title="Calendar">&#128197;</button>
     <button class="circle-btn active" data-page="home" onclick="navigateTo('home')"        title="Home">&#8962;</button>
     <button class="circle-btn" data-page="chat"        onclick="navigateTo('chat')"        title="Chat">&#128172;</button>
     <button class="circle-btn" data-page="plan"        onclick="navigateTo('plan')"        title="Plan">&#127919;</button>
@@ -2449,7 +2449,6 @@ margin-bottom: 0;
       <button class="calendar-nav-btn" onclick="previousMonth()" title="Previous month">←</button>
       <div class="calendar-month-year" id="calendarMonthYear"></div>
       <button class="calendar-nav-btn" onclick="nextMonth()" title="Next month">→</button>
-      <button class="calendar-nav-btn" onclick="closeCalendarModal()" title="Close">✕</button>
     </div>
   </div>
   <div class="calendar-modal-body">
@@ -6376,6 +6375,7 @@ function openCalendarModal() {
   backdrop.style.background = '';
   modal.classList.add('visible');
   backdrop.classList.add('visible');
+  document.getElementById('calendarNavBtn')?.classList.add('active');
   renderCalendarModal();
 
   const dateKey = `${calendarCurrentDate.getFullYear()}-${calendarCurrentDate.getMonth()}-${calendarCurrentDate.getDate()}`;
@@ -6393,6 +6393,7 @@ function openCalendarModalOnDate(year, month, day) {
   backdrop.style.background = '';
   modal.classList.add('visible');
   backdrop.classList.add('visible');
+  document.getElementById('calendarNavBtn')?.classList.add('active');
   renderCalendarModal();
   const dateKey = `${year}-${month}-${day}`;
   showCalendarEvents(day, month, year, calendarEventsByDate[dateKey] || []);
@@ -6402,6 +6403,7 @@ function closeCalendarModal() {
   const modal = document.getElementById('calendarModal');
   const backdrop = document.getElementById('calendarBackdrop');
   if (!modal.classList.contains('visible')) return;
+  document.getElementById('calendarNavBtn')?.classList.remove('active');
   const isDesktop = window.matchMedia('(min-width: 640px)').matches;
   modal.style.animation = isDesktop
     ? 'calendarFadeOut 0.2s ease-out forwards'
