@@ -29,7 +29,7 @@
 --amber: #ffa940;
 --green: #5cb85c;
 --purple: #b197fc;
---header-h: 56px;
+--header-h: 69px;
 --r: 16px;
 --r-sm: 10px;
 }
@@ -61,6 +61,8 @@ padding: 10px 24px;
 border-bottom: 1px solid var(--border);
 background: var(--bg);
 flex-shrink: 0;
+position: relative;
+z-index: 200;
 }
 
 .top-nav-date {
@@ -1371,14 +1373,14 @@ aspect-ratio: 1;
 display: flex;
 flex-direction: column;
 align-items: center;
-justify-content: center;
-padding: 4px;
+justify-content: flex-start;
+padding: 8px 4px 18px;
 background: var(--surface);
 cursor: pointer;
 transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 will-change: background, color;
 position: relative;
-min-height: 50px;
+min-height: 56px;
 }
 
 .calendar-day:hover {
@@ -1412,11 +1414,11 @@ box-shadow: inset 0 0 0 2px white;
 .calendar-day.has-event::after {
 content: '';
 position: absolute;
-width: 6px;
-height: 6px;
+width: 7px;
+height: 7px;
 background: var(--amber);
 border-radius: 50%;
-bottom: 6px;
+bottom: 5px;
 left: 50%;
 transform: translateX(-50%);
 box-shadow: 0 0 0 2px var(--surface);
@@ -1488,12 +1490,15 @@ margin-top: 4px;
   #calendarBackdrop.visible {
     background: var(--bg);
   }
+  #calendarBackdrop {
+    inset: var(--header-h) 0 0 0;
+  }
   #calendarModal {
-    top: 0;
+    top: var(--header-h);
     left: 0;
     transform: none;
     width: 100vw;
-    height: 100vh;
+    height: calc(100vh - var(--header-h));
     max-width: none;
     max-height: none;
     border: none;
@@ -3273,52 +3278,32 @@ function renderAssignments() {
   }
 
   const now = new Date();
-  // Group by class_name
-  const groups = {};
-  assignmentsCache.forEach(a => {
+  const sorted = assignmentsCache.slice().sort((a, b) =>
+    new Date(a.due_iso || '9999-12-31') - new Date(b.due_iso || '9999-12-31')
+  );
+
+  container.innerHTML = sorted.map(a => {
+    const due = a.due_iso ? new Date(a.due_iso) : null;
+    const overdue = due && due < now;
+    const overduePill = overdue ? '<span class="overdue-pill">Overdue</span>' : '';
+    const itemClass = 'sidebar-item assignment-item' + (overdue ? ' assignment-overdue' : '');
+    const safeTitle = (a.title || '').replace(/'/g, "\\'");
+    const safeClass = (a.class_name || '').replace(/'/g, "\\'");
+    const safeDue = (a.due_iso || '').replace(/'/g, "\\'");
+    const est = a.estimate_minutes || 30;
     const cls = (a.class_name || 'Uncategorized').trim() || 'Uncategorized';
-    (groups[cls] = groups[cls] || []).push(a);
-  });
-
-  // Sort: classes with the soonest assignment first
-  const classOrder = Object.keys(groups).sort((a, b) => {
-    const ea = Math.min.apply(null, groups[a].map(x => new Date(x.due_iso || '9999-12-31').getTime()));
-    const eb = Math.min.apply(null, groups[b].map(x => new Date(x.due_iso || '9999-12-31').getTime()));
-    return ea - eb;
-  });
-
-  let html = '';
-  classOrder.forEach(cls => {
-    const items = groups[cls].slice().sort((x, y) => new Date(x.due_iso || '9999-12-31') - new Date(y.due_iso || '9999-12-31'));
     const color = classColor(cls);
-    html += '<div class="assignment-class-header">'
-      + '<span class="class-color-swatch" style="background:' + color + ';"></span>'
-      + '<span>' + escapeHtml(cls) + '</span>'
-      + '<span class="class-count">' + items.length + '</span>'
+    return '<div class="' + itemClass + '" style="cursor:pointer;" onclick="viewAssignment(\'' + safeTitle + '\',\'' + safeClass + '\',\'' + safeDue + '\',' + est + ')">'
+      + '<div style="display:flex;align-items:flex-start;gap:8px;justify-content:space-between;">'
+      +   '<div style="flex:1;min-width:0;">'
+      +     '<div class="sidebar-item-title">' + escapeHtml(a.title || '') + overduePill + '</div>'
+      +     '<div class="sidebar-item-due"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';margin-right:5px;vertical-align:middle;"></span>' + escapeHtml(cls) + ' · ' + escapeHtml(formatDate(a.due_iso)) + '</div>'
+      +   '</div>'
+      +   '<button class="complete-btn" onclick="completeAssignment(event,\'' + safeTitle + '\',\'' + safeClass + '\',' + est + ')" title="Mark as done">✓</button>'
+      + '</div>'
       + '</div>';
+  }).join('');
 
-    html += items.map(a => {
-      const due = a.due_iso ? new Date(a.due_iso) : null;
-      const overdue = due && due < now;
-      const overduePill = overdue ? '<span class="overdue-pill">Overdue</span>' : '';
-      const itemClass = 'sidebar-item assignment-item' + (overdue ? ' assignment-overdue' : '');
-      const safeTitle = (a.title || '').replace(/'/g, "\\'");
-      const safeClass = (a.class_name || '').replace(/'/g, "\\'");
-      const safeDue = (a.due_iso || '').replace(/'/g, "\\'");
-      const est = a.estimate_minutes || 30;
-      return '<div class="' + itemClass + '" style="cursor:pointer;" onclick="viewAssignment(\'' + safeTitle + '\',\'' + safeClass + '\',\'' + safeDue + '\',' + est + ')">'
-        + '<div style="display:flex;align-items:flex-start;gap:8px;justify-content:space-between;">'
-        +   '<div style="flex:1;min-width:0;">'
-        +     '<div class="sidebar-item-title">' + escapeHtml(a.title || '') + overduePill + '</div>'
-        +     '<div class="sidebar-item-due">' + escapeHtml(formatDate(a.due_iso)) + '</div>'
-        +   '</div>'
-        +   '<button class="complete-btn" onclick="completeAssignment(event,\'' + safeTitle + '\',\'' + safeClass + '\',' + est + ')" title="Mark as done">✓</button>'
-        + '</div>'
-        + '</div>';
-    }).join('');
-  });
-
-  container.innerHTML = html;
   updateSidebarStats();
 }
 
@@ -3334,7 +3319,7 @@ function renderTasks() {
     return (urgencyMap[b.urgency] || 0) - (urgencyMap[a.urgency] || 0);
   });
 
-  container.innerHTML = sorted.slice(0, 8).map(t => {
+  container.innerHTML = sorted.map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
     const safeUrgency = ['critical','high','medium','low'].includes(t.urgency) ? t.urgency : 'low';
     const isHidden = t.hidden_from_parent;

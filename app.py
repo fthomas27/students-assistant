@@ -8,6 +8,7 @@ import json
 import ipaddress
 import hashlib
 import secrets
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
@@ -3262,23 +3263,19 @@ def api_calendar():
             log.warning(f"/api/calendar: {name} failed: {e}")
             return []
 
-    # Parse results from fetch_source to build events list
-    try:
-        personal_events = fetch_source("personal", PERSONAL_ICAL_URL,
-                                      lambda cal, d: [dict(e, source="personal") for e in parse_calendar_events(cal, days_ahead=d)])
-        events.extend(personal_events)
-    except Exception as e:
-        log.warning(f"/api/calendar: personal parse failed: {e}")
+    def get_personal():
+        return fetch_source("personal", PERSONAL_ICAL_URL,
+                            lambda cal, d: [dict(e, source="personal") for e in parse_calendar_events(cal, days_ahead=d)])
 
-    try:
-        sports_events = fetch_source("sports", SPORTS_ICAL_URL,
-                                    lambda cal, d: [dict(e, source="sports") for e in parse_calendar_events(cal, days_ahead=d)])
-        events.extend(sports_events)
-    except Exception as e:
-        log.warning(f"/api/calendar: sports parse failed: {e}")
+    def get_sports():
+        return fetch_source("sports", SPORTS_ICAL_URL,
+                            lambda cal, d: [dict(e, source="sports") for e in parse_calendar_events(cal, days_ahead=d)])
 
-    try:
-        if CANVAS_ICAL_URL:
+    def get_canvas():
+        result = []
+        if not CANVAS_ICAL_URL:
+            return result
+        try:
             t = time.time()
             cal = fetch_ical(CANVAS_ICAL_URL)
             elapsed = time.time() - t
@@ -3288,7 +3285,7 @@ def api_calendar():
                 log.info(f"/api/calendar: canvas took {elapsed:.2f}s")
             if cal:
                 for a in parse_canvas_assignments(cal):
-                    events.append({
+                    result.append({
                         "title": a["title"],
                         "start_display": a["due_display"],
                         "end_display": "",
@@ -3299,8 +3296,23 @@ def api_calendar():
                         "urgency": a["urgency"],
                         "class_name": a["class_name"]
                     })
-    except Exception as e:
-        log.warning(f"/api/calendar: canvas failed: {e}")
+        except Exception as e:
+            log.warning(f"/api/calendar: canvas failed: {e}")
+        return result
+
+    # Fetch all three iCal sources concurrently
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(get_personal): "personal",
+            executor.submit(get_sports): "sports",
+            executor.submit(get_canvas): "canvas",
+        }
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                events.extend(future.result())
+            except Exception as e:
+                log.warning(f"/api/calendar: {source} future failed: {e}")
 
     try:
         day_events = fetch_day_calendar_events(today, days_ahead=days)
