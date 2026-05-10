@@ -2673,12 +2673,13 @@ margin-bottom: 0;
   box-shadow: 0 24px 64px rgba(0,0,0,0.6);
   z-index: 401;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.2s ease, transform 0.2s ease;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
-.recipe-modal.open { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.recipe-modal.open { opacity: 1; transform: translate(-50%, -50%) scale(1); pointer-events: auto; }
 .recipe-modal-header {
   padding: 18px 20px;
   border-bottom: 1px solid var(--border);
@@ -3251,7 +3252,10 @@ margin-bottom: 0;
   </div>
 </div>
 
-<!-- Recipe Modal -->
+
+</main>
+
+<!-- Recipe Modal (outside main to avoid iOS Safari overflow:hidden + fixed positioning bug) -->
 <div class="recipe-modal-backdrop" id="recipeModalBackdrop" onclick="closeRecipeModal()"></div>
 <div class="recipe-modal" id="recipeModal">
   <div class="recipe-modal-header">
@@ -3262,8 +3266,6 @@ margin-bottom: 0;
     <div class="recipe-modal-loading">Loading recipe...</div>
   </div>
 </div>
-
-</main>
 
 <script>
 const TZ = "{{ tz }}";
@@ -7907,7 +7909,7 @@ function _updateMissingCount() {
   if (missing.length > 0) {
     el.textContent = `${missing.length} missing`;
     el.style.display = 'inline';
-    btn.textContent = `&#129302; Adjust plan & finalize (${missing.length} missing)`;
+    btn.innerHTML = `&#129302; Adjust plan &amp; finalize (${missing.length} missing)`;
   } else {
     el.style.display = 'none';
     btn.innerHTML = '&#9989; Looks good — lock in my plan';
@@ -7978,7 +7980,7 @@ function generateMealPlan() {
     .then(r => r.json())
     .then(data => {
       btn.disabled = false;
-      text.textContent = '&#9889; Generate Tomorrow\'s Plan';
+      text.innerHTML = '&#9889; Generate Tomorrow\'s Plan';
       if (data.error) { alert('Jarvis: ' + data.error); return; }
       _mealCurrentIngredients = ingredients;
       _mealCurrentRequest     = request;
@@ -7987,7 +7989,7 @@ function generateMealPlan() {
     })
     .catch(() => {
       btn.disabled = false;
-      text.textContent = '&#9889; Generate Tomorrow\'s Plan';
+      text.innerHTML = '&#9889; Generate Tomorrow\'s Plan';
       alert('Could not generate meal plan. Please try again.');
     });
 }
