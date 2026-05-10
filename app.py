@@ -3851,6 +3851,7 @@ def api_meals_generate():
     ingredients = str(data.get("ingredients", "")).strip()
     if not ingredients:
         return jsonify({"error": "Ingredients list is required to generate a meal plan."}), 400
+    special_request = str(data.get("request", "")).strip()[:500]
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
@@ -3868,11 +3869,13 @@ def api_meals_generate():
         "You always respond with valid JSON only. No markdown, no prose outside the JSON structure."
     )
 
+    request_line = f"Special requests from the athlete (MUST be honoured): {special_request}\n" if special_request else ""
     user_prompt = (
         f"Athlete: {name}\n"
         f"Goal: Cutting weight while maintaining maximum muscle mass. High protein is the top priority.\n"
         f"Plan date: {tomorrow_str}\n"
-        f"Available ingredients: {ingredients}\n\n"
+        f"Available ingredients: {ingredients}\n"
+        f"{request_line}\n"
         "Generate a complete daily meal plan. Return ONLY a JSON object with this exact structure:\n"
         "{\n"
         '  "daily_totals": {"calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0},\n'

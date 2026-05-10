@@ -3041,6 +3041,14 @@ margin-bottom: 0;
       class="meal-ingredients-input"
       placeholder="e.g. chicken breast, eggs, Greek yogurt, broccoli, brown rice, protein powder, oats, olive oil, spinach, cottage cheese..."
     ></textarea>
+    <div class="meal-ingredients-label" style="margin-top:14px;">Any requests? (optional)</div>
+    <input
+      type="text"
+      id="mealRequestInput"
+      class="meal-ingredients-input"
+      style="min-height:unset;height:42px;resize:none;"
+      placeholder="e.g. I want salmon for dinner, make breakfast fast, no rice today, surprise me..."
+    />
     <button class="meal-generate-btn" id="mealGenerateBtn" onclick="generateMealPlan()">
       <span id="mealGenerateBtnText">&#9889; Generate Tomorrow's Plan</span>
     </button>
@@ -7670,6 +7678,7 @@ function generateMealPlan() {
     setTimeout(() => { input.style.borderColor = ''; }, 1500);
     return;
   }
+  const request = (document.getElementById('mealRequestInput').value || '').trim();
 
   const btn  = document.getElementById('mealGenerateBtn');
   const text = document.getElementById('mealGenerateBtnText');
@@ -7685,7 +7694,7 @@ function generateMealPlan() {
   fetch('/api/meals/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ingredients }),
+    body: JSON.stringify({ ingredients, request }),
   })
     .then(r => r.json())
     .then(data => {
