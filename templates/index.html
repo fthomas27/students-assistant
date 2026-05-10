@@ -1390,7 +1390,7 @@ transform: scale(0.9);
 }
 
 .sidebar-item.assignment-done {
-opacity: 0.6;
+opacity: 0.7;
 border-left: 3px solid #4caf50;
 background: rgba(76,175,80,0.06);
 }
@@ -1398,6 +1398,39 @@ background: rgba(76,175,80,0.06);
 .sidebar-item.assignment-done .sidebar-item-title {
 text-decoration: line-through;
 color: var(--text2);
+}
+
+.assignment-submit-hint {
+font-size: 10px;
+color: #4caf50;
+font-weight: 600;
+margin-top: 3px;
+letter-spacing: 0.02em;
+}
+
+.submit-pill-btn {
+padding: 5px 10px;
+border: 1.5px solid #4caf50;
+background: rgba(76,175,80,0.12);
+color: #4caf50;
+border-radius: 20px;
+cursor: pointer;
+font-size: 11px;
+font-weight: 700;
+white-space: nowrap;
+flex-shrink: 0;
+transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.submit-pill-btn:hover {
+background: #4caf50;
+color: white;
+transform: scale(1.06);
+}
+
+.submit-pill-btn:active {
+background: #388e3c;
+transform: scale(0.96);
 }
 
 /* Calendar Modal Styles */
@@ -4321,14 +4354,16 @@ function renderAssignments() {
     const est = a.estimate_minutes || 30;
     const cls = (a.class_name || 'Uncategorized').trim() || 'Uncategorized';
     const color = classColor(cls);
+    const submitHint = a.done ? '<div class="assignment-submit-hint">✓ Done — submit to turn in</div>' : '';
     const actionBtn = a.done
-      ? '<button class="submit-btn" onclick="submitAssignment(event,\'' + safeTitle + '\',\'' + safeClass + '\')" title="Mark as submitted to Canvas">✉</button>'
+      ? '<button class="submit-pill-btn" onclick="submitAssignment(event,\'' + safeTitle + '\',\'' + safeClass + '\')" title="Mark as submitted to Canvas">↑ Submit to Canvas</button>'
       : '<button class="complete-btn" onclick="completeAssignment(event,\'' + safeTitle + '\',\'' + safeClass + '\',' + est + ')" title="Mark as done">✓</button>';
     return '<div class="' + itemClass + '" style="cursor:pointer;" onclick="viewAssignment(\'' + safeTitle + '\',\'' + safeClass + '\',\'' + safeDue + '\',' + est + ')">'
       + '<div style="display:flex;align-items:flex-start;gap:8px;justify-content:space-between;">'
       +   '<div style="flex:1;min-width:0;">'
       +     '<div class="sidebar-item-title">' + escapeHtml(a.title || '') + overduePill + '</div>'
       +     '<div class="sidebar-item-due"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';margin-right:5px;vertical-align:middle;"></span>' + escapeHtml(cls) + ' · ' + escapeHtml(formatDate(a.due_iso)) + '</div>'
+      +     submitHint
       +   '</div>'
       +   actionBtn
       + '</div>'
@@ -6019,6 +6054,57 @@ async function rateNewsItem(btn, itemJson, rating) {
   }
 }
 
+function launchConfetti(originX, originY, count) {
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9999;';
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  document.body.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  const colors = ['#FF7F50','#4caf50','#4fb3f6','#b197fc','#ffd700','#ff6b6b','#56b6c2','#ffa940'];
+  const particles = Array.from({length: count}, () => ({
+    x: originX, y: originY,
+    vx: (Math.random() - 0.5) * 14,
+    vy: Math.random() * -12 - 3,
+    r: Math.random() * 5 + 3,
+    color: colors[Math.floor(Math.random() * colors.length)],
+    rotation: Math.random() * Math.PI * 2,
+    rotSpeed: (Math.random() - 0.5) * 0.25,
+    shape: Math.random() > 0.45 ? 'rect' : 'circle',
+    alpha: 1,
+  }));
+  const duration = 1600;
+  let start = null;
+  function frame(ts) {
+    if (!start) start = ts;
+    const elapsed = ts - start;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    let alive = false;
+    for (const p of particles) {
+      p.vy += 0.38;
+      p.x += p.vx;
+      p.y += p.vy;
+      p.rotation += p.rotSpeed;
+      p.alpha = Math.max(0, 1 - elapsed / duration);
+      if (p.alpha > 0) alive = true;
+      ctx.save();
+      ctx.globalAlpha = p.alpha;
+      ctx.fillStyle = p.color;
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rotation);
+      if (p.shape === 'circle') {
+        ctx.beginPath(); ctx.arc(0, 0, p.r, 0, Math.PI * 2); ctx.fill();
+      } else {
+        ctx.fillRect(-p.r, -p.r * 0.55, p.r * 2, p.r * 1.1);
+      }
+      ctx.restore();
+    }
+    if (alive) requestAnimationFrame(frame);
+    else canvas.remove();
+  }
+  requestAnimationFrame(frame);
+}
+
 async function completeAssignment(event, title, className, estimateMinutes) {
   event.stopPropagation();
   const btn = event.target;
@@ -6036,6 +6122,9 @@ async function completeAssignment(event, title, className, estimateMinutes) {
     });
 
     if (response.ok) {
+      const rect = btn.getBoundingClientRect();
+      launchConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2, 35);
+
       btn.style.transition = 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)';
       btn.style.opacity = '0.5';
       btn.style.color = 'var(--accent)';
@@ -6081,6 +6170,9 @@ async function submitAssignment(event, title, className) {
     });
 
     if (response.ok) {
+      const rect = btn.getBoundingClientRect();
+      launchConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2, 70);
+
       const itemEl = btn.closest('.assignment-item');
       itemEl.style.transition = 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
       setTimeout(() => {
