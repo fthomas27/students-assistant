@@ -2267,6 +2267,81 @@ font-weight: 500;
 color: var(--text);
 }
 
+/* Toggle switch */
+.settings-toggle {
+display: inline-flex;
+align-items: center;
+cursor: pointer;
+}
+.settings-toggle input { display: none; }
+.settings-toggle-slider {
+width: 38px;
+height: 21px;
+background: var(--surface3);
+border-radius: 11px;
+position: relative;
+transition: background 0.2s;
+border: 1px solid var(--border2);
+}
+.settings-toggle-slider::after {
+content: '';
+position: absolute;
+width: 15px;
+height: 15px;
+background: #fff;
+border-radius: 50%;
+top: 2px;
+left: 2px;
+transition: transform 0.2s;
+}
+.settings-toggle input:checked + .settings-toggle-slider { background: var(--accent); border-color: var(--accent); }
+.settings-toggle input:checked + .settings-toggle-slider::after { transform: translateX(17px); }
+
+/* Summer mode highlight cards */
+.summer-uv-alert {
+background: linear-gradient(135deg, #ff8c00 0%, #ff4500 100%);
+border-radius: var(--r-sm);
+padding: 12px 16px;
+color: #fff;
+font-weight: 600;
+font-size: 13px;
+margin-bottom: 12px;
+display: flex;
+align-items: center;
+gap: 10px;
+}
+.summer-uv-safe {
+background: linear-gradient(135deg, #1a6e3c 0%, #2d8a50 100%);
+border-radius: var(--r-sm);
+padding: 12px 16px;
+color: #fff;
+font-size: 13px;
+margin-bottom: 12px;
+display: flex;
+align-items: center;
+gap: 10px;
+}
+.bucket-progress-card {
+background: var(--surface);
+border: 1px solid var(--border);
+border-radius: var(--r-sm);
+padding: 14px;
+margin-bottom: 12px;
+}
+.bucket-progress-bar-wrap {
+height: 8px;
+background: var(--surface3);
+border-radius: 4px;
+overflow: hidden;
+margin: 8px 0 4px;
+}
+.bucket-progress-bar {
+height: 100%;
+background: var(--accent);
+border-radius: 4px;
+transition: width 0.4s ease;
+}
+
 .logout-btn {
 width: 100%;
 padding: 10px;
@@ -3152,15 +3227,19 @@ margin-bottom: 0;
 
 <header class="top-nav">
   <div class="top-nav-date" id="topNavDate">Loading...</div>
-  <nav class="top-nav-circles">
-    <button class="circle-btn" data-page="tasks"       onclick="navigateTo('tasks')"       title="Tasks">&#10003;<span class="circle-btn-badge" data-badge="tasks"></span></button>
-    <button class="circle-btn" data-page="assignments" onclick="navigateTo('assignments')" title="Assignments">&#128203;<span class="circle-btn-badge" data-badge="assignments"></span></button>
-    <button class="circle-btn" id="calendarNavBtn"      onclick="openCalendarModal()"       title="Calendar">&#128197;</button>
-    <button class="circle-btn active" data-page="home" onclick="navigateTo('home')"        title="Home">&#8962;</button>
-    <button class="circle-btn" data-page="chat"        onclick="navigateTo('chat')"        title="Chat">&#128172;</button>
-    <button class="circle-btn" data-page="plan"        onclick="navigateTo('plan')"        title="Plan">&#127919;</button>
-    <button class="circle-btn" data-page="projects"    onclick="navigateTo('projects')"    title="Projects">&#128230;<span class="circle-btn-badge" data-badge="projects"></span></button>
-    <button class="circle-btn" data-page="meals"       onclick="navigateTo('meals')"       title="Meals">&#127869;</button>
+  <nav class="top-nav-circles" id="topNavCircles">
+    <!-- School-mode nav -->
+    <button class="circle-btn school-nav" data-page="tasks"          onclick="navigateTo('tasks')"          title="Tasks">&#10003;<span class="circle-btn-badge" data-badge="tasks"></span></button>
+    <button class="circle-btn school-nav" data-page="assignments"    onclick="navigateTo('assignments')"    title="Assignments">&#128203;<span class="circle-btn-badge" data-badge="assignments"></span></button>
+    <button class="circle-btn school-nav" id="calendarNavBtn"        onclick="openCalendarModal()"          title="Calendar">&#128197;</button>
+    <button class="circle-btn active"     data-page="home"           onclick="navigateTo('home')"           title="Home">&#8962;</button>
+    <button class="circle-btn school-nav" data-page="chat"           onclick="navigateTo('chat')"           title="Chat">&#128172;</button>
+    <button class="circle-btn school-nav" data-page="plan"           onclick="navigateTo('plan')"           title="Plan">&#127919;</button>
+    <button class="circle-btn"            data-page="projects"       onclick="navigateTo('projects')"       title="Projects">&#128230;<span class="circle-btn-badge" data-badge="projects"></span></button>
+    <button class="circle-btn"            data-page="meals"          onclick="navigateTo('meals')"          title="Meals">&#127869;</button>
+    <!-- Summer-mode nav (hidden in school mode) -->
+    <button class="circle-btn summer-nav" data-page="summer-home"    onclick="navigateTo('summer-home')"   title="Summer Home" style="display:none;">&#9728;&#65039;</button>
+    <button class="circle-btn summer-nav" data-page="summer-bucket"  onclick="navigateTo('summer-bucket')" title="Bucket List" style="display:none;">&#127774;</button>
   </nav>
   <div class="top-nav-mobile">
     <button class="nav-menu-toggle" id="navMenuToggle" onclick="toggleNavMenu(event)" aria-haspopup="true" aria-expanded="false">
@@ -3169,18 +3248,23 @@ margin-bottom: 0;
       <span class="nav-menu-toggle-caret">&#9662;</span>
     </button>
     <div class="nav-menu-dropdown" id="navMenuDropdown" role="menu">
-      <button class="nav-menu-item" data-page="home"        onclick="navigateTo('home'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#8962;</span>Home</button>
-      <button class="nav-menu-item" data-page="tasks"       onclick="navigateTo('tasks'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#10003;</span>Tasks</button>
-      <button class="nav-menu-item" data-page="assignments" onclick="navigateTo('assignments'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128203;</span>Assignments</button>
-      <button class="nav-menu-item" data-page="chat"        onclick="navigateTo('chat'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128172;</span>Chat</button>
-      <button class="nav-menu-item" data-page="plan"        onclick="navigateTo('plan'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#127919;</span>Plan</button>
-      <button class="nav-menu-item" data-page="projects"    onclick="navigateTo('projects'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
-      <button class="nav-menu-item" data-page="meals"       onclick="navigateTo('meals'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#127869;</span>Meals</button>
+      <button class="nav-menu-item" data-page="home"                 onclick="navigateTo('home'); closeNavMenu();"          role="menuitem"><span class="nav-menu-item-icon">&#8962;</span>Home</button>
+      <!-- Summer home -->
+      <button class="nav-menu-item summer-nav" data-page="summer-home"   onclick="navigateTo('summer-home'); closeNavMenu();"  role="menuitem" style="display:none;"><span class="nav-menu-item-icon">&#9728;&#65039;</span>Summer Home</button>
+      <button class="nav-menu-item summer-nav" data-page="summer-bucket" onclick="navigateTo('summer-bucket'); closeNavMenu();" role="menuitem" style="display:none;"><span class="nav-menu-item-icon">&#127774;</span>Bucket List</button>
+      <!-- School pages -->
+      <button class="nav-menu-item school-nav" data-page="tasks"       onclick="navigateTo('tasks'); closeNavMenu();"        role="menuitem"><span class="nav-menu-item-icon">&#10003;</span>Tasks</button>
+      <button class="nav-menu-item school-nav" data-page="assignments" onclick="navigateTo('assignments'); closeNavMenu();"  role="menuitem"><span class="nav-menu-item-icon">&#128203;</span>Assignments</button>
+      <button class="nav-menu-item school-nav" data-page="chat"        onclick="navigateTo('chat'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#128172;</span>Chat</button>
+      <button class="nav-menu-item school-nav" data-page="plan"        onclick="navigateTo('plan'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#127919;</span>Plan</button>
+      <!-- Shared pages -->
+      <button class="nav-menu-item" data-page="projects"    onclick="navigateTo('projects'); closeNavMenu();"    role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
+      <button class="nav-menu-item" data-page="meals"       onclick="navigateTo('meals'); closeNavMenu();"       role="menuitem"><span class="nav-menu-item-icon">&#127869;</span>Meals</button>
       <div class="nav-menu-divider"></div>
-      <button class="nav-menu-item" onclick="openCalendarModal(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128197;</span>Calendar</button>
-      <button class="nav-menu-item" onclick="document.getElementById('pomodoroOpen').click(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#9201;</span>Focus Timer</button>
-      <button class="nav-menu-item" onclick="openChatHistory(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128336;</span>History</button>
-      <button class="nav-menu-item" onclick="openSettings(); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#9881;</span>Settings</button>
+      <button class="nav-menu-item" onclick="openCalendarModal(); closeNavMenu();"                               role="menuitem"><span class="nav-menu-item-icon">&#128197;</span>Calendar</button>
+      <button class="nav-menu-item" onclick="document.getElementById('pomodoroOpen').click(); closeNavMenu();"  role="menuitem"><span class="nav-menu-item-icon">&#9201;</span>Focus Timer</button>
+      <button class="nav-menu-item" onclick="openChatHistory(); closeNavMenu();"                                role="menuitem"><span class="nav-menu-item-icon">&#128336;</span>History</button>
+      <button class="nav-menu-item" onclick="openSettings(); closeNavMenu();"                                   role="menuitem"><span class="nav-menu-item-icon">&#9881;</span>Settings</button>
     </div>
   </div>
   <div class="top-nav-actions">
@@ -3204,6 +3288,30 @@ margin-bottom: 0;
         <div class="settings-item">
           <label>What the AI calls you:</label>
           <input type="text" id="settingsNameInput" placeholder="e.g., Student, Alex, etc." style="width: 100%; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+        </div>
+      </div>
+      <div class="settings-section">
+        <h3>Mode</h3>
+        <div class="settings-item" style="display:flex;gap:8px;">
+          <button id="modeSchoolBtn" onclick="setAppMode('school')" style="flex:1;padding:8px 0;border-radius:var(--r-sm);border:2px solid var(--accent);background:var(--accent);color:#fff;font-weight:600;cursor:pointer;font-size:13px;transition:all 0.2s;">&#127979; School</button>
+          <button id="modeSummerBtn" onclick="setAppMode('summer')" style="flex:1;padding:8px 0;border-radius:var(--r-sm);border:2px solid var(--border);background:var(--surface2);color:var(--text2);font-weight:600;cursor:pointer;font-size:13px;transition:all 0.2s;">&#9728;&#65039; Summer</button>
+        </div>
+        <div id="summerQuestionsDiv" style="display:none;margin-top:12px;padding:12px;background:var(--surface2);border-radius:var(--r-sm);border:1px solid var(--border);">
+          <p style="font-size:12px;color:var(--text3);margin-bottom:10px;">Summer setup — answer these to personalize your experience:</p>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <label style="font-size:13px;">Summer School?</label>
+            <label class="settings-toggle">
+              <input type="checkbox" id="isSummerSchoolCheck">
+              <span class="settings-toggle-slider"></span>
+            </label>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <label style="font-size:13px;">Summer Job?</label>
+            <label class="settings-toggle">
+              <input type="checkbox" id="hasSummerJobCheck">
+              <span class="settings-toggle-slider"></span>
+            </label>
+          </div>
         </div>
       </div>
       <div class="settings-section">
@@ -3517,6 +3625,62 @@ margin-bottom: 0;
   </div>
 </div>
 
+<!-- ── Summer Home Page ── -->
+<div class="page" id="page-summer-home">
+  <div class="sidebar-header">&#9728;&#65039; Summer Overview</div>
+
+  <!-- UV / Weather Alert -->
+  <div id="uvAlertArea" style="margin:0 0 12px;"></div>
+
+  <!-- Bucket List Progress -->
+  <div class="sidebar-section">
+    <div id="summerBucketProgress" class="bucket-progress-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:600;font-size:13px;">&#127774; Bucket List</span>
+        <span id="bucketProgressText" style="font-size:12px;color:var(--text3);">0 / 0</span>
+      </div>
+      <div class="bucket-progress-bar-wrap"><div class="bucket-progress-bar" id="bucketProgressBar" style="width:0%;"></div></div>
+      <div style="font-size:11px;color:var(--text3);">adventures completed this summer</div>
+    </div>
+  </div>
+
+  <!-- Critical Tasks Only -->
+  <div class="sidebar-section">
+    <h2 class="section-title" style="font-size:13px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Critical Tasks</h2>
+    <div id="summerCriticalTasks">
+      <p style="color:var(--text3);font-size:13px;">Loading...</p>
+    </div>
+  </div>
+
+  <!-- Job Schedule (shown when hasSummerJob) -->
+  <div class="sidebar-section" id="jobScheduleSection" style="display:none;">
+    <h2 class="section-title" style="font-size:13px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">&#128198; Work Schedule</h2>
+    <div id="jobScheduleList"><p style="color:var(--text3);font-size:13px;">Loading...</p></div>
+  </div>
+</div>
+
+<!-- ── Bucket List / Adventure Tracker Page ── -->
+<div class="page" id="page-summer-bucket">
+  <div class="sidebar-header" style="display:flex;justify-content:space-between;align-items:center;">
+    <span>&#127774; Bucket List</span>
+    <button onclick="openAddBucketItem()" style="background:none;border:none;color:var(--text);cursor:pointer;font-size:18px;padding:0;line-height:1;" title="Add item">+</button>
+  </div>
+
+  <!-- Add Item Inline Form (hidden by default) -->
+  <div id="bucketAddForm" style="display:none;padding:10px;background:var(--surface2);border-radius:var(--r-sm);margin-bottom:12px;border:1px solid var(--border);">
+    <input id="bucketTitleInput" type="text" placeholder="What do you want to do this summer?" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;margin-bottom:6px;box-sizing:border-box;">
+    <input id="bucketCategoryInput" type="text" placeholder="Category (e.g. Adventure, Food, Travel)" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;margin-bottom:8px;box-sizing:border-box;">
+    <div style="display:flex;gap:6px;">
+      <button onclick="saveBucketItem()" style="flex:1;padding:7px;background:var(--accent);border:none;border-radius:var(--r-sm);color:#fff;font-weight:600;cursor:pointer;font-size:12px;">Add</button>
+      <button onclick="closeBucketAddForm()" style="flex:1;padding:7px;background:var(--surface3);border:none;border-radius:var(--r-sm);color:var(--text);cursor:pointer;font-size:12px;">Cancel</button>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div id="bucketListContainer"><p style="color:var(--text3);font-size:13px;">Loading...</p></div>
+  </div>
+</div>
+
 
 </main>
 
@@ -3734,6 +3898,8 @@ function navigateTo(pageName) {
   else if (pageName === 'plan') loadDailyPlan();
   else if (pageName === 'projects') loadProjects();
   else if (pageName === 'meals') loadMealsPage();
+  else if (pageName === 'summer-home') refreshSummerHome();
+  else if (pageName === 'summer-bucket') loadBucketList();
   else if (pageName === 'chat') {
     var msgs = document.getElementById('chatMessages');
     if (msgs) msgs.scrollTop = msgs.scrollHeight;
@@ -3987,9 +4153,17 @@ function openSettings() {
   // Load settings from localStorage
   const customName = localStorage.getItem('aiCustomName') || 'Student';
   const timezone = localStorage.getItem('userTimezone') || TZ || 'America/Denver';
-
   document.getElementById('settingsNameInput').value = customName;
   document.getElementById('settingsTimezoneSelect').value = timezone;
+
+  // Load mode settings from server config
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    const mode = cfg.app_mode || 'school';
+    _applyModeButtons(mode);
+    document.getElementById('isSummerSchoolCheck').checked = !!cfg.is_summer_school;
+    document.getElementById('hasSummerJobCheck').checked = !!cfg.has_summer_job;
+    document.getElementById('summerQuestionsDiv').style.display = mode === 'summer' ? 'block' : 'none';
+  }).catch(() => {});
 }
 
 function closeSettingsModal() {
@@ -4020,8 +4194,213 @@ function saveSettings() {
   localStorage.setItem('aiCustomName', customName);
   localStorage.setItem('userTimezone', timezone);
 
+  // Persist mode settings to server
+  const mode = localStorage.getItem('appMode') || 'school';
+  const isSummerSchool = document.getElementById('isSummerSchoolCheck').checked;
+  const hasSummerJob = document.getElementById('hasSummerJobCheck').checked;
+
+  fetch('/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: customName, timezone, app_mode: mode, is_summer_school: String(isSummerSchool), has_summer_job: String(hasSummerJob) }),
+  }).catch(() => {});
+
+  applyAppMode(mode);
   closeSettingsModal();
   alert('Settings saved successfully');
+}
+
+// ── App Mode Management ──────────────────────────────────────────────────────
+
+let _currentAppMode = localStorage.getItem('appMode') || 'school';
+
+function _applyModeButtons(mode) {
+  const schoolBtn = document.getElementById('modeSchoolBtn');
+  const summerBtn = document.getElementById('modeSummerBtn');
+  if (!schoolBtn || !summerBtn) return;
+  if (mode === 'summer') {
+    summerBtn.style.background = 'var(--accent)';
+    summerBtn.style.borderColor = 'var(--accent)';
+    summerBtn.style.color = '#fff';
+    schoolBtn.style.background = 'var(--surface2)';
+    schoolBtn.style.borderColor = 'var(--border)';
+    schoolBtn.style.color = 'var(--text2)';
+  } else {
+    schoolBtn.style.background = 'var(--accent)';
+    schoolBtn.style.borderColor = 'var(--accent)';
+    schoolBtn.style.color = '#fff';
+    summerBtn.style.background = 'var(--surface2)';
+    summerBtn.style.borderColor = 'var(--border)';
+    summerBtn.style.color = 'var(--text2)';
+  }
+}
+
+function setAppMode(mode) {
+  _currentAppMode = mode;
+  localStorage.setItem('appMode', mode);
+  _applyModeButtons(mode);
+  document.getElementById('summerQuestionsDiv').style.display = mode === 'summer' ? 'block' : 'none';
+}
+
+function applyAppMode(mode) {
+  _currentAppMode = mode;
+  localStorage.setItem('appMode', mode);
+  const isSummer = mode === 'summer';
+  // Toggle school-only nav elements
+  document.querySelectorAll('.school-nav').forEach(el => { el.style.display = isSummer ? 'none' : ''; });
+  // Toggle summer-only nav elements
+  document.querySelectorAll('.summer-nav').forEach(el => { el.style.display = isSummer ? '' : 'none'; });
+  // If currently on a school-only page, redirect to home
+  const schoolOnlyPages = ['assignments', 'plan', 'chat'];
+  const activePage = document.querySelector('.page.active');
+  if (isSummer && activePage) {
+    const pid = activePage.id.replace('page-', '');
+    if (schoolOnlyPages.includes(pid)) navigateTo('home');
+  }
+  // Refresh summer home data if navigating to it
+  if (isSummer) {
+    refreshSummerHome();
+  }
+}
+
+// ── Summer Home ──────────────────────────────────────────────────────────────
+
+function refreshSummerHome() {
+  loadUVAlert();
+  loadBucketProgress();
+  loadSummerCriticalTasks();
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    const jobSection = document.getElementById('jobScheduleSection');
+    if (jobSection) jobSection.style.display = cfg.has_summer_job ? '' : 'none';
+    if (cfg.has_summer_job) loadJobSchedule();
+  }).catch(() => {});
+}
+
+function loadUVAlert() {
+  const area = document.getElementById('uvAlertArea');
+  if (!area) return;
+  area.innerHTML = '<p style="color:var(--text3);font-size:12px;">Checking UV...</p>';
+  fetch('/api/weather-uv').then(r => r.json()).then(d => {
+    if (d.error) { area.innerHTML = ''; return; }
+    const uv = d.uv_index != null ? d.uv_index.toFixed(1) : '—';
+    const temp = d.temperature_f != null ? Math.round(d.temperature_f) + '°F' : '';
+    if (d.avoid_desk_work) {
+      area.innerHTML = `<div class="summer-uv-alert">☀️ UV ${uv} ${temp ? '· ' + temp : ''} — ${d.alert}</div>`;
+    } else {
+      area.innerHTML = `<div class="summer-uv-safe">🌤️ UV ${uv} ${temp ? '· ' + temp : ''} — Good conditions for desk work.</div>`;
+    }
+  }).catch(() => { area.innerHTML = ''; });
+}
+
+function loadBucketProgress() {
+  fetch('/api/bucket-list').then(r => r.json()).then(items => {
+    const total = items.length;
+    const done = items.filter(i => i.completed).length;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    const txt = document.getElementById('bucketProgressText');
+    const bar = document.getElementById('bucketProgressBar');
+    if (txt) txt.textContent = done + ' / ' + total;
+    if (bar) bar.style.width = pct + '%';
+  }).catch(() => {});
+}
+
+function loadSummerCriticalTasks() {
+  const el = document.getElementById('summerCriticalTasks');
+  if (!el) return;
+  fetch('/api/tasks').then(r => r.json()).then(tasks => {
+    const critical = tasks.filter(t => !t.completed && t.urgency === 'high');
+    if (!critical.length) {
+      el.innerHTML = '<p style="color:var(--text3);font-size:13px;">No critical tasks — enjoy your day!</p>';
+      return;
+    }
+    el.innerHTML = critical.map(t => `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
+        <input type="checkbox" onchange="completeSummerTask(${t.id}, this)" style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;">
+        <span style="font-size:13px;flex:1;">${escapeHtml(t.title)}</span>
+        ${t.due_date ? `<span style="font-size:11px;color:var(--red);">${t.due_date}</span>` : ''}
+      </div>`).join('');
+  }).catch(() => { el.innerHTML = '<p style="color:var(--text3);font-size:13px;">Could not load tasks.</p>'; });
+}
+
+function completeSummerTask(id, cb) {
+  fetch('/api/tasks/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({completed: true}) })
+    .then(r => r.json()).then(() => loadSummerCriticalTasks()).catch(() => { cb.checked = false; });
+}
+
+function loadJobSchedule() {
+  const el = document.getElementById('jobScheduleList');
+  if (!el) return;
+  fetch('/api/job-schedule').then(r => r.json()).then(data => {
+    if (!data.configured) { el.innerHTML = '<p style="color:var(--text3);font-size:12px;">No job schedule configured.</p>'; return; }
+    if (!data.events || !data.events.length) { el.innerHTML = '<p style="color:var(--text3);font-size:12px;">No upcoming shifts.</p>'; return; }
+    el.innerHTML = data.events.slice(0, 7).map(ev => `
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">
+        <span>${escapeHtml(ev.title)}</span>
+        <span style="color:var(--text3);">${ev.date}${ev.time ? ' ' + ev.time : ''}</span>
+      </div>`).join('');
+  }).catch(() => { el.innerHTML = '<p style="color:var(--text3);font-size:12px;">Could not load schedule.</p>'; });
+}
+
+// ── Bucket List CRUD ──────────────────────────────────────────────────────────
+
+function loadBucketList() {
+  const el = document.getElementById('bucketListContainer');
+  if (!el) return;
+  fetch('/api/bucket-list').then(r => r.json()).then(items => {
+    if (!items.length) {
+      el.innerHTML = '<p style="color:var(--text3);font-size:13px;">Your bucket list is empty — add something exciting!</p>';
+      return;
+    }
+    const pending = items.filter(i => !i.completed);
+    const done = items.filter(i => i.completed);
+    let html = '';
+    if (pending.length) {
+      html += pending.map(i => renderBucketItem(i)).join('');
+    }
+    if (done.length) {
+      html += `<div style="margin:14px 0 6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;">Completed (${done.length})</div>`;
+      html += done.map(i => renderBucketItem(i)).join('');
+    }
+    el.innerHTML = html;
+  }).catch(() => { el.innerHTML = '<p style="color:var(--text3);font-size:13px;">Could not load bucket list.</p>'; });
+}
+
+function renderBucketItem(item) {
+  const titleStyle = item.completed ? 'text-decoration:line-through;color:var(--text3);' : '';
+  const catChip = item.category ? `<span style="font-size:10px;color:var(--accent);background:rgba(255,127,80,0.12);border-radius:4px;padding:1px 5px;margin-left:6px;">${escapeHtml(item.category)}</span>` : '';
+  return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);" id="bucket-item-${item.id}">
+    <input type="checkbox" ${item.completed ? 'checked' : ''} onchange="toggleBucketItem(${item.id}, this)" style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;flex-shrink:0;">
+    <span style="flex:1;font-size:13px;${titleStyle}">${escapeHtml(item.title)}${catChip}</span>
+    <button onclick="deleteBucketItem(${item.id})" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:0 2px;flex-shrink:0;" title="Delete">✕</button>
+  </div>`;
+}
+
+function toggleBucketItem(id, cb) {
+  fetch('/api/bucket-list/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({completed: cb.checked}) })
+    .then(r => r.json()).then(() => { loadBucketList(); loadBucketProgress(); }).catch(() => { cb.checked = !cb.checked; });
+}
+
+function deleteBucketItem(id) {
+  if (!confirm('Delete this bucket list item?')) return;
+  fetch('/api/bucket-list/' + id, { method: 'DELETE' }).then(() => { loadBucketList(); loadBucketProgress(); });
+}
+
+function openAddBucketItem() {
+  const form = document.getElementById('bucketAddForm');
+  if (form) { form.style.display = 'block'; document.getElementById('bucketTitleInput').focus(); }
+}
+
+function closeBucketAddForm() {
+  const form = document.getElementById('bucketAddForm');
+  if (form) { form.style.display = 'none'; document.getElementById('bucketTitleInput').value = ''; document.getElementById('bucketCategoryInput').value = ''; }
+}
+
+function saveBucketItem() {
+  const title = (document.getElementById('bucketTitleInput').value || '').trim();
+  const category = (document.getElementById('bucketCategoryInput').value || '').trim();
+  if (!title) return;
+  fetch('/api/bucket-list', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({title, category}) })
+    .then(r => r.json()).then(() => { closeBucketAddForm(); loadBucketList(); loadBucketProgress(); });
 }
 
 function confirmLogout() {
@@ -8087,8 +8466,19 @@ setInterval(updateClock, 60000);
 loadSidebarData();
 loadProjects();
 
-// Open Home page by default on load
-navigateTo('home');
+// Apply saved app mode before first navigation
+(function initMode() {
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    const mode = cfg.app_mode || 'school';
+    localStorage.setItem('appMode', mode);
+    _currentAppMode = mode;
+    applyAppMode(mode);
+    // Default to summer-home in summer mode
+    if (mode === 'summer') navigateTo('summer-home');
+    else navigateTo('home');
+  }).catch(() => navigateTo('home'));
+})();
+
 updateTopNavDate();
 
 // Load and display task suggestions after a brief delay (non-blocking)
@@ -8779,132 +9169,140 @@ function submitAddFood() {
 }
 </script>
 
-<div id="pomodoroWidget" style="position:fixed;right:16px;top:64px;z-index:9000;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:12px 14px;color:#eee;font-family:'DM Sans',sans-serif;box-shadow:0 8px 28px rgba(0,0,0,0.4);min-width:200px;display:none;">
+<div id="pomodoroWidget" style="position:fixed;right:16px;top:64px;z-index:9000;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:12px 14px;color:#eee;font-family:'DM Sans',sans-serif;box-shadow:0 8px 28px rgba(0,0,0,0.4);min-width:210px;display:none;">
   <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">
-    <strong style="font-size:13px;letter-spacing:0.5px;">FOCUS TIMER</strong>
+    <strong id="pomodoroPhaseLabel" style="font-size:13px;letter-spacing:0.5px;">FOCUS — 25:00</strong>
     <button id="pomodoroClose" type="button" style="background:transparent;border:0;color:#777;cursor:pointer;font-size:18px;line-height:1;">&times;</button>
   </div>
   <div id="pomodoroDisplay" style="font-size:36px;font-weight:600;text-align:center;font-variant-numeric:tabular-nums;letter-spacing:1px;color:#FF7F50;">25:00</div>
-  <div id="pomodoroStatus" style="font-size:11px;text-align:center;color:#888;margin:4px 0 10px;">Idle</div>
+  <div id="pomodoroStatus" style="font-size:11px;text-align:center;color:#888;margin:4px 0 6px;">Idle · Session 1</div>
+  <div style="height:4px;background:#222;border-radius:2px;margin-bottom:10px;overflow:hidden;">
+    <div id="pomodoroBar" style="height:100%;background:#FF7F50;border-radius:2px;width:0%;transition:width 0.5s linear;"></div>
+  </div>
   <div style="display:flex;gap:6px;justify-content:center;">
-    <input id="pomodoroMinutes" type="number" min="1" max="240" value="25" style="width:54px;padding:4px 6px;background:#0c0c0c;border:1px solid #333;color:#eee;border-radius:6px;font-size:12px;">
-    <button id="pomodoroStart" type="button" style="padding:4px 10px;background:#FF7F50;border:0;color:#000;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;">Start</button>
+    <button id="pomodoroStart" type="button" style="padding:4px 14px;background:#FF7F50;border:0;color:#000;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;">Start</button>
     <button id="pomodoroPause" type="button" style="padding:4px 10px;background:#2a2a2a;border:0;color:#eee;border-radius:6px;cursor:pointer;font-size:12px;">Pause</button>
     <button id="pomodoroStop" type="button" style="padding:4px 10px;background:#2a2a2a;border:0;color:#eee;border-radius:6px;cursor:pointer;font-size:12px;">Reset</button>
   </div>
 </div>
 <script>
 (function pomodoroInit() {
+  const WORK_SECS = 25 * 60;
+  const BREAK_SECS = 5 * 60;
+
   const widget = document.getElementById('pomodoroWidget');
   const opener = document.getElementById('pomodoroOpen');
   const closer = document.getElementById('pomodoroClose');
   const display = document.getElementById('pomodoroDisplay');
   const statusEl = document.getElementById('pomodoroStatus');
-  const minutesInput = document.getElementById('pomodoroMinutes');
+  const phaseLabel = document.getElementById('pomodoroPhaseLabel');
+  const bar = document.getElementById('pomodoroBar');
   const startBtn = document.getElementById('pomodoroStart');
   const pauseBtn = document.getElementById('pomodoroPause');
   const stopBtn = document.getElementById('pomodoroStop');
   if (!widget || !opener) return;
 
-  let pollHandle = null;
-  let lastState = null;
-  let chimePlayedFor = null;
+  // State
+  let phase = 'work';   // 'work' | 'break'
+  let session = 1;
+  let remaining = WORK_SECS;
+  let running = false;
+  let tick = null;
 
   function fmt(secs) {
     secs = Math.max(0, Math.round(secs));
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    return String(Math.floor(secs / 60)).padStart(2, '0') + ':' + String(secs % 60).padStart(2, '0');
   }
 
-  function playChime() {
+  function chime(freq) {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const o = ctx.createOscillator();
       const g = ctx.createGain();
       o.connect(g); g.connect(ctx.destination);
-      o.type = 'sine'; o.frequency.value = 880;
+      o.type = 'sine'; o.frequency.value = freq || 880;
       g.gain.setValueAtTime(0.0001, ctx.currentTime);
       g.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.05);
-      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1.2);
-      o.start(); o.stop(ctx.currentTime + 1.3);
-    } catch (e) { /* ignore */ }
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1.4);
+      o.start(); o.stop(ctx.currentTime + 1.5);
+    } catch (_) {}
   }
 
-  function render(state) {
-    lastState = state;
-    const total = (state.estimate_minutes || 25) * 60;
-    const remaining = total - state.elapsed_seconds;
+  function render() {
+    const total = phase === 'work' ? WORK_SECS : BREAK_SECS;
+    const pct = ((total - remaining) / total) * 100;
     display.textContent = fmt(remaining);
-    if (!state.active) {
-      statusEl.textContent = 'Idle';
-      chimePlayedFor = null;
-    } else if (state.paused) {
-      statusEl.textContent = 'Paused';
+    bar.style.width = pct + '%';
+    const phaseStr = phase === 'work' ? 'FOCUS' : 'BREAK';
+    phaseLabel.textContent = phaseStr + ' — ' + fmt(remaining);
+    display.style.color = phase === 'work' ? '#FF7F50' : '#5cb85c';
+    bar.style.background = phase === 'work' ? '#FF7F50' : '#5cb85c';
+    const stateStr = running ? (phase === 'work' ? 'Focusing' : 'Resting') : (remaining === total ? 'Idle' : 'Paused');
+    statusEl.textContent = stateStr + ' · Session ' + session;
+  }
+
+  function nextPhase() {
+    chime(phase === 'work' ? 660 : 880);
+    if (phase === 'work') {
+      phase = 'break';
+      remaining = BREAK_SECS;
     } else {
-      statusEl.textContent = remaining <= 0 ? 'Complete' : 'Running';
+      phase = 'work';
+      session++;
+      remaining = WORK_SECS;
     }
-    if (state.active && remaining <= 0 && chimePlayedFor !== state.estimate_minutes) {
-      chimePlayedFor = state.estimate_minutes;
-      playChime();
-    }
+    render();
+    // auto-continue running
   }
 
-  async function fetchState() {
-    try {
-      const r = await fetch('/api/pomodoro/state');
-      if (!r.ok) return;
-      const s = await r.json();
-      render(s);
-    } catch (e) { /* ignore */ }
+  function startTick() {
+    if (tick) return;
+    tick = setInterval(() => {
+      if (!running) return;
+      remaining--;
+      if (remaining <= 0) {
+        remaining = 0;
+        render();
+        nextPhase();
+      } else {
+        render();
+      }
+    }, 1000);
   }
 
-  function startPolling() {
-    if (pollHandle) return;
-    pollHandle = setInterval(fetchState, 1000);
+  function stopTick() {
+    if (tick) { clearInterval(tick); tick = null; }
   }
-  function stopPolling() {
-    if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+
+  function reset() {
+    running = false;
+    phase = 'work';
+    session = 1;
+    remaining = WORK_SECS;
+    stopTick();
+    render();
   }
 
   opener.addEventListener('click', () => {
-    const isOpen = widget.style.display === 'block';
-    if (isOpen) {
-      widget.style.display = 'none';
-      stopPolling();
-    } else {
-      widget.style.display = 'block';
-      fetchState();
-      startPolling();
+    widget.style.display = widget.style.display === 'block' ? 'none' : 'block';
+    render();
+  });
+  closer.addEventListener('click', () => { widget.style.display = 'none'; });
+
+  startBtn.addEventListener('click', () => {
+    if (!running) {
+      running = true;
+      startTick();
+      render();
     }
   });
-  closer.addEventListener('click', () => {
-    widget.style.display = 'none';
-    stopPolling();
+  pauseBtn.addEventListener('click', () => {
+    running = !running;
+    render();
   });
+  stopBtn.addEventListener('click', reset);
 
-  startBtn.addEventListener('click', async () => {
-    const minutes = parseFloat(minutesInput.value) || 25;
-    await fetch('/api/pomodoro/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ minutes })
-    }).then(r => r.json()).then(render).catch(() => {});
-    startPolling();
-  });
-  pauseBtn.addEventListener('click', async () => {
-    await fetch('/api/pomodoro/pause', { method: 'POST' }).then(r => r.json()).then(render).catch(() => {});
-  });
-  stopBtn.addEventListener('click', async () => {
-    await fetch('/api/pomodoro/stop', { method: 'POST' }).then(r => r.json()).then(render).catch(() => {});
-  });
-
-  fetchState().then(() => {
-    if (lastState && lastState.active) {
-      widget.style.display = 'block';
-      startPolling();
-    }
-  });
+  render();
 })();
 </script>
 
