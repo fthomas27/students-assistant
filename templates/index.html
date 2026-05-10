@@ -200,6 +200,12 @@ gap: 12px;
   color: #fff; font-weight: 600; font-size: 15px;
   border-radius: var(--r-sm);
 }
+.insight-regen-btn {
+  background: none; border: none; cursor: pointer; color: rgba(255,255,255,0.8);
+  font-size: 16px; padding: 0 2px; line-height: 1; margin-left: auto;
+  transition: color 0.15s, transform 0.2s;
+}
+.insight-regen-btn:hover { color: #fff; transform: rotate(30deg); }
 .home-insight-header .chev { transition: transform 0.2s; font-size: 12px; }
 .home-insight-section.collapsed .home-insight-body { display: none; }
 .home-insight-section.collapsed .home-insight-header .chev { transform: rotate(-90deg); }
@@ -3187,6 +3193,7 @@ margin-bottom: 0;
   <section class="home-section home-insight-section collapsed" id="homeWeeklyInsightSection" style="margin-bottom: 16px;">
     <div class="home-insight-header" onclick="toggleWeeklyInsight()">
       <span>📊 Weekly Insight</span>
+      <button class="insight-regen-btn" onclick="event.stopPropagation(); regenerateWeeklyInsight()" title="Regenerate">↻</button>
       <span class="chev">▾</span>
     </div>
     <div class="home-insight-body" id="homeWeeklyInsightContent">
@@ -3701,6 +3708,22 @@ function toggleWeeklyInsight() {
   if (sec) sec.classList.toggle('collapsed');
 }
 
+async function regenerateWeeklyInsight() {
+  var wkBody = document.getElementById('homeWeeklyInsightContent');
+  var wkSection = document.getElementById('homeWeeklyInsightSection');
+  if (!wkBody) return;
+  if (wkSection) wkSection.classList.remove('collapsed');
+  wkBody.innerHTML = '<p style="color:var(--text2)">Generating insight…</p>';
+  try {
+    const resp = await fetch('/api/insight/weekly/generate', { method: 'POST' });
+    const data = await resp.json();
+    if (!data || !data.content) throw new Error('empty');
+    wkBody.innerHTML = '<div class="message-bubble" style="border-left:3px solid var(--purple);">' + formatMessage(data.content) + '</div>';
+  } catch (e) {
+    wkBody.innerHTML = '<p style="color:var(--text2)">Could not generate weekly insight.</p>';
+  }
+}
+
 function loadHomePage() {
   updateTopNavDate();
 
@@ -3713,7 +3736,11 @@ function loadHomePage() {
 
     fetch('/api/insight/weekly').then(function(r){ return r.json(); }).then(function(data) {
       if (!data || !data.content) {
-        wkBody.innerHTML = '<p style="color:var(--text2)">No weekly insight yet. Check back Sunday morning.</p>';
+        wkBody.innerHTML = '<p style="color:var(--text2)">No weekly insight yet. Click ↻ to generate one.</p>';
+        return;
+      }
+      if (new Date(data.generated_at) < _lastSundayMidnight()) {
+        wkBody.innerHTML = '<p style="color:var(--text2)">No insight for this week yet. Click ↻ to generate one.</p>';
         return;
       }
       wkBody.innerHTML = '<div class="message-bubble" style="border-left:3px solid var(--purple);">' + formatMessage(data.content) + '</div>';
