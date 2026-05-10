@@ -1987,6 +1987,60 @@ animation: pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
 
+/* ── Jarvis tool-activity chips (SSE-driven) ── */
+.jarvis-chip-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.jarvis-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text2);
+  background: var(--surface2);
+  border: 1px solid var(--border, rgba(255,255,255,0.06));
+  border-radius: 999px;
+  width: fit-content;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.95;
+  transition: background 0.2s, color 0.2s, opacity 0.3s;
+}
+
+.jarvis-chip.active {
+  background: var(--surface2);
+  color: var(--text);
+  position: relative;
+}
+
+.jarvis-chip.active::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent, #6aa3ff);
+  animation: pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  margin-left: 2px;
+}
+
+.jarvis-chip.done {
+  opacity: 0.65;
+}
+
+.jarvis-stream-text {
+  white-space: pre-wrap;
+}
+
 /* ── Success State ── */
 .success-state {
 animation: successPulse 0.6s cubic-bezier(0.4, 0, 0.2, 1);
@@ -3455,6 +3509,32 @@ let tasksCache = [];
 let projectsCache = [];
 let calendarCache = [];
 
+// Server-side conversation id — persisted across reloads so the server can
+// recall prior chats and stitch together messages across tab refreshes.
+let currentConversationId = (function () {
+  try {
+    let id = localStorage.getItem('currentConversationId');
+    if (!id) {
+      id = (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID().replace(/-/g, '')
+        : (Date.now().toString(36) + Math.random().toString(36).slice(2));
+      localStorage.setItem('currentConversationId', id);
+    }
+    return id;
+  } catch (_e) {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2);
+  }
+})();
+
+function newConversationId() {
+  const id = (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID().replace(/-/g, '')
+    : (Date.now().toString(36) + Math.random().toString(36).slice(2));
+  currentConversationId = id;
+  try { localStorage.setItem('currentConversationId', id); } catch (_e) {}
+  return id;
+}
+
 const CONVERSATION_HISTORY_MAX = 200;
 function pushConversation(msg) {
   conversationHistory.push(msg);
@@ -3865,6 +3945,12 @@ function loadChat(index) {
   const chat = histories[index];
   if (chat) {
     conversationHistory = chat.messages || [];
+    if (chat.conversationId) {
+      currentConversationId = chat.conversationId;
+      try { localStorage.setItem('currentConversationId', chat.conversationId); } catch (_e) {}
+    } else {
+      newConversationId();
+    }
     renderChatMessages();
     closeChatHistory();
   }
@@ -3875,6 +3961,7 @@ function startNewChat() {
     saveCurrentChat();
   }
   conversationHistory = [];
+  newConversationId();
   document.getElementById('chatMessages').innerHTML = '<div class="empty-state">Start a new chat...</div>';
   closeChatHistory();
 }
@@ -3887,6 +3974,7 @@ function clearAllChatHistory() {
   if (!confirm(msg)) return;
   localStorage.removeItem('chatHistories');
   conversationHistory = [];
+  newConversationId();
   const messagesDiv = document.getElementById('chatMessages');
   if (messagesDiv) messagesDiv.innerHTML = '<div class="empty-state">Chat history cleared.</div>';
   loadChatHistory();
@@ -3899,11 +3987,22 @@ function saveCurrentChat() {
   const histories = JSON.parse(localStorage.getItem('chatHistories') || '[]');
   const title = conversationHistory[0]?.content?.substring(0, 50) || 'Chat';
 
+  // De-duplicate: if there's already a saved entry for this conversationId,
+  // drop the older one so this updated copy replaces it.
+  if (currentConversationId) {
+    for (let i = histories.length - 1; i >= 0; i--) {
+      if (histories[i] && histories[i].conversationId === currentConversationId) {
+        histories.splice(i, 1);
+      }
+    }
+  }
+
   histories.unshift({
     timestamp: new Date().toISOString(),
     title: title,
     messages: conversationHistory,
-    messageCount: conversationHistory.length
+    messageCount: conversationHistory.length,
+    conversationId: currentConversationId,
   });
 
   // Keep only last 20 chats
@@ -5969,117 +6068,238 @@ async function sendMessage() {
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
   try {
-    const customName = localStorage.getItem('aiCustomName') || 'Student';
     const response = await fetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
       body: JSON.stringify({
         messages: conversationHistory,
-        system: `You are Jarvis, a full-range personal AI assistant for ${customName} — the impeccably composed British majordomo from the Iron Man films. You are a capable, general-purpose intelligence: answer ANY reasonable question the student asks, not only scheduling or task questions.
-
-Scope — help with any of the following, with equal competence:
-- Homework help across subjects: math (show working), science, history, English, language arts, foreign languages, computer science (write, explain, debug code), economics, art, music theory, etc.
-- Writing help: drafting, editing, brainstorming, outlining, thesis statements, revising, grammar, style.
-- Research questions: explain concepts, compare ideas, summarise topics, supply historical or scientific background from your own knowledge.
-- Life / advice / conversation: general chat, advice on friendships, sports, fitness, hobbies, travel, food, random curiosity, jokes, small talk.
-- Calendar / assignments / tasks / projects — the personal data below.
-- Stocks — record buy/sell and summarise holdings (see STOCK_ACTION rules).
-
-Do NOT refuse or deflect general questions by saying things like "I can only help with your schedule." You are a full assistant; only decline genuinely harmful or illegal requests. If a question is outside the injected personal data, answer from your own knowledge.
-
-Style:
-- Stay in character as Jarvis: dry wit, understated humour, British-butler register. Address ${customName} as "sir" or by their first name.
-- Be concise and actionable; use bullet points and headers for anything longer than a couple of sentences. Keep the formatting rules from the server system prompt.
-- Be encouraging but realistic; never lecture or moralise.
-
-TASK CREATION CAPABILITY
-When ${customName} explicitly asks to create, add, make, or schedule a task:
-1. Understand what needs to be done.
-2. Ask about urgency (high=ASAP, medium=this week, low=flexible) and due date if not given.
-3. Append this EXACT block on its own line at the end of your reply:
-[TASK_ACTION: {"title": "EXACT_TITLE", "urgency": "high|medium|low", "due_date": "YYYY-MM-DD", "notes": ""}]
-4. The server handles persistence — just say something natural like "Done, sir — added to your list."
-
-Critical task-action rules:
-- The [TASK_ACTION: ...] block must contain VALID JSON — no bold, no markdown inside it.
-- title: descriptive, max 300 chars.
-- urgency: exactly one of: high, medium, low.
-- due_date: YYYY-MM-DD or null.
-- notes: optional plain text, max 200 chars.
-- Only ONE [TASK_ACTION] block per response.
-- NEVER output [TASK_ACTION] unless ${customName} explicitly asked to add a task.
-
-STOCK NOTES & RESEARCH
-- When ${customName} tells you WHY they bought something, a target price, a stop-loss, or anything they want remembered about a position, append [STOCK_NOTE: {"symbol":"AAPL","thesis":"...","exit_criteria":"...","target_price":200,"stop_loss":150}] at the end of your reply. Only include the fields you are actually setting — partials merge with what is already stored.
-- When ${customName} asks to research / analyse / get your take on a symbol, answer directly from your knowledge (bull case, bear case, catalysts, risks). Mention that a full live brief (analyst consensus + recent news + fundamentals + exit triggers) is available via the **Research** button on the Portfolio card inside the Morning Outlook.
-
-TASK COMPLETION & REMOVAL
-- When ${customName} says a task is done / finished / completed / handled, append [TASK_COMPLETE: {"id": <number>}] at the very end of your reply using the id from the Pending tasks context injected by the server. If the id isn't clear, you may use [TASK_COMPLETE: {"title": "<exact title>"}] instead.
-- When ${customName} says to delete / remove / cancel / discard a task, append [TASK_DELETE: {"id": <number>}] (or title fallback) at the end.
-- If the reference is ambiguous (multiple tasks could match), ask one clarifying question and do NOT emit a token.
-- At most ONE of [TASK_ACTION] / [TASK_COMPLETE] / [TASK_DELETE] per reply. Never emit any of them unless ${customName} explicitly requested the action.
-
-The server prompt also injects a [STOCK_ACTION: ...] token rule and the student's assignments, tasks (with ids), projects, calendar, school schedule, and stock holdings — use that context when relevant, but do not fabricate it when it is absent.`
+        conversation_id: currentConversationId,
       })
     });
 
-    const data = await response.json();
-    const assistantMessage = data.content || 'Sorry, I encountered an error.';
+    if (!response.ok || !response.body) {
+      // Server may have returned a JSON error (config missing, etc.)
+      let errMsg = 'Sorry, I encountered an error.';
+      try {
+        const errData = await response.json();
+        if (errData && errData.error) errMsg = errData.error;
+      } catch (_e) { /* ignore */ }
+      loadingBubble.innerHTML = `<div class="message-bubble" style="color: var(--red);">${escapeHtml(errMsg)}</div>`;
+      showToast('Connection error. Please try again.', 'error');
+      return;
+    }
 
-    const _refreshTasks = () => {
+    // ── Stream-time UI scaffolding ─────────────────────────────────────
+    // Replace the typing indicator with a chip stack + streaming text region
+    // the moment the response starts arriving.
+    const bubble = document.createElement('div');
+    bubble.className = 'message-bubble';
+    const chipStack = document.createElement('div');
+    chipStack.className = 'jarvis-chip-stack';
+    chipStack.style.display = 'none';
+    const textRegion = document.createElement('div');
+    textRegion.className = 'jarvis-stream-text';
+    bubble.appendChild(chipStack);
+    bubble.appendChild(textRegion);
+    let bubbleAttached = false;
+
+    function attachBubble() {
+      if (bubbleAttached) return;
+      loadingBubble.innerHTML = '';
+      loadingBubble.appendChild(bubble);
+      bubbleAttached = true;
+    }
+
+    const activeChips = new Map(); // tool_use_id -> { el, name, kind }
+    function chipLabelFor(name, kind, input) {
+      if (name === 'web_search') {
+        const q = input && input.query ? String(input.query).slice(0, 60) : '';
+        return q ? `🔎 Searching the web for "${q}"…` : '🔎 Searching the web…';
+      }
+      if (name === 'web_fetch') {
+        let host = '';
+        try { host = input && input.url ? new URL(input.url).hostname : ''; } catch (_e) {}
+        return host ? `🌐 Reading ${host}…` : '🌐 Reading web page…';
+      }
+      const map = {
+        get_grades: '📊 Pulling Canvas grades…',
+        get_assignment_details: '📄 Loading assignment details…',
+        get_tasks: '📋 Checking your tasks…',
+        create_task: '📝 Adding task…',
+        complete_task: '✅ Marking task complete…',
+        delete_task: '🗑️ Removing task…',
+        update_task: '📝 Updating task…',
+        get_assignments: '📚 Checking Canvas assignments…',
+        complete_assignment: '✅ Logging assignment…',
+        get_calendar_events: '📅 Checking your calendar…',
+        log_stock_transaction: '💹 Recording transaction…',
+        save_stock_note: '🗒️ Saving stock note…',
+        get_portfolio: '💼 Reading portfolio…',
+        get_projects: '📁 Loading projects…',
+        create_project: '✨ Creating project…',
+        add_project_task: '➕ Adding project task…',
+        generate_workout: '🏋️ Generating workout…',
+        get_workout_history: '📊 Checking workout history…',
+        get_briefing: '📰 Fetching briefing…',
+      };
+      return map[name] || `⚙ Running ${name}…`;
+    }
+
+    function chipDoneLabelFor(name, input) {
+      if (name === 'web_search') {
+        const q = input && input.query ? String(input.query).slice(0, 60) : '';
+        return q ? `🔎 Searched: "${q}"` : '🔎 Searched the web';
+      }
+      if (name === 'web_fetch') {
+        let host = '';
+        try { host = input && input.url ? new URL(input.url).hostname : ''; } catch (_e) {}
+        return host ? `🌐 Read ${host}` : '🌐 Read web page';
+      }
+      return chipLabelFor(name, null, input).replace(/…$/, '');
+    }
+
+    function ensureChip(id, name, kind, input) {
+      attachBubble();
+      chipStack.style.display = '';
+      let entry = activeChips.get(id);
+      if (!entry) {
+        const el = document.createElement('div');
+        el.className = 'jarvis-chip active';
+        el.textContent = chipLabelFor(name, kind, input);
+        chipStack.appendChild(el);
+        entry = { el, name, kind };
+        activeChips.set(id, entry);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
+      return entry;
+    }
+
+    function finishChip(id, name, input) {
+      const entry = activeChips.get(id);
+      if (!entry) return;
+      entry.el.classList.remove('active');
+      entry.el.classList.add('done');
+      entry.el.textContent = chipDoneLabelFor(name || entry.name, input);
+    }
+
+    // ── SSE parsing loop ───────────────────────────────────────────────
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let assistantText = '';
+    let actionPayload = null;
+    let streamError = null;
+
+    const refreshTasks = () => {
       tasksCache = [];
       fetch('/api/tasks').then(r => r.ok ? r.json() : null).then(d => {
         if (d) { tasksCache = d.tasks || []; renderTasks(); }
       }).catch(() => {});
     };
 
-    // If server created a task, refresh tasks sidebar
-    if (data.task_created) {
-      _refreshTasks();
-      showToast('Task added to your list!', 'success', 2000);
+    function handleEvent(eventName, data) {
+      if (eventName === 'start') {
+        if (data && data.conversation_id) {
+          currentConversationId = data.conversation_id;
+          try { localStorage.setItem('currentConversationId', data.conversation_id); } catch (_e) {}
+        }
+      } else if (eventName === 'tool_start') {
+        ensureChip(data.id || ('chip-' + Date.now()), data.name, data.kind, null);
+      } else if (eventName === 'tool_input_delta') {
+        // Currently unused — tool_end carries the final input — but we keep the
+        // event hook live so future UI tweaks can show the query as it streams.
+      } else if (eventName === 'tool_end') {
+        finishChip(data.id, data.name, data.input || null);
+      } else if (eventName === 'text') {
+        attachBubble();
+        if (data && typeof data.delta === 'string') {
+          assistantText += data.delta;
+          // Re-render every delta so markdown formatting (lists, bold, headers)
+          // resolves correctly even mid-stream. formatMessage() is pure string-in.
+          textRegion.innerHTML = formatMessage(assistantText);
+          messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+      } else if (eventName === 'action') {
+        actionPayload = data || {};
+      } else if (eventName === 'error') {
+        streamError = (data && data.message) || 'Stream error';
+      }
     }
 
-    // If server completed a task, refresh and toast
-    if (data.task_completed) {
-      _refreshTasks();
-      showToast(data.completed_title ? `Marked "${data.completed_title}" complete.` : 'Task marked complete.', 'success', 2200);
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // Split on double-newline (SSE frame boundary).
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (!frame.trim()) continue;
+        let evName = 'message';
+        let dataStr = '';
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event: ')) evName = line.slice(7).trim();
+          else if (line.startsWith('data: ')) dataStr += (dataStr ? '\n' : '') + line.slice(6);
+        }
+        let parsed = null;
+        if (dataStr) {
+          try { parsed = JSON.parse(dataStr); } catch (_e) { parsed = { raw: dataStr }; }
+        }
+        try { handleEvent(evName, parsed); } catch (e) { console.error('SSE handler error', e); }
+      }
     }
 
-    // If server deleted a task, refresh and toast
-    if (data.task_deleted) {
-      _refreshTasks();
-      showToast(data.deleted_title ? `Removed "${data.deleted_title}".` : 'Task removed.', 'success', 2200);
+    // ── Stream finished ────────────────────────────────────────────────
+    if (streamError) {
+      attachBubble();
+      textRegion.innerHTML = `<span style="color: var(--red);">${escapeHtml(streamError)}</span>`;
+      showToast('Chat error: ' + streamError, 'error');
+      triggerHaptic('error');
+      return;
     }
 
-    // If server recorded a stock transaction, show a toast
-    if (data.stock_recorded) {
-      showStockToast('Transaction recorded, sir.');
+    if (!assistantText) {
+      assistantText = 'Sorry, I encountered an error.';
+      attachBubble();
+      textRegion.innerHTML = formatMessage(assistantText);
     }
 
-    // If server saved a stock note, show a toast
-    if (data.stock_note_saved) {
-      showStockToast(data.stock_note_symbol ? `Note filed for ${data.stock_note_symbol}.` : 'Stock note saved.');
+    // Apply action side-effects (refresh sidebars / toasts).
+    if (actionPayload) {
+      if (actionPayload.task_created) {
+        refreshTasks();
+        showToast('Task added to your list!', 'success', 2000);
+      }
+      if (actionPayload.task_completed) {
+        refreshTasks();
+        showToast(actionPayload.completed_title ? `Marked "${actionPayload.completed_title}" complete.` : 'Task marked complete.', 'success', 2200);
+      }
+      if (actionPayload.task_deleted) {
+        refreshTasks();
+        showToast(actionPayload.deleted_title ? `Removed "${actionPayload.deleted_title}".` : 'Task removed.', 'success', 2200);
+      }
+      if (actionPayload.stock_recorded) {
+        showStockToast('Transaction recorded, sir.');
+      }
+      if (actionPayload.stock_note_saved) {
+        showStockToast(actionPayload.stock_note_symbol ? `Note filed for ${actionPayload.stock_note_symbol}.` : 'Stock note saved.');
+      }
+      if (actionPayload.project_created) {
+        loadProjects();
+        const t = actionPayload.project_created_title;
+        const n = actionPayload.project_created_task_count;
+        const msg = t
+          ? (n ? `Project "${t}" created with ${n} task${n === 1 ? '' : 's'}.` : `Project "${t}" created.`)
+          : 'Project created.';
+        showToast(msg, 'success', 2400);
+      }
+      if (actionPayload.project_task_added) {
+        loadProjects();
+      }
     }
 
-    // If server created a project (often with seeded tasks), refresh and toast
-    if (data.project_created) {
-      loadProjects();
-      const t = data.project_created_title;
-      const n = data.project_created_task_count;
-      const msg = t
-        ? (n ? `Project "${t}" created with ${n} task${n === 1 ? '' : 's'}.` : `Project "${t}" created.`)
-        : 'Project created.';
-      showToast(msg, 'success', 2400);
-    }
-
-    // If server added a task to an existing project, refresh
-    if (data.project_task_added) {
-      loadProjects();
-    }
-
-    loadingBubble.innerHTML = `<div class="message-bubble">${formatMessage(assistantMessage)}</div>`;
-    renderMessageWithDelay(loadingBubble);
-    pushConversation({ role: 'assistant', content: assistantMessage });
+    pushConversation({ role: 'assistant', content: assistantText });
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
     // Save chat to history
