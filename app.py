@@ -456,7 +456,7 @@ def init_db():
 
     tables = [
         ("config", "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"),
-        ("completions", "CREATE TABLE IF NOT EXISTS completions (id SERIAL PRIMARY KEY, completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), assignment_title TEXT NOT NULL, class_name TEXT NOT NULL DEFAULT '', duration_minutes REAL NOT NULL DEFAULT 0, estimate_minutes REAL NOT NULL DEFAULT 0, timed BOOLEAN NOT NULL DEFAULT TRUE)"),
+        ("completions", "CREATE TABLE IF NOT EXISTS completions (id SERIAL PRIMARY KEY, completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), assignment_title TEXT NOT NULL, class_name TEXT NOT NULL DEFAULT '', duration_minutes REAL NOT NULL DEFAULT 0, estimate_minutes REAL NOT NULL DEFAULT 0, timed BOOLEAN NOT NULL DEFAULT TRUE, submitted BOOLEAN NOT NULL DEFAULT FALSE)"),
         ("assignment_estimates", "CREATE TABLE IF NOT EXISTS assignment_estimates (uid TEXT PRIMARY KEY, minutes REAL NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("timer_state", "CREATE TABLE IF NOT EXISTS timer_state (id INT PRIMARY KEY DEFAULT 1, assignment_uid TEXT NOT NULL DEFAULT '', assignment_title TEXT NOT NULL DEFAULT '', class_name TEXT NOT NULL DEFAULT '', estimate_minutes REAL NOT NULL DEFAULT 30, started_at TIMESTAMPTZ, paused_at TIMESTAMPTZ, accumulated_seconds REAL NOT NULL DEFAULT 0, active BOOLEAN NOT NULL DEFAULT FALSE)"),
         ("briefing_cache", "CREATE TABLE IF NOT EXISTS briefing_cache (id INT PRIMARY KEY DEFAULT 1, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL DEFAULT '')"),
@@ -573,6 +573,14 @@ ON CONFLICT (ip_address) DO NOTHING""")
 
     try:
         cur.execute("ALTER TABLE tasks ADD COLUMN hidden_from_parent BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    try:
+        cur.execute("ALTER TABLE completions ADD COLUMN submitted BOOLEAN NOT NULL DEFAULT FALSE")
         conn.commit()
     except psycopg2.Error:
         conn.rollback()
@@ -3290,8 +3298,10 @@ def api_assignments():
         t2 = time.time()
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT assignment_title FROM completions")
-        completed_titles = set(r["assignment_title"] for r in cur.fetchall())
+        cur.execute("SELECT assignment_title, submitted FROM completions")
+        completion_rows = cur.fetchall()
+        submitted_titles = set(r["assignment_title"] for r in completion_rows if r["submitted"])
+        done_titles = set(r["assignment_title"] for r in completion_rows if not r["submitted"])
         cur.execute("SELECT uid, minutes FROM assignment_estimates")
         custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
         cur.close()
@@ -3301,7 +3311,7 @@ def api_assignments():
         assignments = parse_canvas_assignments(cal)
         result = []
         for a in assignments:
-            if a["title"] in completed_titles:
+            if a["title"] in submitted_titles:
                 continue
             uid = a.get("uid", "")
             if uid in custom_estimates:
@@ -3310,6 +3320,8 @@ def api_assignments():
             else:
                 a["estimate_minutes"] = estimate_assignment(a["title"], a["class_name"])
                 a["estimate_custom"] = False
+            if a["title"] in done_titles:
+                a["done"] = True
             result.append(a)
         log.info(f"/api/assignments: estimate took {time.time()-t3:.2f}s for {len(result)} assignments")
         cfg = get_config()
@@ -4007,6 +4019,41 @@ LIMIT 1""", (title, class_name, today_start))
         return jsonify({"status": "ok"})
     except Exception as e:
         log.exception("Error uncompleting assignment")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/submit", methods=["POST"])
+def api_submit():
+    """Mark an assignment as submitted to Canvas (distinct from just 'done')."""
+    data = request.get_json(force=True) or {}
+    title = str(data.get("title", ""))[:300]
+    class_name = str(data.get("class_name", ""))[:100]
+    estimate = float(data.get("estimate_minutes", 30))
+    if not title:
+        return jsonify({"error": "title required"}), 400
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        # Update the most recent completion record to submitted=TRUE
+        cur.execute("""
+UPDATE completions SET submitted = TRUE
+WHERE id = (
+    SELECT id FROM completions
+    WHERE assignment_title = %s
+    ORDER BY completed_at DESC
+    LIMIT 1
+)""", (title,))
+        # If no completion record existed yet, insert one directly as submitted
+        if cur.rowcount == 0:
+            cur.execute("""
+INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, submitted)
+VALUES (%s, %s, 0, %s, FALSE, TRUE)""", (title, class_name, estimate))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.exception("Error submitting assignment")
         return jsonify({"error": str(e)}), 500
 
 
@@ -5339,13 +5386,14 @@ JARVIS_TOOLS = [
     },
     {
         "name": "complete_assignment",
-        "description": "Log a Canvas assignment as completed in the completions record.",
+        "description": "Log a Canvas assignment as completed. Use submitted=true when the student says they turned it in / submitted it to Canvas; use submitted=false (default) when they finished working on it but haven't turned it in yet.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "assignment_title": {"type": "string"},
                 "class_name": {"type": "string"},
                 "duration_minutes": {"type": "integer", "description": "How long it took (optional)"},
+                "submitted": {"type": "boolean", "description": "True if the student submitted to Canvas, false if just done working"},
             },
             "required": ["assignment_title", "class_name"],
         },
@@ -5628,17 +5676,19 @@ def _execute_jarvis_tool(name, inputs):
             title = str(inputs.get("assignment_title", ""))[:300]
             class_name = str(inputs.get("class_name", ""))[:100]
             duration = int(inputs.get("duration_minutes") or 0)
+            submitted = bool(inputs.get("submitted", False))
             if not title:
                 return {"error": "assignment_title required"}
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed) VALUES (%s,%s,%s,0,FALSE)",
-                (title, class_name, duration),
+                "INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, submitted) VALUES (%s,%s,%s,0,FALSE,%s)",
+                (title, class_name, duration, submitted),
             )
             conn.commit(); cur.close(); conn.close()
-            log.info(f"Jarvis tool: logged completion of '{title}'")
-            return {"status": "logged", "assignment": title, "class": class_name}
+            log.info(f"Jarvis tool: logged completion of '{title}' (submitted={submitted})")
+            status = "submitted" if submitted else "logged"
+            return {"status": status, "assignment": title, "class": class_name}
 
         elif name == "get_calendar_events":
             days_ahead = min(30, max(1, int(inputs.get("days_ahead", 7))))

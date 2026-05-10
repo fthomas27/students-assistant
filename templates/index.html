@@ -1210,6 +1210,40 @@ transform: scale(1);
 pointer-events: none;
 }
 
+.mic-btn {
+width: 36px;
+height: 36px;
+border: 1.5px solid var(--border);
+background: transparent;
+color: var(--text2);
+border-radius: 50%;
+display: flex;
+align-items: center;
+justify-content: center;
+cursor: pointer;
+font-size: 15px;
+flex-shrink: 0;
+transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mic-btn:hover {
+border-color: var(--accent);
+color: var(--accent);
+transform: scale(1.08);
+}
+
+.mic-btn.recording {
+border-color: var(--red);
+color: var(--red);
+background: rgba(255,107,107,0.1);
+animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+0%, 100% { transform: scale(1); }
+50% { transform: scale(1.12); }
+}
+
 /* ── RESPONSIVE ── */
 @media (max-width: 639px) {
 .sidebar-item {
@@ -1325,6 +1359,45 @@ transform: scale(1.15);
 .complete-btn:active {
 background: #ff6a3a;
 transform: scale(0.9);
+}
+
+.submit-btn {
+width: 28px;
+height: 28px;
+border: none;
+background: transparent;
+color: #4caf50;
+border-radius: 50%;
+cursor: pointer;
+font-size: 14px;
+display: flex;
+align-items: center;
+justify-content: center;
+transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+flex-shrink: 0;
+will-change: background, color, transform;
+}
+
+.submit-btn:hover {
+background: #4caf50;
+color: white;
+transform: scale(1.15);
+}
+
+.submit-btn:active {
+background: #388e3c;
+transform: scale(0.9);
+}
+
+.sidebar-item.assignment-done {
+opacity: 0.6;
+border-left: 3px solid #4caf50;
+background: rgba(76,175,80,0.06);
+}
+
+.sidebar-item.assignment-done .sidebar-item-title {
+text-decoration: line-through;
+color: var(--text2);
 }
 
 /* Calendar Modal Styles */
@@ -3258,6 +3331,7 @@ margin-bottom: 0;
     </div>
     <div class="chat-input-area">
       <textarea class="chat-input" id="chatInput" placeholder="Ask me anything..." rows="1"></textarea>
+      <button class="mic-btn" id="micBtn" type="button" title="Voice input" style="display:none">🎤</button>
       <button class="send-btn" id="sendBtn" type="button" onclick="sendMessage()">→</button>
     </div>
   </div>
@@ -4236,22 +4310,27 @@ function renderAssignments() {
 
   container.innerHTML = sorted.map(a => {
     const due = a.due_iso ? new Date(a.due_iso) : null;
-    const overdue = due && due < now;
+    const overdue = !a.done && due && due < now;
     const overduePill = overdue ? '<span class="overdue-pill">Overdue</span>' : '';
-    const itemClass = 'sidebar-item assignment-item' + (overdue ? ' assignment-overdue' : '');
+    let itemClass = 'sidebar-item assignment-item';
+    if (a.done) itemClass += ' assignment-done';
+    else if (overdue) itemClass += ' assignment-overdue';
     const safeTitle = (a.title || '').replace(/'/g, "\\'");
     const safeClass = (a.class_name || '').replace(/'/g, "\\'");
     const safeDue = (a.due_iso || '').replace(/'/g, "\\'");
     const est = a.estimate_minutes || 30;
     const cls = (a.class_name || 'Uncategorized').trim() || 'Uncategorized';
     const color = classColor(cls);
+    const actionBtn = a.done
+      ? '<button class="submit-btn" onclick="submitAssignment(event,\'' + safeTitle + '\',\'' + safeClass + '\')" title="Mark as submitted to Canvas">✉</button>'
+      : '<button class="complete-btn" onclick="completeAssignment(event,\'' + safeTitle + '\',\'' + safeClass + '\',' + est + ')" title="Mark as done">✓</button>';
     return '<div class="' + itemClass + '" style="cursor:pointer;" onclick="viewAssignment(\'' + safeTitle + '\',\'' + safeClass + '\',\'' + safeDue + '\',' + est + ')">'
       + '<div style="display:flex;align-items:flex-start;gap:8px;justify-content:space-between;">'
       +   '<div style="flex:1;min-width:0;">'
       +     '<div class="sidebar-item-title">' + escapeHtml(a.title || '') + overduePill + '</div>'
       +     '<div class="sidebar-item-due"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';margin-right:5px;vertical-align:middle;"></span>' + escapeHtml(cls) + ' · ' + escapeHtml(formatDate(a.due_iso)) + '</div>'
       +   '</div>'
-      +   '<button class="complete-btn" onclick="completeAssignment(event,\'' + safeTitle + '\',\'' + safeClass + '\',' + est + ')" title="Mark as done">✓</button>'
+      +   actionBtn
       + '</div>'
       + '</div>';
   }).join('');
@@ -5989,6 +6068,46 @@ async function completeAssignment(event, title, className, estimateMinutes) {
   }
 }
 
+async function submitAssignment(event, title, className) {
+  event.stopPropagation();
+  const btn = event.target;
+  btn.disabled = true;
+
+  try {
+    const response = await fetch('/api/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, class_name: className })
+    });
+
+    if (response.ok) {
+      const itemEl = btn.closest('.assignment-item');
+      itemEl.style.transition = 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
+      setTimeout(() => {
+        itemEl.style.opacity = '0';
+        itemEl.style.transform = 'translateX(12px)';
+      }, 50);
+      setTimeout(async () => {
+        try {
+          const resp = await fetch('/api/assignments');
+          if (resp.ok) {
+            const data = await resp.json();
+            assignmentsCache = data.assignments || [];
+            renderAssignments();
+          }
+        } catch (e) {
+          console.error('Failed to reload assignments:', e);
+        }
+      }, 450);
+    } else {
+      btn.disabled = false;
+    }
+  } catch (e) {
+    console.error('Failed to submit assignment:', e);
+    btn.disabled = false;
+  }
+}
+
 function formatDate(dateStr) {
   if (!dateStr) return 'No date';
   const d = new Date(dateStr);
@@ -6079,6 +6198,35 @@ function resizeChatInput() {
 
 chatInput.addEventListener('input', debounce(resizeChatInput, 16));
 chatInput.addEventListener('paste', () => setTimeout(resizeChatInput, 0));
+
+// Voice input via Web Speech API
+(function initVoiceInput() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  const micBtn = document.getElementById('micBtn');
+  if (!micBtn) return;
+  micBtn.style.display = 'flex';
+  const recognition = new SR();
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.lang = 'en-US';
+  micBtn.addEventListener('click', () => {
+    if (micBtn.classList.contains('recording')) {
+      recognition.stop();
+    } else {
+      try { recognition.start(); } catch (e) {}
+      micBtn.classList.add('recording');
+    }
+  });
+  recognition.onresult = (e) => {
+    const transcript = e.results[0][0].transcript;
+    chatInput.value = (chatInput.value + ' ' + transcript).trim();
+    resizeChatInput();
+    chatInput.focus();
+  };
+  recognition.onend = () => micBtn.classList.remove('recording');
+  recognition.onerror = () => micBtn.classList.remove('recording');
+})();
 
 async function sendMessage() {
   const message = chatInput.value.trim();
