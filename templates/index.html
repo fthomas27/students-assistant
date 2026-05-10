@@ -4420,20 +4420,35 @@ async function completeKanbanTask(projectId, taskId, checkEl) {
   const label = checkEl.closest('.kanban-task-row')?.querySelector('.kanban-task-label');
   if (label) label.classList.add('done');
   try {
-    await fetch('/api/projects/' + projectId + '/tasks/' + taskId, {
+    const patchResp = await fetch('/api/projects/' + projectId + '/tasks/' + taskId, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'done' }),
       credentials: 'same-origin'
     });
+    if (!patchResp.ok) {
+      // Revert visual state if server rejected the update
+      checkEl.classList.remove('done');
+      checkEl.innerHTML = '';
+      if (label) label.classList.remove('done');
+      showToast('Failed to update task — please try again', 'error');
+      return;
+    }
     // Reload the task list so the card reflects the updated state
     const list = document.getElementById('ktl-' + projectId);
     if (list) { delete list.dataset.loaded; }
     const resp = await fetch('/api/projects/' + projectId + '/tasks');
-    const data = await resp.json();
-    if (list) renderKanbanTaskList(projectId, data.tasks || [], list);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (list) renderKanbanTaskList(projectId, data.tasks || [], list);
+    }
+    // Refresh the sidebar tasks so the completed project task disappears there too
+    loadSidebarData();
   } catch (e) {
     console.error('Failed to complete project task:', e);
+    checkEl.classList.remove('done');
+    checkEl.innerHTML = '';
+    if (label) label.classList.remove('done');
   }
 }
 

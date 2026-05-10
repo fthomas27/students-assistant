@@ -5527,13 +5527,17 @@ def api_project_notes_delete(project_id, note_id):
 @app.route("/api/projects/<int:project_id>/tasks", methods=["GET"])
 def api_project_tasks_get(project_id):
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("""
 SELECT id, title, notes, assignee, status, due_date, created_at
 FROM project_tasks WHERE project_id=%s ORDER BY created_at ASC""", (project_id,))
-    rows = [dict(r) for r in cur.fetchall()]
-    cur.close()
-    conn.close()
+            rows = [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+    finally:
+        conn.close()
     for r in rows:
         if r["due_date"]:
             r["due_date"] = str(r["due_date"])
@@ -5553,15 +5557,22 @@ def api_project_tasks_create(project_id):
         status = str(data.get("status", "pending"))
         due_date = data.get("due_date") or None
         conn = get_db()
-        cur = conn.cursor()
-        cur.execute("""
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute("""
 INSERT INTO project_tasks (project_id, title, notes, assignee, status, due_date)
 VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-                    (project_id, title, notes, assignee, status, due_date))
-        new_id = cur.fetchone()["id"]
-        conn.commit()
-        cur.close()
-        conn.close()
+                            (project_id, title, notes, assignee, status, due_date))
+                new_id = cur.fetchone()["id"]
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                cur.close()
+        finally:
+            conn.close()
         return jsonify({"id": new_id, "status": "ok"})
     except Exception as e:
         log.exception(f"Error adding task to project {project_id}")
@@ -5572,47 +5583,61 @@ VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
 def api_project_tasks_update(project_id, task_id):
     data = request.get_json(force=True) or {}
     conn = get_db()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
+        try:
+            # Build single UPDATE with all provided fields
+            updates = {}
+            if "title" in data:
+                updates["title"] = str(data["title"])[:300]
+            if "notes" in data:
+                updates["notes"] = str(data["notes"])[:2000]
+            if "assignee" in data:
+                updates["assignee"] = str(data["assignee"])[:300]
+            if "status" in data:
+                updates["status"] = str(data["status"])[:100]
+            if "due_date" in data:
+                updates["due_date"] = data["due_date"] or None
 
-    # Build single UPDATE with all provided fields
-    updates = {}
-    if "title" in data:
-        updates["title"] = str(data["title"])[:300]
-    if "notes" in data:
-        updates["notes"] = str(data["notes"])[:2000]
-    if "assignee" in data:
-        updates["assignee"] = str(data["assignee"])[:300]
-    if "status" in data:
-        updates["status"] = str(data["status"])[:100]
-    if "due_date" in data:
-        updates["due_date"] = data["due_date"] or None
-
-    # Execute single UPDATE if there are changes
-    if updates:
-        set_clause = pgsql.SQL(", ").join(
-            pgsql.SQL("{} = %s").format(pgsql.Identifier(k))
-            for k in updates.keys()
-        )
-        values = list(updates.values()) + [task_id, project_id]
-        cur.execute(
-            pgsql.SQL("UPDATE project_tasks SET {} WHERE id = %s AND project_id = %s").format(set_clause),
-            values
-        )
-
-    conn.commit()
-    cur.close()
-    conn.close()
+            if updates:
+                set_clause = pgsql.SQL(", ").join(
+                    pgsql.SQL("{} = %s").format(pgsql.Identifier(k))
+                    for k in updates.keys()
+                )
+                values = list(updates.values()) + [task_id, project_id]
+                cur.execute(
+                    pgsql.SQL("UPDATE project_tasks SET {} WHERE id = %s AND project_id = %s").format(set_clause),
+                    values
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+    except Exception as e:
+        log.error(f"Project task update error: {type(e).__name__}: {e}")
+        return jsonify({"error": "Failed to update project task"}), 500
+    finally:
+        conn.close()
     return jsonify({"status": "ok"})
 
 
 @app.route("/api/projects/<int:project_id>/tasks/<int:task_id>", methods=["DELETE"])
 def api_project_tasks_delete(project_id, task_id):
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM project_tasks WHERE id=%s AND project_id=%s", (task_id, project_id))
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("DELETE FROM project_tasks WHERE id=%s AND project_id=%s", (task_id, project_id))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+    finally:
+        conn.close()
     return jsonify({"status": "ok"})
 
 
@@ -5933,13 +5958,30 @@ def _execute_jarvis_tool(name, inputs):
         elif name == "complete_task":
             task_id = int(inputs.get("task_id", 0))
             conn = get_db()
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE tasks SET completed=TRUE, completed_at=NOW() WHERE id=%s AND completed=FALSE RETURNING title",
-                (task_id,),
-            )
-            row = cur.fetchone()
-            conn.commit(); cur.close(); conn.close()
+            try:
+                cur = conn.cursor()
+                try:
+                    # Try regular tasks first
+                    cur.execute(
+                        "UPDATE tasks SET completed=TRUE, completed_at=NOW() WHERE id=%s AND completed=FALSE RETURNING title",
+                        (task_id,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        # Fall back to project tasks (they use status='done' instead of a boolean)
+                        cur.execute(
+                            "UPDATE project_tasks SET status='done' WHERE id=%s AND status!='done' RETURNING title",
+                            (task_id,),
+                        )
+                        row = cur.fetchone()
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    cur.close()
+            finally:
+                conn.close()
             if row:
                 log.info(f"Jarvis tool: completed task id={task_id} '{row['title']}'")
                 return {"status": "completed", "task_id": task_id, "title": row["title"]}
@@ -6950,19 +6992,56 @@ def api_plan_my_day_generate():
 
     try:
         with _plan_lock:
-            conn = get_db()
-            cur = conn.cursor()
+            if not api_key:
+                return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
 
-            # Check if plan already exists
-            cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s", (today,))
-            existing = cur.fetchone()
-            if existing:
-                # Delete old plan
-                cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
+            # ── Phase 1: fetch all DB data then release the connection ──────
+            # We must NOT hold the connection (or an open transaction on
+            # daily_plans) while the Claude API call is in flight.  A pending
+            # DELETE+INSERT on daily_plans would block any concurrent
+            # UPDATE daily_plans (e.g. from api_tasks_update completing a task),
+            # causing those requests to time out for 30–60 s.
+            completed_titles = set()
+            custom_estimates = {}
+            tasks_for_plan = []
+
+            conn = get_db()
+            try:
+                cur = conn.cursor()
+                try:
+                    cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                    completed_titles = set(r["assignment_title"] for r in cur.fetchall())
+                    cur.execute("SELECT uid, minutes FROM assignment_estimates")
+                    custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
+
+                    urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
+                    cur.execute("""
+                        SELECT id, title, due_date, urgency FROM tasks
+                        WHERE completed = FALSE
+                        AND (due_date IS NULL OR due_date <= %s)
+                        ORDER BY urgency DESC, due_date ASC
+                        LIMIT 15
+                    """, (today + timedelta(days=3),))
+                    for task_row in cur.fetchall():
+                        due_date = task_row.get("due_date")
+                        urgency = task_row.get("urgency", "medium")
+                        tasks_for_plan.append({
+                            "type": "task",
+                            "id": str(task_row["id"]),
+                            "title": task_row["title"],
+                            "due_date": str(due_date) if due_date else None,
+                            "urgency": urgency,
+                            "estimated_minutes": urgency_mins.get(urgency, 20)
+                        })
+                finally:
+                    cur.close()
+            finally:
+                conn.close()
+            # ── DB connection released — safe to call Claude now ─────────────
 
             # Fetch assignments, tasks, and calendar events
             assignments = []
-            tasks = []
+            tasks = tasks_for_plan
             calendar_events = []  # fixed blocks shown in the schedule
             school_assignments = []  # assignments due during school hours
 
@@ -6970,10 +7049,6 @@ def api_plan_my_day_generate():
             try:
                 cal = fetch_ical(CANVAS_ICAL_URL)
                 if cal:
-                    cur.execute("SELECT DISTINCT assignment_title FROM completions")
-                    completed_titles = set(r["assignment_title"] for r in cur.fetchall())
-                    cur.execute("SELECT uid, minutes FROM assignment_estimates")
-                    custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
 
                     all_asgn = parse_canvas_assignments(cal)
                     class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
@@ -7026,28 +7101,6 @@ def api_plan_my_day_generate():
                                 pass
             except Exception as e:
                 log.warning(f"Could not fetch assignments for plan: {e}")
-
-            # Get incomplete tasks due within 3 days (today's plan, not a week-out todo)
-            cur.execute("""
-                SELECT id, title, due_date, urgency FROM tasks
-                WHERE completed = FALSE
-                AND (due_date IS NULL OR due_date <= %s)
-                ORDER BY urgency DESC, due_date ASC
-                LIMIT 15
-            """, (today + timedelta(days=3),))
-
-            urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
-            for task_row in cur.fetchall():
-                due_date = task_row.get("due_date")
-                urgency = task_row.get("urgency", "medium")
-                tasks.append({
-                    "type": "task",
-                    "id": str(task_row["id"]),
-                    "title": task_row["title"],
-                    "due_date": str(due_date) if due_date else None,
-                    "urgency": urgency,
-                    "estimated_minutes": urgency_mins.get(urgency, 20)
-                })
 
             # Fetch personal and sports calendar events for today
             personal_events = []
@@ -7168,12 +7221,7 @@ def api_plan_my_day_generate():
             except Exception as e:
                 log.warning(f"Could not compute availability for plan: {e}")
 
-            # Use Claude to generate optimal schedule
-            if not api_key:
-                cur.close()
-                conn.close()
-                return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
-
+            # ── Phase 2: Claude API call (no DB connection held) ────────────
             client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
             def _fmt_cal(e):
                 if e.get("all_day"):
@@ -7271,34 +7319,43 @@ Rules:
                     })
                     cursor_min = end_min
 
-            # Insert plan into database
-            cur.execute(
-                "INSERT INTO daily_plans (plan_date, generated_at) VALUES (%s, NOW()) RETURNING id",
-                (today,)
-            )
-            plan_id = cur.fetchone()["id"]
+            # ── Phase 3: write results — brief transaction, no long hold ───
+            conn = get_db()
+            try:
+                cur = conn.cursor()
+                try:
+                    # Replace any existing plan for today atomically
+                    cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
+                    cur.execute(
+                        "INSERT INTO daily_plans (plan_date, generated_at) VALUES (%s, NOW()) RETURNING id",
+                        (today,)
+                    )
+                    plan_id = cur.fetchone()["id"]
 
-            # Insert scheduled items
-            for idx, item in enumerate(scheduled_items):
-                cur.execute("""
+                    for idx, item in enumerate(scheduled_items):
+                        cur.execute("""
 INSERT INTO daily_plan_items (plan_id, item_type, item_id, item_title,
                               scheduled_start_time, scheduled_end_time, estimated_minutes, order_index)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (
-                        plan_id,
-                        item.get("item_type", ""),
-                        str(item.get("item_id", "")),
-                        item.get("item_title", ""),
-                        item.get("scheduled_start_time", "09:00"),
-                        item.get("scheduled_end_time", "09:30"),
-                        item.get("estimated_minutes", 30),
-                        idx
-                    )
-                )
-
-            conn.commit()
-            cur.close()
-            conn.close()
+                            (
+                                plan_id,
+                                item.get("item_type", ""),
+                                str(item.get("item_id", "")),
+                                item.get("item_title", ""),
+                                item.get("scheduled_start_time", "09:00"),
+                                item.get("scheduled_end_time", "09:30"),
+                                item.get("estimated_minutes", 30),
+                                idx
+                            )
+                        )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    cur.close()
+            finally:
+                conn.close()
 
             return jsonify({
                 "status": "ok",
