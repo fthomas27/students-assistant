@@ -2186,17 +2186,17 @@ WHERE status = 'active'""")
         week_label = "%s – %s" % (week_ago.strftime("%b %-d"), today.strftime("%b %-d"))
 
         prompt = (
-            jarvis_persona("%s", "delivering the weekly insight for") + "\n\n"
-            "Current time: %s\n"
-            "Reviewing the week of %s.\n\n"
-            "WEEK COMPLETIONS (%.1f hours of focused work, %d items):\n%s\n\n"
-            "TASKS COMPLETED THIS WEEK:\n%s\n\n"
-            "WORKOUTS LOGGED THIS WEEK:\n%s\n\n"
-            "ACTIVE PROJECTS (current state):\n%s\n\n"
-            "PROJECTS WITH OVERDUE CHECK-IN:\n%s\n\n"
-            "STILL OPEN (carrying into the new week):\n%s\n\n"
-            "UPCOMING ASSIGNMENTS (next 7 days):\n%s\n\n"
-            "UPCOMING CALENDAR (next 7 days):\n%s\n\n"
+            jarvis_persona(name, "delivering the weekly insight for") + "\n\n"
+            f"Current time: {now_str}\n"
+            f"Reviewing the week of {week_label}.\n\n"
+            f"WEEK COMPLETIONS ({total_hours:.1f} hours of focused work, {len(completions_week)} items):\n{completions_text}\n\n"
+            f"TASKS COMPLETED THIS WEEK:\n{tasks_done_text}\n\n"
+            f"WORKOUTS LOGGED THIS WEEK:\n{workouts_text}\n\n"
+            f"ACTIVE PROJECTS (current state):\n{projects_text}\n\n"
+            f"PROJECTS WITH OVERDUE CHECK-IN:\n{projects_overdue_text}\n\n"
+            f"STILL OPEN (carrying into the new week):\n{tasks_open_text}\n\n"
+            f"UPCOMING ASSIGNMENTS (next 7 days):\n{upcoming_assign_text}\n\n"
+            f"UPCOMING CALENDAR (next 7 days):\n{upcoming_events_text}\n\n"
             "Compose a sophisticated weekly insight using EXACTLY these four markdown sections with ## headings (spell each heading exactly):\n\n"
             "## Week in Review\n"
             "• Three to five bullets distilling the week's pattern: what was accomplished, time invested, where momentum was strongest. Reference specific items and the metrics where pertinent.\n\n"
@@ -2207,17 +2207,13 @@ WHERE status = 'active'""")
             "## Recommendation for the Coming Week\n"
             "• Exactly one specific, actionable recommendation grounded in what the data shows — for instance, a particular class to prioritise, a project to push, or a habit to adjust. Keep it to one short paragraph or two bullets.\n\n"
             "Maintain a refined, insightful tone. Use **bold** for assignment, project, or class names where helpful. No introductory paragraph. Deliver the four sections only."
-        ) % (
-            name, now_str, week_label, total_hours, len(completions_week),
-            completions_text, tasks_done_text, workouts_text, projects_text,
-            projects_overdue_text, tasks_open_text, upcoming_assign_text, upcoming_events_text,
         )
 
         try:
             client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
             message = client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=900,
+                max_tokens=1400,
                 messages=[{"role": "user", "content": prompt}]
             )
             track_api_usage(message)
