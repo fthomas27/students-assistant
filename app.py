@@ -3874,9 +3874,11 @@ def api_meals_generate():
         f"Athlete: {name}\n"
         f"Goal: Cutting weight while maintaining maximum muscle mass. High protein is the top priority.\n"
         f"Plan date: {tomorrow_str}\n"
-        f"Available ingredients: {ingredients}\n"
+        f"Confirmed ingredients: {ingredients}\n"
         f"{request_line}\n"
-        "Generate a complete daily meal plan. Return ONLY a JSON object with this exact structure:\n"
+        "Generate a complete daily meal plan. You may also use common pantry staples (oils, spices, condiments, eggs, basic produce) "
+        "that a typical household would have — but list every assumed ingredient in assumed_ingredients so the athlete can verify them.\n\n"
+        "Return ONLY a JSON object with this exact structure:\n"
         "{\n"
         '  "daily_totals": {"calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0},\n'
         '  "meals": [\n'
@@ -3892,12 +3894,18 @@ def api_meals_generate():
         '      "key_ingredients": ["ingredient1", "ingredient2"]\n'
         "    }\n"
         "  ],\n"
+        '  "assumed_ingredients": [\n'
+        '    {"name": "olive oil", "used_in": ["Lunch", "Dinner"], "essential": false}\n'
+        "  ],\n"
         '  "hydration_note": "Brief hydration tip",\n'
         '  "jarvis_note": "One motivational line from Jarvis about the plan"\n'
         "}\n"
         "Include 4 meals: Breakfast, Lunch, Dinner, and one Snack. "
         "Target: 160-200g protein, 1600-2000 calories total (caloric deficit). "
-        "Only use the listed ingredients. Be creative but realistic."
+        "In assumed_ingredients, list ONLY ingredients you used that were NOT in the confirmed list — "
+        "things like spices, oils, condiments, eggs, garlic, lemon, etc. "
+        "Set essential=true only if the meal cannot work without it (a substitute would fundamentally change the dish). "
+        "Do not list confirmed ingredients in assumed_ingredients. Be creative and produce genuinely great meals."
     )
 
     try:
@@ -3923,6 +3931,66 @@ def api_meals_generate():
     except Exception as e:
         log.error("Meal plan generate error: %s", e)
         return jsonify({"error": "Could not generate meal plan. Please try again."}), 500
+
+    return jsonify({
+        "plan_date": tomorrow.isoformat(),
+        "structured": structured,
+        "ingredients_used": ingredients,
+    })
+
+
+@app.route("/api/meals/finalize", methods=["POST"])
+def api_meals_finalize():
+    import json as _json
+    data = request.get_json(force=True) or {}
+    structured = data.get("structured") or {}
+    missing = [str(m).strip() for m in (data.get("missing") or []) if str(m).strip()]
+    ingredients = str(data.get("ingredients", "")).strip()
+    special_request = str(data.get("request", "")).strip()[:500]
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).date()
+
+    if missing and api_key:
+        name = get_config().get("name", "Finn")
+        missing_list = ", ".join(missing)
+        current_plan = _json.dumps(structured, indent=2)
+        request_line = f"Original special request (still applies): {special_request}\n" if special_request else ""
+
+        fix_prompt = (
+            f"Athlete: {name}\n"
+            f"Confirmed available ingredients: {ingredients}\n"
+            f"Ingredients the athlete does NOT have: {missing_list}\n"
+            f"{request_line}\n"
+            "Here is the current meal plan (JSON):\n"
+            f"{current_plan}\n\n"
+            "Update the meal plan to work without the missing ingredients. Rules:\n"
+            "- If an ingredient is non-essential, substitute it with something from the confirmed list or another common item.\n"
+            "- If removing it fundamentally breaks a meal (essential=true), replace that entire meal with a different one.\n"
+            "- Keep all macro targets (160-200g protein total, 1600-2000 cal deficit).\n"
+            "- Return ONLY the complete updated JSON in the same structure. No prose, no markdown."
+        )
+        try:
+            client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
+            message = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=2200,
+                messages=[{"role": "user", "content": fix_prompt}],
+                system=(
+                    "You are Jarvis, an expert nutritionist. You adapt meal plans when ingredients are unavailable. "
+                    "You always return valid JSON only, matching the original plan structure exactly."
+                ),
+            )
+            track_api_usage(message)
+            raw = (message.content[0].text if message.content else "{}").strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+            structured = _json.loads(raw)
+        except Exception as e:
+            log.error("Meal finalize error: %s", e)
 
     plan_content = _json.dumps(structured, indent=2)
     conn = get_db()
