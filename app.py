@@ -1,5 +1,7 @@
 import os
+import re
 import time
+import uuid
 import gzip
 import logging
 import threading
@@ -18,7 +20,7 @@ import psycopg2.pool
 from psycopg2 import sql as pgsql
 import requests
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, session, redirect
+from flask import Flask, request, jsonify, render_template, session, redirect, Response, stream_with_context
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 from icalendar import Calendar
@@ -245,6 +247,8 @@ WORKOUT_FOCUS_CYCLE = [
 # ── Calendar URLs from environment variables ──────────────────────────────────
 PERSONAL_ICAL_URL = os.environ.get("PERSONAL_ICAL_URL", "")
 CANVAS_ICAL_URL = os.environ.get("CANVAS_ICAL_URL", "")
+CANVAS_API_TOKEN = os.environ.get("CANVAS_API_TOKEN", "")
+CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/")
 SPORTS_ICAL_URL = os.environ.get("SPORTS_ICAL_URL", "")
 RED_DAY_ICAL_URL = os.environ.get("RED_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_7ufb5f1vj8aks1shds5ou4fhe8%40group.calendar.google.com/public/basic.ics")
 WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_64ohm1bccvi50iti8fe455stkg%40group.calendar.google.com/public/basic.ics")
@@ -490,6 +494,9 @@ def init_db():
         ("news_preferences_outlet_idx", "CREATE INDEX IF NOT EXISTS idx_news_pref_outlet ON news_preferences(outlet)"),
         ("meal_plans", "CREATE TABLE IF NOT EXISTS meal_plans (id SERIAL PRIMARY KEY, plan_date DATE NOT NULL UNIQUE, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), ingredients_used TEXT NOT NULL DEFAULT '', plan_content TEXT NOT NULL DEFAULT '', structured_data TEXT NOT NULL DEFAULT '{}')"),
         ("meal_ingredients", "CREATE TABLE IF NOT EXISTS meal_ingredients (id INT PRIMARY KEY DEFAULT 1, ingredients TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("chat_messages", "CREATE TABLE IF NOT EXISTS chat_messages (id SERIAL PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("chat_messages_idx", "CREATE INDEX IF NOT EXISTS idx_chat_msgs_conv ON chat_messages(conversation_id, created_at)"),
+        ("chat_summaries", "CREATE TABLE IF NOT EXISTS chat_summaries (conversation_id TEXT PRIMARY KEY, summary TEXT NOT NULL DEFAULT '', message_count INT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
     ]
 
     for table_name, create_sql in tables:
@@ -770,6 +777,155 @@ def _cache_set(key, value):
             # Evict the oldest entry by timestamp
             oldest_key = min(_simple_cache, key=lambda k: _simple_cache[k][0])
             _simple_cache.pop(oldest_key, None)
+
+
+# ── Canvas REST API helpers ──────────────────────────────────────────────────
+# Augment the iCal feed with course names, grades, and full assignment details.
+# Silently no-ops when CANVAS_API_TOKEN / CANVAS_BASE_URL are not configured.
+
+CANVAS_COURSES_TTL = 3600          # 1 hour
+CANVAS_GRADES_TTL = 600            # 10 minutes
+CANVAS_ASSIGNMENT_TTL = 1800       # 30 minutes
+
+
+def _canvas_configured():
+    return bool(CANVAS_API_TOKEN and CANVAS_BASE_URL)
+
+
+def _canvas_get(path, params=None, timeout=12):
+    if not _canvas_configured():
+        return None
+    url = CANVAS_BASE_URL + (path if path.startswith("/") else "/" + path)
+    headers = {"Authorization": "Bearer " + CANVAS_API_TOKEN, "Accept": "application/json"}
+    try:
+        resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        log.warning("Canvas API GET %s failed: %s", path, e)
+        return None
+
+
+def canvas_courses():
+    cached = _cache_get("canvas:courses", CANVAS_COURSES_TTL)
+    if cached is not None:
+        return cached
+    data = _canvas_get("/api/v1/courses", params={"enrollment_state": "active", "per_page": 50})
+    if not isinstance(data, list):
+        _cache_set("canvas:courses", [])
+        return []
+    courses = [
+        {
+            "id": c.get("id"),
+            "name": c.get("name") or c.get("course_code") or "",
+            "course_code": c.get("course_code") or "",
+        }
+        for c in data
+        if isinstance(c, dict) and c.get("id")
+    ]
+    _cache_set("canvas:courses", courses)
+    return courses
+
+
+def canvas_grades():
+    cached = _cache_get("canvas:grades", CANVAS_GRADES_TTL)
+    if cached is not None:
+        return cached
+    courses = canvas_courses()
+    course_name = {c["id"]: c["name"] for c in courses}
+    data = _canvas_get(
+        "/api/v1/users/self/enrollments",
+        params={"state[]": "active", "type[]": "StudentEnrollment", "per_page": 50},
+    )
+    grades = []
+    if isinstance(data, list):
+        for e in data:
+            if not isinstance(e, dict):
+                continue
+            cid = e.get("course_id")
+            g = e.get("grades") or {}
+            grades.append({
+                "course_id": cid,
+                "course": course_name.get(cid, ""),
+                "current_grade": g.get("current_grade"),
+                "current_score": g.get("current_score"),
+                "final_grade": g.get("final_grade"),
+                "final_score": g.get("final_score"),
+            })
+    _cache_set("canvas:grades", grades)
+    return grades
+
+
+def _strip_html(html):
+    if not html:
+        return ""
+    text = re.sub(r"<br\s*/?>", "\n", html, flags=re.I)
+    text = re.sub(r"</p>", "\n\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def canvas_assignment_detail(course_id, assignment_id):
+    key = f"canvas:asgn:{course_id}:{assignment_id}"
+    cached = _cache_get(key, CANVAS_ASSIGNMENT_TTL)
+    if cached is not None:
+        return cached
+    a = _canvas_get(f"/api/v1/courses/{course_id}/assignments/{assignment_id}")
+    if not isinstance(a, dict):
+        _cache_set(key, None)
+        return None
+    detail = {
+        "id": a.get("id"),
+        "name": a.get("name") or "",
+        "description": _strip_html(a.get("description") or "")[:6000],
+        "due_at": a.get("due_at"),
+        "points_possible": a.get("points_possible"),
+        "submission_types": a.get("submission_types") or [],
+        "html_url": a.get("html_url"),
+        "rubric": [
+            {
+                "description": r.get("description"),
+                "long_description": (r.get("long_description") or "")[:600],
+                "points": r.get("points"),
+            }
+            for r in (a.get("rubric") or [])
+            if isinstance(r, dict)
+        ],
+    }
+    _cache_set(key, detail)
+    return detail
+
+
+def canvas_search_assignment(title_query):
+    """Find a Canvas assignment matching `title_query` across active courses.
+
+    Returns (course_id, assignment_id, course_name) for the best match, or None.
+    """
+    if not _canvas_configured() or not title_query:
+        return None
+    needle = title_query.strip().lower()
+    if not needle:
+        return None
+    for course in canvas_courses():
+        cid = course["id"]
+        data = _canvas_get(
+            f"/api/v1/courses/{cid}/assignments",
+            params={"search_term": title_query[:80], "per_page": 20},
+        )
+        if not isinstance(data, list):
+            continue
+        # Prefer exact (case-insensitive) match, then prefix, then substring
+        exact = next((a for a in data if (a.get("name") or "").strip().lower() == needle), None)
+        if exact:
+            return (cid, exact.get("id"), course["name"])
+        prefix = next((a for a in data if (a.get("name") or "").strip().lower().startswith(needle)), None)
+        if prefix:
+            return (cid, prefix.get("id"), course["name"])
+        sub = next((a for a in data if needle in (a.get("name") or "").strip().lower()), None)
+        if sub:
+            return (cid, sub.get("id"), course["name"])
+    return None
 
 
 # Park City, UT
@@ -5692,7 +5848,51 @@ JARVIS_TOOLS = [
         "description": "Get today's cached morning briefing summary with priorities, assignments, and schedule.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "name": "get_grades",
+        "description": (
+            "Fetch the student's current Canvas grades across all active courses. "
+            "Returns course name, current letter grade, and current numeric percentage. "
+            "Use when the student asks about grades, GPA, how a class is going, "
+            "or which classes need the most attention."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_assignment_details",
+        "description": (
+            "Pull the full Canvas description and rubric for a specific assignment so you can "
+            "actually help with it. Use whenever the student asks for help on an assignment, "
+            "wants the rubric, asks 'what do I need to do for X', or otherwise needs the actual "
+            "instructions, not just the title. Pass the assignment title; you may also pass the "
+            "course name to disambiguate. Requires Canvas API to be configured."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Assignment title (or close substring) to look up"},
+                "course": {"type": "string", "description": "Optional course name hint to disambiguate"},
+            },
+            "required": ["title"],
+        },
+    },
 ]
+
+
+# Anthropic server-side web tools — Anthropic executes these; no app-side handler needed.
+JARVIS_WEB_TOOLS = [
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
+    {
+        "type": "web_fetch_20250910",
+        "name": "web_fetch",
+        "max_uses": 5,
+        "max_content_tokens": 20000,
+    },
+]
+
+
+# Set of tool names handled server-side by Anthropic, not by _execute_jarvis_tool.
+ANTHROPIC_SERVER_TOOL_NAMES = {"web_search", "web_fetch"}
 
 
 def _execute_jarvis_tool(name, inputs):
@@ -6012,6 +6212,36 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 return {"briefing": row["content"], "generated_at": ts}
             return {"briefing": None, "note": "No briefing generated yet for today"}
 
+        elif name == "get_grades":
+            if not _canvas_configured():
+                return {"error": "Canvas API not configured (CANVAS_API_TOKEN / CANVAS_BASE_URL missing)."}
+            grades = canvas_grades()
+            return {"grades": grades, "count": len(grades)}
+
+        elif name == "get_assignment_details":
+            if not _canvas_configured():
+                return {"error": "Canvas API not configured (CANVAS_API_TOKEN / CANVAS_BASE_URL missing)."}
+            title = str(inputs.get("title", "")).strip()
+            if not title:
+                return {"error": "title is required"}
+            course_hint = str(inputs.get("course", "")).strip().lower()
+            match = canvas_search_assignment(title)
+            if not match:
+                return {"error": f"No Canvas assignment found matching '{title}'."}
+            cid, aid, course_name = match
+            if course_hint and course_hint not in (course_name or "").lower():
+                # Hint disagreed with the match — still return what we found, but flag it.
+                detail = canvas_assignment_detail(cid, aid)
+                if detail:
+                    detail["course"] = course_name
+                    detail["note"] = f"Course hint '{inputs.get('course')}' did not match; returning best title match in '{course_name}'."
+                return detail or {"error": "Could not load assignment details."}
+            detail = canvas_assignment_detail(cid, aid)
+            if not detail:
+                return {"error": "Could not load assignment details."}
+            detail["course"] = course_name
+            return detail
+
         else:
             return {"error": f"Unknown tool: {name}"}
 
@@ -6020,10 +6250,164 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
         return {"error": str(e)}
 
 
+# ── Chat persistence + recall helpers ────────────────────────────────────────
+# Used by /api/chat to remember conversations across sessions.
+
+def _chat_persist_message(conversation_id, role, content):
+    """Insert one message row. Best-effort; never raises."""
+    if not conversation_id or not role or content is None:
+        return
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO chat_messages (conversation_id, role, content) VALUES (%s, %s, %s)",
+            (conversation_id[:64], role[:16], (content or "")[:20000]),
+        )
+        conn.commit()
+        cur.close(); conn.close()
+    except Exception:
+        log.warning("chat_persist_message failed", exc_info=True)
+
+
+def _chat_recent_summaries(exclude_conversation_id, limit=5):
+    """Return [{'updated_at', 'summary'}] for the most recent prior conversations."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT conversation_id, summary, updated_at FROM chat_summaries "
+            "WHERE conversation_id != %s AND summary != '' "
+            "ORDER BY updated_at DESC LIMIT %s",
+            (exclude_conversation_id or "", int(limit)),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close(); conn.close()
+        return rows
+    except Exception:
+        log.warning("chat_recent_summaries failed", exc_info=True)
+        return []
+
+
+def _chat_last_messages(conversation_id, limit=6):
+    """Return the last N stored messages for this conversation, oldest-first."""
+    if not conversation_id:
+        return []
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT role, content, created_at FROM chat_messages "
+            "WHERE conversation_id=%s ORDER BY created_at DESC LIMIT %s",
+            (conversation_id, int(limit)),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close(); conn.close()
+        rows.reverse()
+        return rows
+    except Exception:
+        log.warning("chat_last_messages failed", exc_info=True)
+        return []
+
+
+def _chat_summary_status(conversation_id):
+    """Return (message_count_in_db, existing_summary_row_or_none)."""
+    if not conversation_id:
+        return (0, None)
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS n FROM chat_messages WHERE conversation_id=%s", (conversation_id,))
+        n = (cur.fetchone() or {}).get("n", 0)
+        cur.execute("SELECT summary, message_count, updated_at FROM chat_summaries WHERE conversation_id=%s", (conversation_id,))
+        existing = cur.fetchone()
+        cur.close(); conn.close()
+        return (int(n or 0), dict(existing) if existing else None)
+    except Exception:
+        return (0, None)
+
+
+def _chat_maybe_summarize_async(conversation_id, api_key):
+    """Spawn a background thread to (re)summarize the conversation if eligible.
+
+    Eligibility: message_count >= 6 AND (no summary yet OR summary is >24h old AND >=4 new messages).
+    Uses claude-haiku-4-5 (cheap) to roll the convo into 2-3 sentences.
+    """
+    if not conversation_id or not api_key:
+        return
+    try:
+        n_msgs, existing = _chat_summary_status(conversation_id)
+        if n_msgs < 6:
+            return
+        if existing:
+            try:
+                last_n = int(existing.get("message_count") or 0)
+            except Exception:
+                last_n = 0
+            if (n_msgs - last_n) < 4:
+                # Not enough new content to bother re-summarizing.
+                return
+        threading.Thread(
+            target=_chat_summarize_worker,
+            args=(conversation_id, api_key),
+            daemon=True,
+        ).start()
+    except Exception:
+        pass
+
+
+def _chat_summarize_worker(conversation_id, api_key):
+    try:
+        msgs = _chat_last_messages(conversation_id, limit=40)
+        if not msgs:
+            return
+        transcript = "\n".join(
+            f"{m['role'].upper()}: {(m['content'] or '')[:1500]}" for m in msgs
+        )[:12000]
+        client = anthropic.Anthropic(api_key=api_key, max_retries=2, timeout=30.0)
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            system=(
+                "You are a terse note-taker. Summarise the conversation below in 2-3 sentences "
+                "for future recall: what the student was working on, decisions made, open threads, "
+                "anything personal worth remembering. No greetings, no bullet points — pure prose."
+            ),
+            messages=[{"role": "user", "content": transcript}],
+        )
+        summary = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
+        if not summary:
+            return
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO chat_summaries (conversation_id, summary, message_count, updated_at) "
+            "VALUES (%s, %s, %s, NOW()) "
+            "ON CONFLICT (conversation_id) DO UPDATE SET "
+            "summary=EXCLUDED.summary, message_count=EXCLUDED.message_count, updated_at=NOW()",
+            (conversation_id, summary[:4000], len(msgs)),
+        )
+        conn.commit()
+        cur.close(); conn.close()
+        log.info("chat summary updated for %s (%d msgs)", conversation_id[:8], len(msgs))
+    except Exception:
+        log.warning("chat summarize worker failed", exc_info=True)
+
+
+def _sse_pack(event, data):
+    """Serialize one Server-Sent-Events frame."""
+    try:
+        payload = json.dumps(data, default=str)
+    except Exception:
+        payload = json.dumps({"error": "unserializable"})
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     data = request.get_json(force=True) or {}
     messages = data.get("messages", [])
+    conversation_id = (data.get("conversation_id") or "").strip()[:64] or uuid.uuid4().hex
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         return jsonify({"error": "ANTHROPIC_API_KEY not configured in Railway environment."}), 500
@@ -6072,6 +6456,17 @@ def api_chat():
             "- ASSIGNMENTS: When the student says they finished or submitted an assignment, call complete_assignment.\n"
             "- WORKOUTS: When the student asks for a workout, call generate_workout with an appropriate intensity "
             "(ask if unsure) and location (home or gym).\n"
+            "- GRADES & ASSIGNMENT DETAIL: When the student asks about grades, GPA, how a class is going, "
+            "or which class needs the most attention, call get_grades. When they ask for help on an assignment, "
+            "want the rubric, ask 'what does X actually want me to do', or otherwise need the real instructions, "
+            "call get_assignment_details with the assignment title — never fabricate a rubric from the title alone.\n"
+            "- WEB SEARCH & WEB FETCH: You have live access to the open web. Use web_search for current "
+            "events, definitions, statistics, opening hours, recent news, study material, biographies, or "
+            "anything whose answer might have changed since your training cutoff. Use web_fetch when the "
+            "student pastes a URL or refers to a specific page. Do NOT search for information already "
+            "supplied in the injected context (assignments, tasks, schedule, grades, holdings) — answer "
+            "from that directly. Be efficient: usually one search is enough; cite the source briefly when "
+            "you draw on a specific page.\n"
             "- TOOL RESULTS ARE AUTHORITATIVE. When a tool returns a JSON result with status \"created\", "
             "\"completed\", \"recorded\", \"saved\", \"added\", or similar success markers, the action HAS BEEN TAKEN — "
             "the row is in the database. Do not tell the student you couldn't do it, that you'll do it later, "
@@ -6201,10 +6596,77 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
         except Exception:
             log.warning("/api/chat could not load stock notes for context")
 
-        # ── Agentic loop: extended thinking + tool use ──────────────────────
+        # Inject current Canvas grades (Canvas REST API)
+        try:
+            if _canvas_configured():
+                grades = canvas_grades()
+                shown = []
+                for g in grades:
+                    if not g.get("course"):
+                        continue
+                    letter = g.get("current_grade") or ""
+                    score = g.get("current_score")
+                    if letter or score is not None:
+                        score_txt = f" ({float(score):.1f}%)" if score is not None else ""
+                        shown.append(f"{g['course']}: {letter}{score_txt}".strip())
+                if shown:
+                    system_dynamic += "\n\nCURRENT GRADES (Canvas, live): " + "; ".join(shown) + "."
+        except Exception:
+            log.warning("/api/chat could not load Canvas grades for context")
+
+        # Inject prior-conversation recall + recent messages from current conversation
+        try:
+            summaries = _chat_recent_summaries(conversation_id, limit=5)
+            if summaries:
+                lines = []
+                for s in summaries:
+                    when = s.get("updated_at")
+                    when_txt = when.strftime("%Y-%m-%d") if hasattr(when, "strftime") else ""
+                    lines.append(f"({when_txt}) {s['summary']}")
+                system_dynamic += (
+                    "\n\nRECENT CONVERSATIONS (your prior chats with this student — recall to maintain continuity, "
+                    "but do not bring them up unless relevant):\n- " + "\n- ".join(lines)
+                )
+            # If client only sent a small history (e.g. fresh tab), pull a few recent
+            # messages from this conversation so Jarvis doesn't lose mid-thread context.
+            if len(messages) <= 1:
+                prior = _chat_last_messages(conversation_id, limit=6)
+                # Drop the very latest if it duplicates the incoming user message.
+                if messages and prior and prior[-1].get("role") == "user" and \
+                   prior[-1].get("content") == (messages[-1].get("content") if isinstance(messages[-1].get("content"), str) else ""):
+                    prior = prior[:-1]
+                if prior:
+                    transcript = "\n".join(
+                        f"{m['role'].upper()}: {(m['content'] or '')[:600]}" for m in prior
+                    )
+                    system_dynamic += (
+                        "\n\nLAST FEW MESSAGES IN THIS CONVERSATION (for continuity across tab refresh):\n"
+                        + transcript
+                    )
+        except Exception:
+            log.warning("/api/chat could not load conversation recall")
+
+        # Persist the latest incoming user message before we start streaming.
+        try:
+            latest_user = next(
+                (m for m in reversed(messages) if m.get("role") == "user"),
+                None,
+            )
+            if latest_user:
+                content_val = latest_user.get("content")
+                if isinstance(content_val, list):
+                    # Take the first text block if structured
+                    content_val = next(
+                        (b.get("text", "") for b in content_val if isinstance(b, dict) and b.get("type") == "text"),
+                        "",
+                    )
+                _chat_persist_message(conversation_id, "user", content_val or "")
+        except Exception:
+            log.warning("/api/chat: failed to persist incoming user message", exc_info=True)
+
+        # ── Streaming agentic loop with SSE ──────────────────────────────────
         client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
         messages_loop = list(messages)
-        response = None
         actions_taken = []
 
         system_blocks = [
@@ -6212,100 +6674,220 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
             {"type": "text", "text": system_dynamic},
         ]
 
-        for _iteration in range(10):
-            response = client.beta.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=16000,
-                thinking={"type": "enabled", "budget_tokens": 10000},
-                tools=JARVIS_TOOLS,
-                system=system_blocks,
-                messages=messages_loop,
-                betas=["interleaved-thinking-2025-05-14"],
-            )
-            track_api_usage(response)
+        # Captured by the generator below — Python closures over mutable list.
+        _final_text_box = [""]
+        _api_key_for_summary = api_key
 
-            if response.stop_reason == "end_turn":
-                break
+        def _stream_generator():
+            collected_text = ""
+            try:
+                # Start event so client can stash conversation_id immediately.
+                yield _sse_pack("start", {"conversation_id": conversation_id})
 
-            if response.stop_reason == "tool_use":
-                # Serialize the full assistant turn (thinking + text + tool_use blocks)
-                assistant_content = []
-                for block in response.content:
-                    if block.type == "thinking":
-                        d = {"type": "thinking", "thinking": block.thinking}
-                        if getattr(block, "signature", None):
-                            d["signature"] = block.signature
-                        assistant_content.append(d)
-                    elif block.type == "text":
-                        assistant_content.append({"type": "text", "text": block.text})
-                    elif block.type == "tool_use":
-                        assistant_content.append({
-                            "type": "tool_use",
-                            "id": block.id,
-                            "name": block.name,
-                            "input": block.input,
-                        })
-                messages_loop.append({"role": "assistant", "content": assistant_content})
+                for _iteration in range(10):
+                    final_message = None
+                    with client.beta.messages.stream(
+                        model="claude-sonnet-4-6",
+                        max_tokens=16000,
+                        thinking={"type": "enabled", "budget_tokens": 10000},
+                        tools=JARVIS_TOOLS + JARVIS_WEB_TOOLS,
+                        system=system_blocks,
+                        messages=messages_loop,
+                        betas=["interleaved-thinking-2025-05-14", "web-fetch-2025-09-10"],
+                    ) as stream:
+                        for event in stream:
+                            etype = getattr(event, "type", None)
 
-                # Execute every tool call in this turn
-                tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        log.info(f"Jarvis tool: {block.name} inputs={json.dumps(block.input)}")
-                        result = _execute_jarvis_tool(block.name, block.input)
-                        actions_taken.append({"tool": block.name, "result": result})
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": json.dumps(result),
-                        })
-                messages_loop.append({"role": "user", "content": tool_results})
-            else:
-                break
+                            if etype == "content_block_start":
+                                block = getattr(event, "content_block", None)
+                                btype = getattr(block, "type", None)
+                                if btype == "tool_use":
+                                    yield _sse_pack("tool_start", {
+                                        "name": getattr(block, "name", ""),
+                                        "id": getattr(block, "id", ""),
+                                        "kind": "app",
+                                    })
+                                elif btype == "server_tool_use":
+                                    yield _sse_pack("tool_start", {
+                                        "name": getattr(block, "name", ""),
+                                        "id": getattr(block, "id", ""),
+                                        "kind": "server",
+                                    })
 
-        # Extract final text from the last response
-        content = ""
-        if response:
-            for block in response.content:
-                if getattr(block, "type", None) == "text":
-                    content += block.text
+                            elif etype == "content_block_delta":
+                                delta = getattr(event, "delta", None)
+                                dtype = getattr(delta, "type", None)
+                                if dtype == "text_delta":
+                                    txt = getattr(delta, "text", "") or ""
+                                    if txt:
+                                        collected_text += txt
+                                        yield _sse_pack("text", {"delta": txt})
+                                elif dtype == "input_json_delta":
+                                    # Tool input arriving piecewise — surface the partial
+                                    # JSON so the UI can render e.g. the search query as it streams.
+                                    partial = getattr(delta, "partial_json", "") or ""
+                                    if partial:
+                                        yield _sse_pack("tool_input_delta", {"partial": partial})
 
-        # Build action metadata so the frontend can refresh the right panels
-        task_created = any(a["tool"] == "create_task" and a["result"].get("status") == "created" for a in actions_taken)
-        task_completed = any(a["tool"] == "complete_task" and a["result"].get("status") == "completed" for a in actions_taken)
-        task_deleted = any(a["tool"] == "delete_task" and a["result"].get("status") == "deleted" for a in actions_taken)
-        stock_recorded = any(a["tool"] == "log_stock_transaction" and a["result"].get("status") == "recorded" for a in actions_taken)
-        stock_note_saved = any(a["tool"] == "save_stock_note" and a["result"].get("status") == "saved" for a in actions_taken)
-        assignment_completed = any(a["tool"] == "complete_assignment" and a["result"].get("status") == "logged" for a in actions_taken)
-        workout_generated = any(a["tool"] == "generate_workout" and "plan" in a["result"] for a in actions_taken)
-        project_created = any(a["tool"] == "create_project" and a["result"].get("status") == "created" for a in actions_taken)
-        project_task_added = any(a["tool"] == "add_project_task" and a["result"].get("status") == "added" for a in actions_taken)
+                            elif etype == "content_block_stop":
+                                # Pull the now-complete block off the snapshot to emit a clean tool_end.
+                                idx = getattr(event, "index", None)
+                                snap = getattr(stream, "current_message_snapshot", None)
+                                if snap is not None and idx is not None:
+                                    try:
+                                        block = snap.content[idx]
+                                    except Exception:
+                                        block = None
+                                    btype = getattr(block, "type", None) if block else None
+                                    if btype in ("tool_use", "server_tool_use"):
+                                        try:
+                                            inp = getattr(block, "input", {}) or {}
+                                            inp_serial = json.loads(json.dumps(inp, default=str))
+                                        except Exception:
+                                            inp_serial = {}
+                                        yield _sse_pack("tool_end", {
+                                            "name": getattr(block, "name", ""),
+                                            "id": getattr(block, "id", ""),
+                                            "kind": "server" if btype == "server_tool_use" else "app",
+                                            "input": inp_serial,
+                                        })
 
-        completed_title = next((a["result"].get("title") for a in actions_taken if a["tool"] == "complete_task"), None)
-        deleted_title = next((a["result"].get("title") for a in actions_taken if a["tool"] == "delete_task"), None)
-        stock_note_symbol = next((a["result"].get("symbol") for a in actions_taken if a["tool"] == "save_stock_note"), None)
-        workout_log_id = next((a["result"].get("log_id") for a in actions_taken if a["tool"] == "generate_workout"), None)
-        project_created_title = next((a["result"].get("title") for a in actions_taken if a["tool"] == "create_project"), None)
-        project_created_task_count = next((a["result"].get("task_count") for a in actions_taken if a["tool"] == "create_project"), None)
+                        final_message = stream.get_final_message()
 
-        return jsonify({
-            "content": content,
-            "task_created": task_created,
-            "task_completed": task_completed,
-            "completed_title": completed_title,
-            "task_deleted": task_deleted,
-            "deleted_title": deleted_title,
-            "stock_recorded": stock_recorded,
-            "stock_note_saved": stock_note_saved,
-            "stock_note_symbol": stock_note_symbol,
-            "assignment_completed": assignment_completed,
-            "workout_generated": workout_generated,
-            "workout_log_id": workout_log_id,
-            "project_created": project_created,
-            "project_created_title": project_created_title,
-            "project_created_task_count": project_created_task_count,
-            "project_task_added": project_task_added,
-        })
+                    try:
+                        track_api_usage(final_message)
+                    except Exception:
+                        pass
+
+                    stop_reason = getattr(final_message, "stop_reason", None)
+
+                    if stop_reason == "end_turn":
+                        break
+
+                    if stop_reason == "tool_use":
+                        # Append the assistant turn verbatim so the next iteration sees it.
+                        assistant_content = []
+                        any_app_tool = False
+                        for block in final_message.content:
+                            btype = getattr(block, "type", None)
+                            if btype == "thinking":
+                                d = {"type": "thinking", "thinking": block.thinking}
+                                if getattr(block, "signature", None):
+                                    d["signature"] = block.signature
+                                assistant_content.append(d)
+                            elif btype == "redacted_thinking":
+                                assistant_content.append({"type": "redacted_thinking", "data": getattr(block, "data", "")})
+                            elif btype == "text":
+                                assistant_content.append({"type": "text", "text": block.text})
+                            elif btype == "tool_use":
+                                any_app_tool = True
+                                assistant_content.append({
+                                    "type": "tool_use",
+                                    "id": block.id,
+                                    "name": block.name,
+                                    "input": block.input,
+                                })
+                            elif btype == "server_tool_use":
+                                # Anthropic-handled — pass through verbatim so the API
+                                # accepts the conversation state on the next turn.
+                                assistant_content.append({
+                                    "type": "server_tool_use",
+                                    "id": block.id,
+                                    "name": block.name,
+                                    "input": block.input,
+                                })
+                            elif btype in ("web_search_tool_result", "web_fetch_tool_result"):
+                                assistant_content.append({
+                                    "type": btype,
+                                    "tool_use_id": getattr(block, "tool_use_id", ""),
+                                    "content": getattr(block, "content", []),
+                                })
+                        messages_loop.append({"role": "assistant", "content": assistant_content})
+
+                        if not any_app_tool:
+                            # Only server tools were invoked — Anthropic already injected their
+                            # results into `final_message.content`. Loop again so the model can
+                            # continue reasoning over them; no app-side tool_result needed.
+                            continue
+
+                        # Execute every app-side tool_use block.
+                        tool_results = []
+                        for block in final_message.content:
+                            if getattr(block, "type", None) == "tool_use":
+                                tname = block.name
+                                if tname in ANTHROPIC_SERVER_TOOL_NAMES:
+                                    continue
+                                log.info(f"Jarvis tool: {tname} inputs={json.dumps(block.input, default=str)}")
+                                result = _execute_jarvis_tool(tname, block.input)
+                                actions_taken.append({"tool": tname, "result": result})
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": json.dumps(result, default=str),
+                                })
+                        if tool_results:
+                            messages_loop.append({"role": "user", "content": tool_results})
+                    else:
+                        break
+
+                # Build action metadata (same shape as the legacy JSON response).
+                def _has(tool, status_key="status", status_val=None, predicate=None):
+                    for a in actions_taken:
+                        if a["tool"] != tool:
+                            continue
+                        r = a.get("result") or {}
+                        if predicate is not None:
+                            if predicate(r):
+                                return True
+                        elif status_val is not None and r.get(status_key) == status_val:
+                            return True
+                    return False
+
+                action_payload = {
+                    "task_created": _has("create_task", status_val="created"),
+                    "task_completed": _has("complete_task", status_val="completed"),
+                    "task_deleted": _has("delete_task", status_val="deleted"),
+                    "stock_recorded": _has("log_stock_transaction", status_val="recorded"),
+                    "stock_note_saved": _has("save_stock_note", status_val="saved"),
+                    "assignment_completed": _has("complete_assignment", status_val="logged"),
+                    "workout_generated": _has("generate_workout", predicate=lambda r: "plan" in r),
+                    "project_created": _has("create_project", status_val="created"),
+                    "project_task_added": _has("add_project_task", status_val="added"),
+                    "completed_title": next((a["result"].get("title") for a in actions_taken if a["tool"] == "complete_task"), None),
+                    "deleted_title": next((a["result"].get("title") for a in actions_taken if a["tool"] == "delete_task"), None),
+                    "stock_note_symbol": next((a["result"].get("symbol") for a in actions_taken if a["tool"] == "save_stock_note"), None),
+                    "workout_log_id": next((a["result"].get("log_id") for a in actions_taken if a["tool"] == "generate_workout"), None),
+                    "project_created_title": next((a["result"].get("title") for a in actions_taken if a["tool"] == "create_project"), None),
+                    "project_created_task_count": next((a["result"].get("task_count") for a in actions_taken if a["tool"] == "create_project"), None),
+                }
+                yield _sse_pack("action", action_payload)
+                yield _sse_pack("done", {"conversation_id": conversation_id})
+                _final_text_box[0] = collected_text
+
+            except Exception as e:
+                log.exception("/api/chat stream failed")
+                try:
+                    yield _sse_pack("error", {"message": "Stream failed: " + str(e)[:200]})
+                except Exception:
+                    pass
+            finally:
+                # Persist the assistant's final reply and lazily refresh the summary.
+                try:
+                    if _final_text_box[0]:
+                        _chat_persist_message(conversation_id, "assistant", _final_text_box[0])
+                    _chat_maybe_summarize_async(conversation_id, _api_key_for_summary)
+                except Exception:
+                    pass
+
+        return Response(
+            stream_with_context(_stream_generator()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",  # Disable proxy buffering (nginx)
+                "Connection": "keep-alive",
+            },
+        )
     except Exception:
         log.exception("/api/chat failed")
         return jsonify({"error": "Failed to reach AI. Check server logs."}), 500

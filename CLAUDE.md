@@ -40,10 +40,14 @@ This Flask-based web application provides a comprehensive student management sys
 ### 2. Chat Interface
 - Contextually aware assistant that knows:
   - Current date, time, and school schedule
-  - Upcoming assignments from Canvas
+  - Upcoming assignments from Canvas (titles + due dates from iCal; full descriptions/rubrics + live grades when Canvas REST API is configured)
   - Pending tasks and project work
   - Park City High School bell schedule (Red/White day rotation)
   - Student availability during/after school hours
+  - Recall of recent prior conversations (server-side history + auto-summaries)
+- **Live web access**: Anthropic-native `web_search` and `web_fetch` tools — Jarvis can look up current events, definitions, study material, or read any URL the student pastes
+- **Streaming responses (SSE)**: replies stream token-by-token; tool calls (search, fetch, Canvas, task ops) surface as inline activity chips so the student sees what Jarvis is doing in real time
+- **Persistent memory**: messages and rolling summaries are stored in `chat_messages` / `chat_summaries`; the server injects the 5 most recent prior-conversation summaries (and last few in-conversation messages on tab refresh) into every chat turn
 
 ### 3. Workout System
 - **Rotation-Based Focus Cycles**: Back → Biceps & Triceps → Core/Cardio → Legs → Shoulders
@@ -78,6 +82,8 @@ Key tables include:
 - `workout_state` - Current position in rotation cycle
 - `timer_state` - Timer state for work sessions
 - `daily_plans` - Generated daily schedules
+- `chat_messages` - Persisted chat history (per `conversation_id`)
+- `chat_summaries` - Rolling 2-3 sentence summaries per conversation, used for cross-session recall
 
 ## Environment Variables
 
@@ -92,7 +98,9 @@ Optional:
 - `AVERAGE_USER` - Standard user username
 - `ADMIN_USER` - Admin user username
 - `PERSONAL_ICAL_URL` - User's personal calendar
-- `CANVAS_ICAL_URL` - Canvas/LMS assignment calendar
+- `CANVAS_ICAL_URL` - Canvas/LMS assignment calendar (titles + due dates only)
+- `CANVAS_API_TOKEN` - Canvas personal access token; unlocks live grades, course names, and full assignment descriptions/rubrics for Jarvis
+- `CANVAS_BASE_URL` - Canvas instance root, e.g. `https://parkcityschools.instructure.com` (no trailing slash)
 - `SPORTS_ICAL_URL` - Sports/activities calendar
 - `RED_DAY_ICAL_URL` - Park City Schools Red Day schedule
 - `WHITE_DAY_ICAL_URL` - Park City Schools White Day schedule
