@@ -488,6 +488,8 @@ def init_db():
         ("outlook_news_cache", "CREATE TABLE IF NOT EXISTS outlook_news_cache (url_hash TEXT PRIMARY KEY, synthesis TEXT NOT NULL, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("news_preferences", "CREATE TABLE IF NOT EXISTS news_preferences (url_hash TEXT PRIMARY KEY, url TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', outlet TEXT NOT NULL DEFAULT '', rating INT NOT NULL, keywords TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("news_preferences_outlet_idx", "CREATE INDEX IF NOT EXISTS idx_news_pref_outlet ON news_preferences(outlet)"),
+        ("meal_plans", "CREATE TABLE IF NOT EXISTS meal_plans (id SERIAL PRIMARY KEY, plan_date DATE NOT NULL UNIQUE, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), ingredients_used TEXT NOT NULL DEFAULT '', plan_content TEXT NOT NULL DEFAULT '', structured_data TEXT NOT NULL DEFAULT '{}')"),
+        ("meal_ingredients", "CREATE TABLE IF NOT EXISTS meal_ingredients (id INT PRIMARY KEY DEFAULT 1, ingredients TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
     ]
 
     for table_name, create_sql in tables:
@@ -3792,6 +3794,279 @@ def api_workout_regenerate():
         "log_id": log_id,
         "status": "regenerated"
     })
+
+
+@app.route("/api/meals", methods=["GET"])
+def api_meals_get():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT ingredients FROM meal_ingredients WHERE id = 1")
+    row = cur.fetchone()
+    saved_ingredients = row["ingredients"] if row else ""
+
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).date()
+    cur.execute("SELECT plan_date, generated_at, ingredients_used, plan_content, structured_data FROM meal_plans WHERE plan_date = %s", (tomorrow,))
+    plan_row = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    plan = None
+    if plan_row:
+        import json as _json
+        try:
+            structured = _json.loads(plan_row["structured_data"] or "{}")
+        except Exception:
+            structured = {}
+        plan = {
+            "plan_date": plan_row["plan_date"].isoformat(),
+            "generated_at": plan_row["generated_at"].isoformat() if plan_row["generated_at"] else None,
+            "ingredients_used": plan_row["ingredients_used"],
+            "plan_content": plan_row["plan_content"],
+            "structured": structured,
+        }
+
+    return jsonify({"ingredients": saved_ingredients, "plan": plan})
+
+
+@app.route("/api/meals/ingredients", methods=["POST"])
+def api_meals_ingredients_save():
+    data = request.get_json(force=True) or {}
+    ingredients = str(data.get("ingredients", ""))[:4000]
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+INSERT INTO meal_ingredients (id, ingredients, updated_at)
+VALUES (1, %s, NOW())
+ON CONFLICT (id) DO UPDATE SET ingredients = EXCLUDED.ingredients, updated_at = NOW()""", (ingredients,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/meals/generate", methods=["POST"])
+def api_meals_generate():
+    import json as _json
+    data = request.get_json(force=True) or {}
+    ingredients = str(data.get("ingredients", "")).strip()
+    if not ingredients:
+        return jsonify({"error": "Ingredients list is required to generate a meal plan."}), 400
+    special_request = str(data.get("request", "")).strip()[:500]
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "Anthropic API key not configured."}), 500
+
+    name = get_config().get("name", "Finn")
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).date()
+    tomorrow_str = tomorrow.strftime("%A, %B %-d")
+
+    system_prompt = (
+        "You are Jarvis, a sophisticated AI nutrition specialist and personal chef attending to a disciplined high school athlete. "
+        "Your primary directive: design meals that maximise lean protein, keep the athlete in a caloric deficit for weight cutting, "
+        "and taste genuinely good. You think like a Michelin-trained nutritionist — precise macros, balanced micronutrients, "
+        "and creative but practical recipes the athlete can realistically prepare. "
+        "You always respond with valid JSON only. No markdown, no prose outside the JSON structure."
+    )
+
+    request_line = f"Special requests from the athlete (MUST be honoured): {special_request}\n" if special_request else ""
+    user_prompt = (
+        f"Athlete: {name}\n"
+        f"Goal: Cutting weight while maintaining maximum muscle mass. High protein is the top priority.\n"
+        f"Plan date: {tomorrow_str}\n"
+        f"Confirmed ingredients: {ingredients}\n"
+        f"{request_line}\n"
+        "Generate a complete daily meal plan. You may also use common pantry staples (oils, spices, condiments, eggs, basic produce) "
+        "that a typical household would have — but list every assumed ingredient in assumed_ingredients so the athlete can verify them.\n\n"
+        "Return ONLY a JSON object with this exact structure:\n"
+        "{\n"
+        '  "daily_totals": {"calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0},\n'
+        '  "meals": [\n'
+        "    {\n"
+        '      "type": "Breakfast",\n'
+        '      "time_suggestion": "7:00 AM",\n'
+        '      "name": "Meal name",\n'
+        '      "description": "One sentence description",\n'
+        '      "calories": 0,\n'
+        '      "protein_g": 0,\n'
+        '      "carbs_g": 0,\n'
+        '      "fat_g": 0,\n'
+        '      "key_ingredients": ["ingredient1", "ingredient2"]\n'
+        "    }\n"
+        "  ],\n"
+        '  "assumed_ingredients": [\n'
+        '    {"name": "olive oil", "used_in": ["Lunch", "Dinner"], "essential": false}\n'
+        "  ],\n"
+        '  "hydration_note": "Brief hydration tip",\n'
+        '  "jarvis_note": "One motivational line from Jarvis about the plan"\n'
+        "}\n"
+        "Include 4 meals: Breakfast, Lunch, Dinner, and one Snack. "
+        "Target: 160-200g protein, 1600-2000 calories total (caloric deficit). "
+        "In assumed_ingredients, list ONLY ingredients you used that were NOT in the confirmed list — "
+        "things like spices, oils, condiments, eggs, garlic, lemon, etc. "
+        "Set essential=true only if the meal cannot work without it (a substitute would fundamentally change the dish). "
+        "Do not list confirmed ingredients in assumed_ingredients. Be creative and produce genuinely great meals."
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": user_prompt}],
+            system=system_prompt,
+        )
+        track_api_usage(message)
+        raw = message.content[0].text if message.content else "{}"
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        structured = _json.loads(raw)
+    except _json.JSONDecodeError as e:
+        log.error("Meal plan JSON parse error: %s | raw: %s", e, raw[:200])
+        return jsonify({"error": "Could not parse meal plan. Please try again."}), 500
+    except Exception as e:
+        log.error("Meal plan generate error: %s", e)
+        return jsonify({"error": "Could not generate meal plan. Please try again."}), 500
+
+    return jsonify({
+        "plan_date": tomorrow.isoformat(),
+        "structured": structured,
+        "ingredients_used": ingredients,
+    })
+
+
+@app.route("/api/meals/finalize", methods=["POST"])
+def api_meals_finalize():
+    import json as _json
+    data = request.get_json(force=True) or {}
+    structured = data.get("structured") or {}
+    missing = [str(m).strip() for m in (data.get("missing") or []) if str(m).strip()]
+    ingredients = str(data.get("ingredients", "")).strip()
+    special_request = str(data.get("request", "")).strip()[:500]
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).date()
+
+    if missing and api_key:
+        name = get_config().get("name", "Finn")
+        missing_list = ", ".join(missing)
+        current_plan = _json.dumps(structured, indent=2)
+        request_line = f"Original special request (still applies): {special_request}\n" if special_request else ""
+
+        fix_prompt = (
+            f"Athlete: {name}\n"
+            f"Confirmed available ingredients: {ingredients}\n"
+            f"Ingredients the athlete does NOT have: {missing_list}\n"
+            f"{request_line}\n"
+            "Here is the current meal plan (JSON):\n"
+            f"{current_plan}\n\n"
+            "Update the meal plan to work without the missing ingredients. Rules:\n"
+            "- If an ingredient is non-essential, substitute it with something from the confirmed list or another common item.\n"
+            "- If removing it fundamentally breaks a meal (essential=true), replace that entire meal with a different one.\n"
+            "- Keep all macro targets (160-200g protein total, 1600-2000 cal deficit).\n"
+            "- Return ONLY the complete updated JSON in the same structure. No prose, no markdown."
+        )
+        try:
+            client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
+            message = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=2200,
+                messages=[{"role": "user", "content": fix_prompt}],
+                system=(
+                    "You are Jarvis, an expert nutritionist. You adapt meal plans when ingredients are unavailable. "
+                    "You always return valid JSON only, matching the original plan structure exactly."
+                ),
+            )
+            track_api_usage(message)
+            raw = (message.content[0].text if message.content else "{}").strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+            structured = _json.loads(raw)
+        except Exception as e:
+            log.error("Meal finalize error: %s", e)
+
+    plan_content = _json.dumps(structured, indent=2)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+INSERT INTO meal_plans (plan_date, ingredients_used, plan_content, structured_data)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (plan_date) DO UPDATE SET
+  generated_at = NOW(),
+  ingredients_used = EXCLUDED.ingredients_used,
+  plan_content = EXCLUDED.plan_content,
+  structured_data = EXCLUDED.structured_data""",
+        (tomorrow, ingredients[:4000], plan_content, plan_content))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return jsonify({
+        "plan_date": tomorrow.isoformat(),
+        "structured": structured,
+        "ingredients_used": ingredients,
+    })
+
+
+@app.route("/api/meals/recipe", methods=["POST"])
+def api_meals_recipe():
+    data = request.get_json(force=True) or {}
+    meal_name = str(data.get("meal_name", "")).strip()
+    meal_description = str(data.get("description", "")).strip()
+    key_ingredients = data.get("key_ingredients", [])
+    all_ingredients = str(data.get("all_ingredients", "")).strip()
+
+    if not meal_name:
+        return jsonify({"error": "meal_name required"}), 400
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "Anthropic API key not configured."}), 500
+
+    name = get_config().get("name", "Finn")
+    ingredients_context = ", ".join(key_ingredients) if key_ingredients else all_ingredients
+
+    user_prompt = (
+        f"Athlete: {name} (cutting weight, high protein diet)\n"
+        f"Meal to prepare: {meal_name}\n"
+        f"Description: {meal_description}\n"
+        f"Key ingredients available: {ingredients_context}\n"
+        f"All available ingredients: {all_ingredients}\n\n"
+        "Provide a complete, precise recipe in Jarvis's voice. Include:\n"
+        "## Ingredients\n(exact amounts for one serving)\n\n"
+        "## Instructions\n(numbered steps, concise and clear)\n\n"
+        "## Macros per serving\n(calories, protein, carbs, fat)\n\n"
+        "## Jarvis's Tip\n(one practical preparation or substitution tip)\n\n"
+        "Keep it practical for a busy student. Total prep+cook time should be under 25 minutes."
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1200,
+            messages=[{"role": "user", "content": user_prompt}],
+            system=(
+                "You are Jarvis, a distinguished AI chef and nutritionist. "
+                "You provide precise, practical recipes tailored to athletic performance and weight management. "
+                "Your recipes are sophisticated yet achievable, with exact measurements and clear technique. "
+                "Speak directly and efficiently — the athlete has limited time."
+            ),
+        )
+        track_api_usage(message)
+        recipe_text = message.content[0].text if message.content else ""
+    except Exception as e:
+        log.error("Meal recipe error: %s", e)
+        return jsonify({"error": "Could not generate recipe. Please try again."}), 500
+
+    return jsonify({"recipe": recipe_text, "meal_name": meal_name})
 
 
 @app.route("/api/complete", methods=["POST"])
