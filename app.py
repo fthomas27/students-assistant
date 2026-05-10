@@ -232,17 +232,7 @@ def require_auth():
             return jsonify({"error": "Not authenticated"}), 401
         return redirect("/login")
 
-_workout_lock = threading.Lock()
 _plan_lock = threading.Lock()
-
-# Workout rotation: advances each time a plan is generated (not by calendar day).
-WORKOUT_FOCUS_CYCLE = [
-    ("back", "Back"),
-    ("biceps_triceps", "Biceps & Triceps"),
-    ("core_cardio", "Core / Cardio"),
-    ("legs", "Legs"),
-    ("shoulders", "Shoulders"),
-]
 
 # ── Calendar URLs from environment variables ──────────────────────────────────
 PERSONAL_ICAL_URL = os.environ.get("PERSONAL_ICAL_URL", "")
@@ -473,12 +463,10 @@ def init_db():
         ("debrief_cache", "CREATE TABLE IF NOT EXISTS debrief_cache (id INT PRIMARY KEY DEFAULT 1, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL DEFAULT '')"),
         ("insight_cache", "CREATE TABLE IF NOT EXISTS insight_cache (id INT PRIMARY KEY DEFAULT 1, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL DEFAULT '')"),
         ("tasks", "CREATE TABLE IF NOT EXISTS tasks (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, due_date DATE, created_by_parent BOOLEAN NOT NULL DEFAULT FALSE)"),
-        ("projects", "CREATE TABLE IF NOT EXISTS projects (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', lead TEXT NOT NULL DEFAULT '', members TEXT NOT NULL DEFAULT '', last_checkin TIMESTAMPTZ, checkin_interval_days INT NOT NULL DEFAULT 7, completion_pct INT NOT NULL DEFAULT 0)"),
+        ("projects", "CREATE TABLE IF NOT EXISTS projects (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', lead TEXT NOT NULL DEFAULT '', members TEXT NOT NULL DEFAULT '', last_checkin TIMESTAMPTZ, checkin_interval_days INT NOT NULL DEFAULT 7)"),
         ("project_notes", "CREATE TABLE IF NOT EXISTS project_notes (id SERIAL PRIMARY KEY, project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL)"),
         ("project_tasks", "CREATE TABLE IF NOT EXISTS project_tasks (id SERIAL PRIMARY KEY, project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', assignee TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', due_date DATE)"),
         ("recurring_tasks", "CREATE TABLE IF NOT EXISTS recurring_tasks (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', recurrence TEXT NOT NULL, last_created_at TIMESTAMPTZ, active BOOLEAN NOT NULL DEFAULT TRUE)"),
-        ("workout_state", "CREATE TABLE IF NOT EXISTS workout_state (id INT PRIMARY KEY DEFAULT 1, last_focus_index INT NOT NULL DEFAULT -1)"),
-        ("workout_logs", "CREATE TABLE IF NOT EXISTS workout_logs (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), focus_key TEXT NOT NULL, focus_label TEXT NOT NULL, intensity INT NOT NULL, location TEXT NOT NULL, plan_content TEXT NOT NULL, user_notes TEXT NOT NULL DEFAULT '', perceived_difficulty INT)"),
         ("daily_plans", "CREATE TABLE IF NOT EXISTS daily_plans (id SERIAL PRIMARY KEY, plan_date DATE NOT NULL, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), needs_update BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(plan_date))"),
         ("daily_plan_items", "CREATE TABLE IF NOT EXISTS daily_plan_items (id SERIAL PRIMARY KEY, plan_id INTEGER NOT NULL REFERENCES daily_plans(id) ON DELETE CASCADE, item_type VARCHAR(20) NOT NULL, item_id VARCHAR(255), item_title VARCHAR(500) NOT NULL, scheduled_start_time TIME NOT NULL, scheduled_end_time TIME NOT NULL, estimated_minutes INTEGER, order_index INTEGER, completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, user_edited BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("login_attempts", "CREATE TABLE IF NOT EXISTS login_attempts (id SERIAL PRIMARY KEY, ip_address TEXT NOT NULL, success BOOLEAN NOT NULL, username TEXT DEFAULT '', attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), user_agent TEXT)"),
@@ -605,7 +593,6 @@ ON CONFLICT (ip_address) DO NOTHING""")
         cur.execute("INSERT INTO timer_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
         cur.execute("INSERT INTO briefing_cache (id, content) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
         cur.execute("INSERT INTO debrief_cache (id, content) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
-        cur.execute("INSERT INTO workout_state (id, last_focus_index) VALUES (1, -1) ON CONFLICT (id) DO NOTHING")
         cur.execute("INSERT INTO lockdown_state (id, is_locked_down) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING")
         conn.commit()
     except Exception as e:
@@ -2103,17 +2090,9 @@ WHERE completed = FALSE
 ORDER BY urgency DESC, created_at ASC LIMIT 10""")
         tasks_open = [dict(r) for r in cur.fetchall()]
 
-        # Last 7 days: workouts logged
-        cur.execute("""
-SELECT focus_label, intensity, perceived_difficulty, created_at
-FROM workout_logs
-WHERE created_at >= %s
-ORDER BY created_at ASC""", (now_local - timedelta(days=7),))
-        workouts_week = [dict(r) for r in cur.fetchall()]
-
         # Projects needing check-in
         cur.execute("""
-SELECT id, title, status, last_checkin, checkin_interval_days, completion_pct
+SELECT id, title, status, last_checkin, checkin_interval_days
 FROM projects
 WHERE status = 'active'""")
         projects = [dict(r) for r in cur.fetchall()]
@@ -2160,14 +2139,8 @@ WHERE status = 'active'""")
             "- [%s] %s%s" % (t["urgency"], t["title"], (" (due %s)" % t["due_date"]) if t.get("due_date") else "")
             for t in tasks_open
         ) or "- None."
-        workouts_text = "\n".join(
-            "- %s (intensity %d%s)" % (
-                w["focus_label"], w["intensity"],
-                ", perceived %d" % w["perceived_difficulty"] if w.get("perceived_difficulty") else "")
-            for w in workouts_week
-        ) or "- None logged."
         projects_text = "\n".join(
-            "- %s (%d%% complete, status %s)" % (p["title"], p.get("completion_pct") or 0, p["status"])
+            "- %s (status %s)" % (p["title"], p["status"])
             for p in projects
         ) or "- No active projects."
         projects_overdue_text = "\n".join(
@@ -2191,7 +2164,6 @@ WHERE status = 'active'""")
             f"Reviewing the week of {week_label}.\n\n"
             f"WEEK COMPLETIONS ({total_hours:.1f} hours of focused work, {len(completions_week)} items):\n{completions_text}\n\n"
             f"TASKS COMPLETED THIS WEEK:\n{tasks_done_text}\n\n"
-            f"WORKOUTS LOGGED THIS WEEK:\n{workouts_text}\n\n"
             f"ACTIVE PROJECTS (current state):\n{projects_text}\n\n"
             f"PROJECTS WITH OVERDUE CHECK-IN:\n{projects_overdue_text}\n\n"
             f"STILL OPEN (carrying into the new week):\n{tasks_open_text}\n\n"
@@ -2201,7 +2173,7 @@ WHERE status = 'active'""")
             "## Week in Review\n"
             "• Three to five bullets distilling the week's pattern: what was accomplished, time invested, where momentum was strongest. Reference specific items and the metrics where pertinent.\n\n"
             "## Productivity Assessment\n"
-            "• A measured, candid appraisal in two to three sentences (or bullets). Was the workload distributed sensibly? Were any classes neglected? Note the cadence of workouts. Keep it analytical, not preachy.\n\n"
+            "• A measured, candid appraisal in two to three sentences (or bullets). Was the workload distributed sensibly? Were any classes neglected? Keep it analytical, not preachy.\n\n"
             "## Project Status\n"
             "• One bullet per active project summarising progress; flag any with overdue check-ins explicitly. If none, one bullet: All projects are presently in good order.\n\n"
             "## Recommendation for the Coming Week\n"
@@ -3579,372 +3551,6 @@ def api_insight_weekly_generate():
     return jsonify({
         "content": row["content"],
         "generated_at": row["generated_at"].isoformat() if row["generated_at"] else None,
-    })
-
-
-def _workout_history_block(cur):
-    cur.execute("""
-SELECT created_at, focus_label, intensity, location, user_notes, perceived_difficulty
-FROM workout_logs ORDER BY created_at DESC LIMIT 12""")
-    rows = cur.fetchall()
-    if not rows:
-        return "No prior logged workouts yet — this is their first tracked session."
-    lines = []
-    for r in reversed(rows):
-        ts = r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else ""
-        felt = ""
-        if r.get("perceived_difficulty") is not None:
-            felt = " | after: felt %s/10" % r["perceived_difficulty"]
-        notes = (r.get("user_notes") or "").strip()
-        note_part = (" | athlete note: " + notes[:180]) if notes else ""
-        loc = "home gym" if r["location"] == "home" else "rec gym"
-        lines.append(
-            "- %s: %s | intensity %s/10 | %s%s%s"
-            % (ts, r["focus_label"], r["intensity"], loc, felt, note_part)
-        )
-    return "\n".join(lines)
-
-
-@app.route("/api/workout", methods=["GET"])
-def api_workout_get():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT last_focus_index FROM workout_state WHERE id = 1")
-    row = cur.fetchone()
-    if not row:
-        cur.execute("INSERT INTO workout_state (id, last_focus_index) VALUES (1, -1)")
-        conn.commit()
-        last_i = -1
-    else:
-        last_i = int(row["last_focus_index"])
-    n = len(WORKOUT_FOCUS_CYCLE)
-    next_i = (last_i + 1) % n
-    key, label = WORKOUT_FOCUS_CYCLE[next_i]
-    cur.execute("""
-SELECT id, created_at, focus_label, intensity, location,
-       LEFT(plan_content, 160) as preview, user_notes, perceived_difficulty
-FROM workout_logs ORDER BY created_at DESC LIMIT 20""")
-    logs = []
-    for r in cur.fetchall():
-        logs.append({
-            "id": r["id"],
-            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-            "focus_label": r["focus_label"],
-            "intensity": r["intensity"],
-            "location": r["location"],
-            "preview": (r["preview"] or "").strip(),
-            "user_notes": r.get("user_notes") or "",
-            "perceived_difficulty": r["perceived_difficulty"],
-        })
-    cur.close()
-    conn.close()
-    return jsonify({
-        "next_focus_index": next_i,
-        "next_focus_key": key,
-        "next_focus_label": label,
-        "rotation": [{"key": a[0], "label": a[1]} for a in WORKOUT_FOCUS_CYCLE],
-        "recent_logs": logs,
-    })
-
-
-def _generate_workout_core(intensity, location, api_key):
-    """Generate a workout plan, persist it, and return a result dict (or dict with 'error' key)."""
-    with _workout_lock:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT last_focus_index FROM workout_state WHERE id=1 FOR UPDATE")
-        row = cur.fetchone()
-        if not row:
-            cur.execute("INSERT INTO workout_state (id, last_focus_index) VALUES (1,-1) ON CONFLICT (id) DO NOTHING")
-            cur.execute("SELECT last_focus_index FROM workout_state WHERE id=1 FOR UPDATE")
-            row = cur.fetchone()
-        last_i = int(row["last_focus_index"])
-        next_i = (last_i + 1) % len(WORKOUT_FOCUS_CYCLE)
-        focus_key, focus_label = WORKOUT_FOCUS_CYCLE[next_i]
-        history_text = _workout_history_block(cur)
-
-        now_local = datetime.now(TZ)
-        name = get_config().get("name", "Jarvis")
-        if location == "home":
-            equip = (
-                "HOME GYM: dumbbells only up to 35 lb each, plus bodyweight. "
-                "No barbell rack, no heavy machines, no cable stack unless you describe a bodyweight or DB substitute. "
-                "Be creative with unilateral work, tempo, and density."
-            )
-        else:
-            equip = "REC GYM (full gym): barbells, squat rack, cables, machines, dumbbells beyond 35 lb, all standard equipment."
-
-        user_prompt = (
-            "Athlete name: %s.\n"
-            "Today: %s.\n"
-            "Today's rotation focus (must be the primary emphasis of this session): **%s**.\n"
-            "Target difficulty: **%d / 10** (1 = very easy recovery, 5 = moderate, 8–10 = very demanding).\n"
-            "Training location: **%s**.\n\n"
-            "Equipment rules: %s\n\n"
-            "Recent history — learn from these (honor notes, vary exercises if they repeat complaints, match intensity trends):\n%s\n\n"
-            "Write ONE complete workout for today. Include warm-up, main lifts/accessories appropriate to the focus, "
-            "optional finisher if intensity ≥ 6, and cool-down. Use **bold** for exercise names. "
-            "Give sets, reps or time, rest, and one short form cue per main movement. "
-            "Do not skip the rotation focus — secondary work should support it."
-        ) % (
-            name, now_local.strftime("%-m/%-d/%Y"), focus_label, intensity,
-            "Home gym (≤35 lb dumbbells + bodyweight)" if location == "home" else "Rec / full gym",
-            equip, history_text,
-        )
-
-        try:
-            client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
-            message = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=2000,
-                messages=[{"role": "user", "content": user_prompt}],
-                system=(
-                    "You are Jarvis, a distinguished and methodical strength and conditioning specialist attending to a diligent high school athlete. "
-                    "Your programs are meticulously tailored to the available equipment and the athlete's demonstrated capacity. "
-                    "Safety remains paramount—you will never prescribe reckless or excessive loading. "
-                    "Should the training history indicate previous injury, fatigue, or overexertion, you shall adjust proactively and with sophistication. "
-                    "Your recommendations reflect professional precision and unwavering attention to sustainable progression."
-                ),
-            )
-            track_api_usage(message)
-            content = message.content[0].text if message.content else ""
-        except Exception as e:
-            log.error("Workout generate error: %s", e)
-            cur.close()
-            conn.close()
-            return {"error": "Could not generate workout. Check API key and try again."}
-
-        cur.execute(
-            "INSERT INTO workout_logs (focus_key, focus_label, intensity, location, plan_content) VALUES (%s,%s,%s,%s,%s) RETURNING id",
-            (focus_key, focus_label, intensity, location, content),
-        )
-        log_id = cur.fetchone()["id"]
-        cur.execute("UPDATE workout_state SET last_focus_index=%s WHERE id=1", (next_i,))
-        conn.commit()
-        cur.close()
-        conn.close()
-
-    return {"plan": content, "log_id": log_id, "focus_key": focus_key, "focus_label": focus_label, "intensity": intensity, "location": location}
-
-
-@app.route("/api/workout/generate", methods=["POST"])
-def api_workout_generate():
-    data = request.get_json(force=True) or {}
-    try:
-        intensity = int(data.get("intensity", 5))
-    except (TypeError, ValueError):
-        intensity = 5
-    intensity = max(1, min(10, intensity))
-    location = str(data.get("location", "home")).strip().lower()
-    if location not in ("home", "rec"):
-        location = "home"
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return jsonify({"error": "Add your Anthropic API key in Railway environment to generate workouts."}), 500
-    result = _generate_workout_core(intensity, location, api_key)
-    if "error" in result:
-        return jsonify(result), 500
-    return jsonify(result)
-
-
-@app.route("/api/workout/log/<int:log_id>", methods=["PATCH"])
-def api_workout_log_patch(log_id):
-    data = request.get_json(force=True) or {}
-    if "user_notes" not in data and "perceived_difficulty" not in data:
-        return jsonify({"error": "Nothing to update"}), 400
-    conn = get_db()
-    cur = conn.cursor()
-    if "user_notes" in data:
-        cur.execute(
-            "UPDATE workout_logs SET user_notes=%s WHERE id=%s",
-            (str(data.get("user_notes") or "")[:2000], log_id),
-        )
-    if "perceived_difficulty" in data:
-        pd_raw = data.get("perceived_difficulty")
-        if pd_raw is None:
-            cur.execute("UPDATE workout_logs SET perceived_difficulty=NULL WHERE id=%s", (log_id,))
-        else:
-            try:
-                pd = max(1, min(10, int(pd_raw)))
-                cur.execute(
-                    "UPDATE workout_logs SET perceived_difficulty=%s WHERE id=%s",
-                    (pd, log_id),
-                )
-            except (TypeError, ValueError):
-                pass
-    conn.commit()
-    cur.close()
-    conn.close()
-    return jsonify({"status": "ok"})
-
-
-@app.route("/api/workout/log-custom", methods=["POST"])
-def api_workout_log_custom():
-    data = request.get_json(force=True) or {}
-    user_description = str(data.get("description", "")).strip()
-    if not user_description:
-        return jsonify({"error": "Workout description required"}), 400
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return jsonify({"error": "Add your Anthropic API key in Railway environment to log workouts."}), 500
-
-    try:
-        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
-        categorize_prompt = (
-            "The athlete has documented the following training session:\n\n"
-            '"%s"\n\n'
-            "Provide a sophisticated analysis and organize this workout appropriately. Your response should be structured markdown with:\n"
-            "1. A concise executive summary of the training session (1-2 lines, analytical tone)\n"
-            "2. Exercises executed (enumerate them with sets, repetitions, and technical details as provided)\n"
-            "3. Intensity assessment (1-10 scale derived from the session description and effort indicators)\n"
-            "4. Primary training stimulus (e.g., Back, Legs, Biceps & Triceps, Core / Cardio, Shoulders, or Other)\n\n"
-            "Structure your response with ## headers for each section. Maintain a professional, encouraging tone that acknowledges the athlete's effort."
-        ) % user_description
-
-        message = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1000,
-            messages=[{"role": "user", "content": categorize_prompt}],
-        )
-        track_api_usage(message)
-        formatted_content = message.content[0].text if message.content else ""
-    except Exception as e:
-        log.error("Workout log custom API error: %s", e)
-        return jsonify({"error": "Could not categorize workout. Try again."}), 500
-
-    # Extract focus from the formatted response (simple heuristic)
-    response_lower = formatted_content.lower()
-    focus_key = "other"
-    focus_label = "Other"
-    if "back" in response_lower:
-        focus_key, focus_label = "back", "Back"
-    elif "biceps" in response_lower or "triceps" in response_lower:
-        focus_key, focus_label = "biceps_triceps", "Biceps & Triceps"
-    elif "core" in response_lower or "cardio" in response_lower:
-        focus_key, focus_label = "core_cardio", "Core / Cardio"
-    elif "leg" in response_lower:
-        focus_key, focus_label = "legs", "Legs"
-    elif "shoulder" in response_lower:
-        focus_key, focus_label = "shoulders", "Shoulders"
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-INSERT INTO workout_logs (focus_key, focus_label, intensity, location, plan_content, user_notes)
-VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-                ("custom", focus_label, 5, "custom", formatted_content, user_description))
-    log_id = cur.fetchone()["id"]
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return jsonify({
-        "plan": formatted_content,
-        "log_id": log_id,
-        "focus_label": focus_label,
-        "status": "logged"
-    })
-
-
-@app.route("/api/workout/regenerate", methods=["POST"])
-def api_workout_regenerate():
-    data = request.get_json(force=True) or {}
-    log_id = int(data.get("log_id", 0))
-    if log_id <= 0:
-        return jsonify({"error": "log_id required"}), 400
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return jsonify({"error": "Add your Anthropic API key in Railway environment to regenerate workouts."}), 500
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT focus_key, focus_label, intensity, location, user_notes FROM workout_logs WHERE id=%s", (log_id,))
-    row = cur.fetchone()
-    if not row:
-        cur.close()
-        conn.close()
-        return jsonify({"error": "Workout not found"}), 404
-
-    focus_key, focus_label, intensity, location, user_notes = row["focus_key"], row["focus_label"], row["intensity"], row["location"], row["user_notes"]
-
-    # Get history for context
-    history_text = _workout_history_block(cur)
-
-    # Generate new workout with same focus but different exercises
-    now_local = datetime.now(TZ)
-    name = get_config().get("name", "Jarvis")
-
-    if location == "home":
-        equip = (
-            "HOME GYM: dumbbells only up to 35 lb each, plus bodyweight. "
-            "No barbell rack, no heavy machines, no cable stack unless you describe a bodyweight or DB substitute. "
-            "Be creative with unilateral work, tempo, and density."
-        )
-    else:
-        equip = (
-            "REC GYM (full gym): barbells, squat rack, cables, machines, dumbbells beyond 35 lb, all standard equipment."
-        )
-
-    user_prompt = (
-        "Athlete name: %s.\n"
-        "Today: %s.\n"
-        "Today's rotation focus (must be the primary emphasis of this session): **%s**.\n"
-        "Target difficulty: **%d / 10** (1 = very easy recovery, 5 = moderate, 8–10 = very demanding).\n"
-        "Training location: **%s**.\n\n"
-        "Equipment rules: %s\n\n"
-        "Recent history — learn from these (honor notes, vary exercises if they repeat complaints, match intensity trends):\n%s\n\n"
-        "Write ONE complete workout for today. Include warm-up, main lifts/accessories appropriate to the focus, "
-        "optional finisher if intensity ≥ 6, and cool-down. Use **bold** for exercise names. "
-        "Give sets, reps or time, rest, and one short form cue per main movement. "
-        "Do not skip the rotation focus — secondary work should support it. "
-        "Make this DIFFERENT from the previous attempt — use different exercises, rep ranges, or exercise order."
-    ) % (
-        name,
-        now_local.strftime("%-m/%-d/%Y"),
-        focus_label,
-        intensity,
-        "Home gym (≤35 lb dumbbells + bodyweight)" if location == "home" else "Rec / full gym",
-        equip,
-        history_text,
-    )
-
-    try:
-        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
-        message = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2000,
-            messages=[{"role": "user", "content": user_prompt}],
-            system=(
-                "You are Jarvis, a distinguished and methodical strength and conditioning specialist attending to a diligent high school athlete. "
-                "Your programs are meticulously tailored to the available equipment and the athlete's demonstrated capacity. "
-                "Safety remains paramount—you will never prescribe reckless or excessive loading. "
-                "Should the training history indicate previous injury, fatigue, or overexertion, you shall adjust proactively and with sophistication. "
-                "Your recommendations reflect professional precision and unwavering attention to sustainable progression."
-            ),
-        )
-        track_api_usage(message)
-        content = message.content[0].text if message.content else ""
-    except Exception as e:
-        log.error("Workout regenerate API error: %s", e)
-        cur.close()
-        conn.close()
-        return jsonify({"error": "Could not regenerate workout. Check API key and try again."}), 500
-
-    # Update the workout log with new content
-    cur.execute(
-        "UPDATE workout_logs SET plan_content=%s WHERE id=%s",
-        (content, log_id)
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return jsonify({
-        "plan": content,
-        "log_id": log_id,
-        "status": "regenerated"
     })
 
 
@@ -5363,7 +4969,7 @@ def api_projects_get():
         cur = conn.cursor()
         cur.execute("""
 SELECT id, title, description, status, lead, members, last_checkin,
-       checkin_interval_days, completion_pct, created_at, hidden_from_parent,
+       checkin_interval_days, created_at, hidden_from_parent,
        CASE WHEN last_checkin IS NULL OR
            NOW() - last_checkin > make_interval(days => checkin_interval_days)
        THEN TRUE ELSE FALSE END as needs_checkin
@@ -5393,14 +4999,13 @@ def api_projects_create():
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-INSERT INTO projects (title, description, status, lead, members, checkin_interval_days, completion_pct, last_checkin)
-VALUES (%s, %s, %s, %s, %s, %s, %s, NOW()) RETURNING id""",
+INSERT INTO projects (title, description, status, lead, members, checkin_interval_days, last_checkin)
+VALUES (%s, %s, %s, %s, %s, %s, NOW()) RETURNING id""",
                 (title, str(data.get("description", ""))[:2000],
                  str(data.get("status", "active")),
                  str(data.get("lead", ""))[:200],
                  str(data.get("members", ""))[:500],
-                 int(data.get("checkin_interval_days", 7)),
-                 int(data.get("completion_pct", 0))))
+                 int(data.get("checkin_interval_days", 7))))
     new_id = cur.fetchone()["id"]
     conn.commit()
     cur.close()
@@ -5431,7 +5036,6 @@ def api_projects_update(project_id):
         "members": ("members", lambda v: str(v)[:500]),
         "status": ("status", lambda v: str(v).strip().lower()),
         "checkin_interval_days": ("checkin_interval_days", lambda v: max(1, min(90, int(v) if isinstance(v, (int, float)) else 7))),
-        "completion_pct": ("completion_pct", lambda v: max(0, min(100, int(v) if isinstance(v, (int, float)) else 0))),
         "hidden_from_parent": ("hidden_from_parent", lambda v: bool(v)),
     }
 
@@ -5442,8 +5046,6 @@ def api_projects_update(project_id):
             except (TypeError, ValueError):
                 if key == "checkin_interval_days":
                     updates[db_field] = 7
-                elif key == "completion_pct":
-                    updates[db_field] = 0
 
     # Add checkin_now if requested
     if data.get("checkin_now"):
@@ -5848,23 +5450,6 @@ JARVIS_TOOLS = [
         },
     },
     {
-        "name": "get_workout_history",
-        "description": "Get recent workout history (last 12 sessions) including focus area, intensity, location, and athlete notes.",
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "generate_workout",
-        "description": "Generate a full workout plan for the student based on the rotation schedule. Returns the complete plan, log_id, and focus area. Use this when the student asks for a workout.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "intensity": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Effort level 1-10"},
-                "location": {"type": "string", "enum": ["home", "gym"], "description": "Training location"},
-            },
-            "required": ["intensity", "location"],
-        },
-    },
-    {
         "name": "get_briefing",
         "description": "Get today's cached morning briefing summary with priorities, assignments, and schedule.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
@@ -6161,8 +5746,8 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             cur = conn.cursor()
             cur.execute(
                 "INSERT INTO projects (title, description, status, lead, members, "
-                "checkin_interval_days, completion_pct, last_checkin) "
-                "VALUES (%s, %s, 'active', '', '', %s, 0, NOW()) RETURNING id",
+                "checkin_interval_days, last_checkin) "
+                "VALUES (%s, %s, 'active', '', '', %s, NOW()) RETURNING id",
                 (title, description, checkin),
             )
             project_id = cur.fetchone()["id"]
@@ -6222,21 +5807,6 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 "project_task_id": task_id,
                 "title": title,
             }
-
-        elif name == "get_workout_history":
-            conn = get_db()
-            cur = conn.cursor()
-            history = _workout_history_block(cur)
-            cur.close(); conn.close()
-            return {"history": history}
-
-        elif name == "generate_workout":
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-            if not api_key:
-                return {"error": "No API key configured"}
-            intensity = max(1, min(10, int(inputs.get("intensity", 5))))
-            location = "home" if inputs.get("location") == "home" else "rec"
-            return _generate_workout_core(intensity, location, api_key)
 
         elif name == "get_briefing":
             conn = get_db()
@@ -6462,7 +6032,7 @@ def api_chat():
             "and do not use emoji unless the student does first.\n\n"
             "SCOPE — You are a full general-purpose assistant. Answer any reasonable question: "
             "homework help (math with worked steps, science, history, English, languages, CS with runnable code), "
-            "writing, research, advice, conversation, fitness talk, recommendations, jokes. "
+            "writing, research, advice, conversation, recommendations, jokes. "
             "Decline only genuinely harmful or illegal requests.\n\n"
             "TEMPORAL FORMATTING — When mentioning due dates, always render in full human-readable form "
             "e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)'. Never show raw ISO timestamps.\n\n"
@@ -6492,8 +6062,6 @@ def api_chat():
             "When they share investment reasoning, a price target, or exit plan, call save_stock_note. "
             "When they ask about a stock, answer from your knowledge and mention the Research button for live data.\n"
             "- ASSIGNMENTS: When the student says they finished or submitted an assignment, call complete_assignment.\n"
-            "- WORKOUTS: When the student asks for a workout, call generate_workout with an appropriate intensity "
-            "(ask if unsure) and location (home or gym).\n"
             "- GRADES & ASSIGNMENT DETAIL: When the student asks about grades, GPA, how a class is going, "
             "or which class needs the most attention, call get_grades. When they ask for help on an assignment, "
             "want the rubric, ask 'what does X actually want me to do', or otherwise need the real instructions, "
@@ -6888,13 +6456,11 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                     "stock_recorded": _has("log_stock_transaction", status_val="recorded"),
                     "stock_note_saved": _has("save_stock_note", status_val="saved"),
                     "assignment_completed": _has("complete_assignment", status_val="logged"),
-                    "workout_generated": _has("generate_workout", predicate=lambda r: "plan" in r),
                     "project_created": _has("create_project", status_val="created"),
                     "project_task_added": _has("add_project_task", status_val="added"),
                     "completed_title": next((a["result"].get("title") for a in actions_taken if a["tool"] == "complete_task"), None),
                     "deleted_title": next((a["result"].get("title") for a in actions_taken if a["tool"] == "delete_task"), None),
                     "stock_note_symbol": next((a["result"].get("symbol") for a in actions_taken if a["tool"] == "save_stock_note"), None),
-                    "workout_log_id": next((a["result"].get("log_id") for a in actions_taken if a["tool"] == "generate_workout"), None),
                     "project_created_title": next((a["result"].get("title") for a in actions_taken if a["tool"] == "create_project"), None),
                     "project_created_task_count": next((a["result"].get("task_count") for a in actions_taken if a["tool"] == "create_project"), None),
                 }
