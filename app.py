@@ -4069,6 +4069,116 @@ def api_meals_recipe():
     return jsonify({"recipe": recipe_text, "meal_name": meal_name})
 
 
+@app.route("/api/meals/add-item", methods=["POST"])
+def api_meals_add_item():
+    import json as _json
+    data = request.get_json(force=True) or {}
+    mode = str(data.get("mode", "suggest")).strip()          # "eaten" | "suggest"
+    description = str(data.get("description", "")).strip()   # for "eaten"
+    meal_type   = str(data.get("meal_type", "Snack")).strip()
+    req_text    = str(data.get("request", "")).strip()[:300]
+    ingredients = str(data.get("ingredients", "")).strip()
+    current_plan = data.get("current_plan") or {}
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "Anthropic API key not configured."}), 500
+
+    name = get_config().get("name", "Finn")
+
+    schema_hint = (
+        '{\n'
+        '  "type": "Snack",\n'
+        '  "time_suggestion": "3:00 PM",\n'
+        '  "name": "Meal name",\n'
+        '  "description": "One sentence description",\n'
+        '  "calories": 0,\n'
+        '  "protein_g": 0,\n'
+        '  "carbs_g": 0,\n'
+        '  "fat_g": 0,\n'
+        '  "key_ingredients": ["ingredient1"]\n'
+        '}'
+    )
+
+    if mode == "eaten":
+        if not description:
+            return jsonify({"error": "Please describe what you ate."}), 400
+        user_prompt = (
+            f"Athlete: {name} (cutting weight, high protein diet)\n"
+            f"The athlete just ate the following:\n\"{description}\"\n\n"
+            "Estimate the macros as accurately as possible. Use known nutritional data for restaurant meals, "
+            "fast food, or home cooking as appropriate.\n"
+            f"Return ONLY a JSON object matching this structure (set type to the most appropriate meal type — "
+            f"Breakfast, Lunch, Dinner, or Snack):\n{schema_hint}"
+        )
+        system = (
+            "You are Jarvis, an expert nutritionist. You estimate meal macros precisely from descriptions. "
+            "Return valid JSON only. No prose, no markdown."
+        )
+    else:
+        req_line = f"Special request: {req_text}\n" if req_text else ""
+        user_prompt = (
+            f"Athlete: {name} (cutting weight, high protein diet)\n"
+            f"Available ingredients: {ingredients}\n"
+            f"Generate a new {meal_type} idea. {req_line}"
+            "Make it high protein, low calorie, and genuinely delicious. Be creative.\n"
+            f"Return ONLY a JSON object matching this structure:\n{schema_hint}"
+        )
+        system = (
+            "You are Jarvis, an expert nutritionist and chef. Create creative, high-protein meal ideas. "
+            "Return valid JSON only. No prose, no markdown."
+        )
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=45.0)
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=600,
+            messages=[{"role": "user", "content": user_prompt}],
+            system=system,
+        )
+        track_api_usage(message)
+        raw = (message.content[0].text if message.content else "{}").strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        new_meal = _json.loads(raw)
+    except _json.JSONDecodeError as e:
+        log.error("add-item JSON parse error: %s", e)
+        return jsonify({"error": "Could not parse response. Please try again."}), 500
+    except Exception as e:
+        log.error("add-item error: %s", e)
+        return jsonify({"error": "Could not generate item. Please try again."}), 500
+
+    # Merge into current plan and save to DB
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).date()
+    if current_plan and current_plan.get("meals"):
+        current_plan["meals"].append(new_meal)
+        totals = current_plan.get("daily_totals", {})
+        totals["calories"]  = (totals.get("calories",  0) or 0) + (new_meal.get("calories",  0) or 0)
+        totals["protein_g"] = (totals.get("protein_g", 0) or 0) + (new_meal.get("protein_g", 0) or 0)
+        totals["carbs_g"]   = (totals.get("carbs_g",   0) or 0) + (new_meal.get("carbs_g",   0) or 0)
+        totals["fat_g"]     = (totals.get("fat_g",     0) or 0) + (new_meal.get("fat_g",     0) or 0)
+        current_plan["daily_totals"] = totals
+        plan_json = _json.dumps(current_plan, indent=2)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+INSERT INTO meal_plans (plan_date, ingredients_used, plan_content, structured_data)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (plan_date) DO UPDATE SET
+  generated_at = NOW(), plan_content = EXCLUDED.plan_content,
+  structured_data = EXCLUDED.structured_data""",
+            (tomorrow, ingredients[:4000], plan_json, plan_json))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    return jsonify({"meal": new_meal, "updated_plan": current_plan})
+
+
 @app.route("/api/complete", methods=["POST"])
 def api_complete():
     data = request.get_json(force=True) or {}

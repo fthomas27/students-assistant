@@ -2680,6 +2680,98 @@ margin-bottom: 0;
   overflow: hidden;
 }
 .recipe-modal.open { opacity: 1; transform: translate(-50%, -50%) scale(1); pointer-events: auto; }
+
+/* Add Food modal */
+.add-food-modal-backdrop {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.72); z-index: 400;
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+}
+.add-food-modal-backdrop.open { display: block; }
+.add-food-modal {
+  position: fixed; top: 50%; left: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  width: min(520px, calc(100vw - 24px));
+  max-height: min(90vh, 640px);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 18px; box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+  z-index: 401; opacity: 0; pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.add-food-modal.open { opacity: 1; transform: translate(-50%, -50%) scale(1); pointer-events: auto; }
+.add-food-modal-header {
+  padding: 18px 20px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+}
+.add-food-modal-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.add-food-modal-close {
+  background: var(--surface2); border: none; width: 30px; height: 30px;
+  border-radius: 50%; color: var(--text3); cursor: pointer; font-size: 14px;
+  display: flex; align-items: center; justify-content: center; transition: background 0.15s;
+}
+.add-food-modal-close:hover { background: var(--surface3); color: var(--text); }
+.add-food-modal-body { padding: 20px; overflow-y: auto; flex: 1; -webkit-overflow-scrolling: touch; }
+
+/* Mode selector tabs */
+.add-food-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+.add-food-mode-card {
+  padding: 14px 12px; border: 2px solid var(--border);
+  border-radius: 12px; cursor: pointer; text-align: center;
+  background: var(--surface2); transition: all 0.15s;
+}
+.add-food-mode-card:hover { border-color: rgba(255,255,255,0.2); background: var(--surface3); }
+.add-food-mode-card.selected { border-color: #48c78e; background: rgba(72,199,142,0.1); }
+.add-food-mode-card.selected.mode-eaten { border-color: var(--accent); background: rgba(255,127,80,0.1); }
+.add-food-mode-icon { font-size: 22px; margin-bottom: 6px; }
+.add-food-mode-label { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+.add-food-mode-desc { font-size: 11px; color: var(--text3); line-height: 1.4; }
+
+.add-food-field-label {
+  font-size: 11px; font-weight: 700; color: var(--text3);
+  text-transform: uppercase; letter-spacing: 0.7px; margin-bottom: 8px;
+}
+.add-food-textarea {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px; color: var(--text); font-family: inherit;
+  font-size: 13px; line-height: 1.5; resize: none; box-sizing: border-box;
+  transition: border-color 0.2s;
+}
+.add-food-textarea:focus { outline: none; border-color: #48c78e; }
+.add-food-textarea::placeholder { color: var(--text3); }
+.add-food-select {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 14px; color: var(--text); font-family: inherit;
+  font-size: 13px; box-sizing: border-box; margin-bottom: 12px; cursor: pointer;
+  appearance: none; -webkit-appearance: none;
+}
+.add-food-submit-btn {
+  display: block; width: 100%; margin-top: 18px; padding: 13px;
+  background: linear-gradient(135deg, #48c78e, #3ab77e);
+  border: none; border-radius: 10px; color: #fff; font-family: inherit;
+  font-size: 14px; font-weight: 700; cursor: pointer; letter-spacing: 0.3px;
+  transition: opacity 0.2s, transform 0.15s;
+}
+.add-food-submit-btn:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+.add-food-submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.add-food-submit-btn.mode-eaten-active {
+  background: linear-gradient(135deg, var(--accent), #e86a3a);
+}
+
+/* Add Food button shown below the plan grid */
+.meal-add-food-bar {
+  display: none;
+  margin-bottom: 16px;
+}
+.meal-add-food-bar.visible { display: block; }
+.meal-add-food-btn {
+  width: 100%; padding: 12px;
+  background: var(--surface); border: 1px dashed rgba(255,255,255,0.2);
+  border-radius: 12px; color: var(--text2); font-family: inherit;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: all 0.2s; letter-spacing: 0.2px;
+}
+.meal-add-food-btn:hover { background: var(--surface2); border-color: #48c78e; color: #48c78e; }
 .recipe-modal-header {
   padding: 18px 20px;
   border-bottom: 1px solid var(--border);
@@ -3230,6 +3322,11 @@ margin-bottom: 0;
   <!-- Meal Cards Grid (shown after plan is loaded) -->
   <div id="mealPlanGrid" class="meal-plan-grid" style="display:none;"></div>
 
+  <!-- Add Food Bar (visible once plan exists) -->
+  <div id="mealAddFoodBar" class="meal-add-food-bar">
+    <button class="meal-add-food-btn" onclick="openAddFoodModal()">&#10133; Add food to plan</button>
+  </div>
+
   <!-- Notes Row (Hydration + Jarvis note) -->
   <div id="mealNotesRow" class="meal-notes-row" style="display:none;">
     <div class="meal-note-card">
@@ -3264,6 +3361,56 @@ margin-bottom: 0;
   </div>
   <div class="recipe-modal-body" id="recipeModalBody">
     <div class="recipe-modal-loading">Loading recipe...</div>
+  </div>
+</div>
+
+<!-- Add Food Modal -->
+<div class="add-food-modal-backdrop" id="addFoodBackdrop" onclick="closeAddFoodModal()"></div>
+<div class="add-food-modal" id="addFoodModal">
+  <div class="add-food-modal-header">
+    <div class="add-food-modal-title">&#10133; Add to Your Plan</div>
+    <button class="add-food-modal-close" onclick="closeAddFoodModal()">&#10005;</button>
+  </div>
+  <div class="add-food-modal-body">
+    <!-- Mode selector -->
+    <div class="add-food-modes">
+      <div class="add-food-mode-card mode-eaten selected" id="addFoodModeEaten" onclick="setAddFoodMode('eaten')">
+        <div class="add-food-mode-icon">&#127828;</div>
+        <div class="add-food-mode-label">I ate something</div>
+        <div class="add-food-mode-desc">Describe a meal and Jarvis will log the macros</div>
+      </div>
+      <div class="add-food-mode-card mode-suggest" id="addFoodModeSuggest" onclick="setAddFoodMode('suggest')">
+        <div class="add-food-mode-icon">&#128161;</div>
+        <div class="add-food-mode-label">Give me an idea</div>
+        <div class="add-food-mode-desc">Jarvis generates a new snack or meal from your ingredients</div>
+      </div>
+    </div>
+
+    <!-- Eaten panel -->
+    <div id="addFoodEatenPanel">
+      <div class="add-food-field-label">What did you eat?</div>
+      <textarea id="addFoodEatenDesc" class="add-food-textarea" rows="4"
+        placeholder="e.g. Quarter Pounder meal from McDonald's with a Coke&#10;or: homemade burrito with chicken, rice, cheese, and sour cream"></textarea>
+    </div>
+
+    <!-- Suggest panel -->
+    <div id="addFoodSuggestPanel" style="display:none;">
+      <div class="add-food-field-label">Meal type</div>
+      <select id="addFoodMealType" class="add-food-select">
+        <option value="Snack">Snack</option>
+        <option value="Breakfast">Breakfast idea</option>
+        <option value="Lunch">Lunch idea</option>
+        <option value="Dinner">Dinner idea</option>
+        <option value="Dessert">Dessert (high protein)</option>
+      </select>
+      <div class="add-food-field-label">Any specific request? (optional)</div>
+      <textarea id="addFoodSuggestReq" class="add-food-textarea" rows="2"
+        placeholder="e.g. something with peanut butter, quick to make, no cooking..."></textarea>
+    </div>
+
+    <button class="add-food-submit-btn mode-eaten-active" id="addFoodSubmitBtn" onclick="submitAddFood()">
+      &#10133; Add to My Plan
+    </button>
   </div>
 </div>
 
@@ -7722,8 +7869,10 @@ if ('serviceWorker' in navigator) {
 /* ── Meal Planner ─────────────────────────────────────────── */
 let _mealCurrentIngredients = '';
 let _mealCurrentRequest     = '';
-let _mealPendingStructured  = null;   // plan awaiting verify step
-let _mealAssumedStates      = {};     // {ingredientName: 'have'|'miss'}
+let _mealPendingStructured  = null;
+let _mealCurrentPlan        = null;   // finalized plan (for add-food updates)
+let _mealAssumedStates      = {};
+const _mealCardStore        = {};     // cardId → {meal, ingredientsUsed}
 
 function loadMealsPage() {
   fetch('/api/meals')
@@ -7747,11 +7896,15 @@ function _showMealEmptyState() {
   document.getElementById('mealVerifySection').style.display = 'none';
   document.getElementById('mealMacrosSummary').style.display = 'none';
   document.getElementById('mealPlanGrid').style.display      = 'none';
+  document.getElementById('mealAddFoodBar').classList.remove('visible');
   document.getElementById('mealNotesRow').style.display      = 'none';
 }
 
 /* Build a meal card element */
 function _buildMealCard(meal, ingredientsUsed) {
+  const cardId = 'mc_' + Math.random().toString(36).slice(2, 9);
+  _mealCardStore[cardId] = { meal, ingredientsUsed };
+
   const typeKey = (meal.type || 'snack').toLowerCase();
   const cssClass = typeKey === 'breakfast' ? 'meal-breakfast'
                  : typeKey === 'lunch'     ? 'meal-lunch'
@@ -7797,7 +7950,7 @@ function _buildMealCard(meal, ingredientsUsed) {
         </div>
       </div>
       <div class="meal-card-tags">${tags}</div>
-      <button class="meal-recipe-btn" onclick="openRecipeModal(${JSON.stringify(meal)}, ${JSON.stringify(ingredientsUsed || '')})">
+      <button class="meal-recipe-btn" data-card-id="${cardId}" onclick="openRecipeModal(this.dataset.cardId)">
         &#127859; Get Recipe
       </button>
     </div>
@@ -7865,6 +8018,7 @@ function _renderPreviewPlan(structured, ingredientsUsed) {
 
 /* Show locked final plan (no verify bar) */
 function _renderFinalPlan(structured, ingredientsUsed) {
+  _mealCurrentPlan = structured;
   document.getElementById('mealEmptyState').style.display    = 'none';
   document.getElementById('mealVerifySection').style.display = 'none';
 
@@ -7881,6 +8035,7 @@ function _renderFinalPlan(structured, ingredientsUsed) {
   (structured.meals || []).forEach(m => grid.appendChild(_buildMealCard(m, ingredientsUsed)));
   grid.style.display = 'grid';
 
+  document.getElementById('mealAddFoodBar').classList.add('visible');
   document.getElementById('mealHydrationNote').textContent = structured.hydration_note || '';
   document.getElementById('mealJarvisNote').textContent    = structured.jarvis_note    || '';
   document.getElementById('mealNotesRow').style.display   = 'flex';
@@ -7994,7 +8149,11 @@ function generateMealPlan() {
     });
 }
 
-function openRecipeModal(meal, allIngredients) {
+function openRecipeModal(cardId) {
+  const entry = _mealCardStore[cardId] || {};
+  const meal  = entry.meal || {};
+  const allIngredients = entry.ingredientsUsed || _mealCurrentIngredients;
+
   const backdrop = document.getElementById('recipeModalBackdrop');
   const modal    = document.getElementById('recipeModal');
   const title    = document.getElementById('recipeModalTitle');
@@ -8010,10 +8169,10 @@ function openRecipeModal(meal, allIngredients) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      meal_name:        meal.name || '',
-      description:      meal.description || '',
-      key_ingredients:  meal.key_ingredients || [],
-      all_ingredients:  allIngredients || _mealCurrentIngredients,
+      meal_name:       meal.name || '',
+      description:     meal.description || '',
+      key_ingredients: meal.key_ingredients || [],
+      all_ingredients: allIngredients,
     }),
   })
     .then(r => r.json())
@@ -8031,6 +8190,92 @@ function closeRecipeModal() {
   const modal    = document.getElementById('recipeModal');
   modal.classList.remove('open');
   setTimeout(() => backdrop.classList.remove('open'), 200);
+}
+
+/* ── Add Food ─────────────────────────────────────────────── */
+let _addFoodMode = 'eaten';
+
+function openAddFoodModal() {
+  setAddFoodMode('eaten');
+  document.getElementById('addFoodEatenDesc').value   = '';
+  document.getElementById('addFoodSuggestReq').value  = '';
+  const backdrop = document.getElementById('addFoodBackdrop');
+  const modal    = document.getElementById('addFoodModal');
+  backdrop.classList.add('open');
+  requestAnimationFrame(() => modal.classList.add('open'));
+}
+
+function closeAddFoodModal() {
+  const modal    = document.getElementById('addFoodModal');
+  const backdrop = document.getElementById('addFoodBackdrop');
+  modal.classList.remove('open');
+  setTimeout(() => backdrop.classList.remove('open'), 200);
+}
+
+function setAddFoodMode(mode) {
+  _addFoodMode = mode;
+  document.getElementById('addFoodModeEaten').classList.toggle('selected',   mode === 'eaten');
+  document.getElementById('addFoodModeSuggest').classList.toggle('selected', mode === 'suggest');
+  document.getElementById('addFoodEatenPanel').style.display   = mode === 'eaten'   ? 'block' : 'none';
+  document.getElementById('addFoodSuggestPanel').style.display = mode === 'suggest' ? 'block' : 'none';
+  const btn = document.getElementById('addFoodSubmitBtn');
+  btn.classList.toggle('mode-eaten-active', mode === 'eaten');
+  btn.innerHTML = mode === 'eaten' ? '&#10133; Log This Meal' : '&#128161; Generate &amp; Add';
+}
+
+function submitAddFood() {
+  const btn = document.getElementById('addFoodSubmitBtn');
+  const origHtml = btn.innerHTML;
+
+  let description = '', mealType = 'Snack', request = '';
+  if (_addFoodMode === 'eaten') {
+    description = (document.getElementById('addFoodEatenDesc').value || '').trim();
+    if (!description) {
+      document.getElementById('addFoodEatenDesc').focus();
+      return;
+    }
+  } else {
+    mealType = document.getElementById('addFoodMealType').value || 'Snack';
+    request  = (document.getElementById('addFoodSuggestReq').value || '').trim();
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = '&#129302; Jarvis is working on it...';
+
+  fetch('/api/meals/add-item', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mode:         _addFoodMode,
+      description,
+      meal_type:    mealType,
+      request,
+      ingredients:  _mealCurrentIngredients,
+      current_plan: _mealCurrentPlan,
+    }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      if (data.error) { alert('Jarvis: ' + data.error); return; }
+      closeAddFoodModal();
+      if (data.updated_plan) {
+        _renderFinalPlan(data.updated_plan, _mealCurrentIngredients);
+      } else if (data.meal) {
+        // Fallback: just append the card
+        const grid = document.getElementById('mealPlanGrid');
+        if (grid) {
+          grid.appendChild(_buildMealCard(data.meal, _mealCurrentIngredients));
+          grid.style.display = 'grid';
+        }
+      }
+    })
+    .catch(() => {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      alert('Could not add item. Please try again.');
+    });
 }
 </script>
 
