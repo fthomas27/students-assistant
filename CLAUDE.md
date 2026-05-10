@@ -1,6 +1,6 @@
 # Students Assistant - Jarvis AI
 
-An intelligent student assistant application powered by Claude AI that helps high school students manage assignments, tasks, schedules, and fitness routines with the persona of Jarvis from Iron Man.
+An intelligent student assistant application powered by Claude AI that helps high school students manage assignments, tasks, and schedules with the persona of Jarvis from Iron Man.
 
 ## Overview
 
@@ -9,7 +9,6 @@ This Flask-based web application provides a comprehensive student management sys
 - **Daily Briefings** - Morning plans synthesizing assignments, calendar events, and tasks
 - **Evening Debriefs** - End-of-day summaries of accomplishments and upcoming priorities
 - **Intelligent Chat** - Conversational AI assistant with context awareness
-- **Workout Planning** - AI-generated strength training programs with rotation-based focus areas
 - **Task Management** - Smart task creation, prioritization, and tracking
 - **Schedule Optimization** - Automated daily schedule generation using available time windows
 - **Calendar Integration** - Syncs with Canvas (assignments), personal calendars, and school events
@@ -49,14 +48,7 @@ This Flask-based web application provides a comprehensive student management sys
 - **Streaming responses (SSE)**: replies stream token-by-token; tool calls (search, fetch, Canvas, task ops) surface as inline activity chips so the student sees what Jarvis is doing in real time
 - **Persistent memory**: messages and rolling summaries are stored in `chat_messages` / `chat_summaries`; the server injects the 5 most recent prior-conversation summaries (and last few in-conversation messages on tab refresh) into every chat turn
 
-### 3. Workout System
-- **Rotation-Based Focus Cycles**: Back → Biceps & Triceps → Core/Cardio → Legs → Shoulders
-- **Equipment Awareness**: Home gym (≤35 lb dumbbells) vs. full gym
-- **Adaptive Programming**: Considers recent history and injury concerns
-- **Workout Logging**: Categorizes custom workouts with difficulty assessment
-- **Regeneration**: Creates alternative workouts for same focus area
-
-### 4. Task Management
+### 3. Task Management
 - **Manual Task Creation**: User-created pending tasks with urgency levels
 - **Smart Suggestions**: Claude analyzes upcoming assignments and events to suggest new tasks
 - **Recurring Tasks**: Daily processing at midnight maintains recurring task instances
@@ -78,8 +70,6 @@ Key tables include:
 - `project_notes` - Collaborative notes for projects
 - `briefing_cache` - Cached morning briefing content
 - `debrief_cache` - Cached evening debrief content
-- `workout_logs` - Completed workout records
-- `workout_state` - Current position in rotation cycle
 - `timer_state` - Timer state for work sessions
 - `daily_plans` - Generated daily schedules
 - `chat_messages` - Persisted chat history (per `conversation_id`)
@@ -129,9 +119,6 @@ Key endpoints include:
 - `POST /api/chat` - Chat with Jarvis
 - `GET /api/briefing` - Today's morning briefing
 - `GET /api/debrief` - Today's evening debrief
-- `POST /api/workout/generate` - Create new workout plan
-- `POST /api/workout/log/<int:log_id>` - Log completed workout
-- `POST /api/workout/regenerate` - Alternative workout for same focus
 - `POST /api/tasks` - Create/manage tasks
 - `GET /api/task-suggestions` - AI task suggestions
 - `GET /api/plan-my-day` - Generate daily schedule
