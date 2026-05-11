@@ -5335,7 +5335,6 @@ def api_config_post():
 # ── Bucket List Endpoints ─────────────────────────────────────────────────────
 
 @app.route("/api/bucket-list", methods=["GET"])
-@login_required
 def api_bucket_list_get():
     conn = get_db()
     cur = conn.cursor()
@@ -5354,7 +5353,6 @@ def api_bucket_list_get():
 
 
 @app.route("/api/bucket-list", methods=["POST"])
-@login_required
 def api_bucket_list_post():
     data = request.get_json(force=True) or {}
     title = str(data.get("title", "")).strip()[:500]
@@ -5372,7 +5370,6 @@ def api_bucket_list_post():
 
 
 @app.route("/api/bucket-list/<int:item_id>", methods=["PATCH"])
-@login_required
 def api_bucket_list_patch(item_id):
     data = request.get_json(force=True) or {}
     conn = get_db()
@@ -5391,7 +5388,6 @@ def api_bucket_list_patch(item_id):
 
 
 @app.route("/api/bucket-list/<int:item_id>", methods=["DELETE"])
-@login_required
 def api_bucket_list_delete(item_id):
     conn = get_db()
     cur = conn.cursor()
@@ -5405,7 +5401,6 @@ def api_bucket_list_delete(item_id):
 # ── UV / Weather Endpoint ─────────────────────────────────────────────────────
 
 @app.route("/api/weather-uv", methods=["GET"])
-@login_required
 def api_weather_uv():
     """Fetch current UV index and basic weather using Open-Meteo (no API key needed).
     Defaults to Park City, UT coordinates."""
@@ -5451,7 +5446,6 @@ def api_weather_uv():
 # ── Job Schedule Endpoint ─────────────────────────────────────────────────────
 
 @app.route("/api/job-schedule", methods=["GET"])
-@login_required
 def api_job_schedule():
     """Return upcoming job schedule events from JOB_SCHEDULE_ICAL_URL."""
     if not JOB_SCHEDULE_ICAL_URL:
