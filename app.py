@@ -240,6 +240,7 @@ CANVAS_ICAL_URL = os.environ.get("CANVAS_ICAL_URL", "")
 CANVAS_API_TOKEN = os.environ.get("CANVAS_API_TOKEN", "")
 CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/")
 SPORTS_ICAL_URL = os.environ.get("SPORTS_ICAL_URL", "")
+JOB_SCHEDULE_ICAL_URL = os.environ.get("JOB_SCHEDULE_ICAL_URL", "")
 RED_DAY_ICAL_URL = os.environ.get("RED_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_7ufb5f1vj8aks1shds5ou4fhe8%40group.calendar.google.com/public/basic.ics")
 WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_64ohm1bccvi50iti8fe455stkg%40group.calendar.google.com/public/basic.ics")
 
@@ -485,6 +486,7 @@ def init_db():
         ("chat_messages", "CREATE TABLE IF NOT EXISTS chat_messages (id SERIAL PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("chat_messages_idx", "CREATE INDEX IF NOT EXISTS idx_chat_msgs_conv ON chat_messages(conversation_id, created_at)"),
         ("chat_summaries", "CREATE TABLE IF NOT EXISTS chat_summaries (conversation_id TEXT PRIMARY KEY, summary TEXT NOT NULL DEFAULT '', message_count INT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("bucket_list", "CREATE TABLE IF NOT EXISTS bucket_list (id SERIAL PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
     ]
 
     for table_name, create_sql in tables:
@@ -588,7 +590,7 @@ ON CONFLICT (ip_address) DO NOTHING""")
         cur = conn.cursor()
 
     # Insert default config values
-    defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas"}
+    defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas", "app_mode": "school", "is_summer_school": "false", "has_summer_job": "false"}
     for k, v in defaults.items():
         try:
             cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
@@ -5301,6 +5303,10 @@ def api_config_get():
         "weekly_recap_advisor": cfg.get("weekly_recap_advisor", "Mr. Goldberg"),
         "formal_signoff_name": cfg.get("formal_signoff_name", "Finley Thomas"),
         "timezone": cfg.get("timezone", "America/Denver"),
+        "app_mode": cfg.get("app_mode", "school"),
+        "is_summer_school": cfg.get("is_summer_school", "false") == "true",
+        "has_summer_job": cfg.get("has_summer_job", "false") == "true",
+        "has_job_schedule": bool(JOB_SCHEDULE_ICAL_URL),
     })
 
 
@@ -5310,6 +5316,7 @@ def api_config_post():
     allowed = {
         "name", "morning_briefing_time", "timer_cutoff_multiplier", "anthropic_api_key",
         "weekly_recap_advisor", "formal_signoff_name", "timezone",
+        "app_mode", "is_summer_school", "has_summer_job",
     }
     updates = {k: str(v)[:2000] for k, v in data.items() if k in allowed}
     if updates:
@@ -5323,6 +5330,163 @@ def api_config_post():
         if "morning_briefing_time" in updates:
             schedule_briefing()
     return jsonify({"status": "ok"})
+
+
+# ── Bucket List Endpoints ─────────────────────────────────────────────────────
+
+@app.route("/api/bucket-list", methods=["GET"])
+@login_required
+def api_bucket_list_get():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, title, category, completed, completed_at, created_at FROM bucket_list ORDER BY completed, created_at DESC")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify([{
+        "id": r["id"],
+        "title": r["title"],
+        "category": r["category"],
+        "completed": r["completed"],
+        "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+        "created_at": r["created_at"].isoformat(),
+    } for r in rows])
+
+
+@app.route("/api/bucket-list", methods=["POST"])
+@login_required
+def api_bucket_list_post():
+    data = request.get_json(force=True) or {}
+    title = str(data.get("title", "")).strip()[:500]
+    category = str(data.get("category", "")).strip()[:100]
+    if not title:
+        return jsonify({"error": "title required"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO bucket_list (title, category) VALUES (%s, %s) RETURNING id, created_at", (title, category))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"id": row["id"], "title": title, "category": category, "completed": False, "completed_at": None, "created_at": row["created_at"].isoformat()}), 201
+
+
+@app.route("/api/bucket-list/<int:item_id>", methods=["PATCH"])
+@login_required
+def api_bucket_list_patch(item_id):
+    data = request.get_json(force=True) or {}
+    conn = get_db()
+    cur = conn.cursor()
+    if "completed" in data:
+        now_ts = datetime.now(get_tz()) if data["completed"] else None
+        cur.execute("UPDATE bucket_list SET completed=%s, completed_at=%s WHERE id=%s", (bool(data["completed"]), now_ts, item_id))
+    if "title" in data:
+        cur.execute("UPDATE bucket_list SET title=%s WHERE id=%s", (str(data["title"])[:500], item_id))
+    if "category" in data:
+        cur.execute("UPDATE bucket_list SET category=%s WHERE id=%s", (str(data["category"])[:100], item_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/bucket-list/<int:item_id>", methods=["DELETE"])
+@login_required
+def api_bucket_list_delete(item_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM bucket_list WHERE id=%s", (item_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+# ── UV / Weather Endpoint ─────────────────────────────────────────────────────
+
+@app.route("/api/weather-uv", methods=["GET"])
+@login_required
+def api_weather_uv():
+    """Fetch current UV index and basic weather using Open-Meteo (no API key needed).
+    Defaults to Park City, UT coordinates."""
+    lat = request.args.get("lat", "40.6461")
+    lon = request.args.get("lon", "-111.4980")
+    try:
+        lat = float(lat)
+        lon = float(lon)
+    except ValueError:
+        return jsonify({"error": "invalid coordinates"}), 400
+    try:
+        resp = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "current": "uv_index,temperature_2m,weathercode",
+                "temperature_unit": "fahrenheit",
+                "timezone": "auto",
+                "forecast_days": 1,
+            },
+            timeout=8,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        current = data.get("current", {})
+        uv = current.get("uv_index", 0)
+        temp_f = current.get("temperature_2m")
+        weathercode = current.get("weathercode", 0)
+        avoid_desk = uv > 5
+        return jsonify({
+            "uv_index": uv,
+            "temperature_f": temp_f,
+            "weathercode": weathercode,
+            "avoid_desk_work": avoid_desk,
+            "alert": "UV is high — get outside before hitting the desk!" if avoid_desk else None,
+        })
+    except Exception as e:
+        log.warning("weather-uv fetch error: %s", e)
+        return jsonify({"error": "weather unavailable"}), 503
+
+
+# ── Job Schedule Endpoint ─────────────────────────────────────────────────────
+
+@app.route("/api/job-schedule", methods=["GET"])
+@login_required
+def api_job_schedule():
+    """Return upcoming job schedule events from JOB_SCHEDULE_ICAL_URL."""
+    if not JOB_SCHEDULE_ICAL_URL:
+        return jsonify({"events": [], "configured": False})
+    try:
+        cal = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+        if not cal:
+            return jsonify({"events": [], "configured": True, "error": "could not fetch"})
+        tz = get_tz()
+        today = datetime.now(tz).date()
+        window_end = today + timedelta(days=14)
+        events_raw = recurring_ical_events.of(cal).between(
+            datetime.combine(today, datetime.min.time()),
+            datetime.combine(window_end, datetime.max.time()),
+        )
+        events = []
+        for ev in events_raw:
+            dtstart = ev.get("DTSTART")
+            if not dtstart:
+                continue
+            dt = dtstart.dt
+            if hasattr(dt, "date"):
+                dt_date = dt.date()
+            else:
+                dt_date = dt
+            events.append({
+                "title": str(ev.get("SUMMARY", "Work")),
+                "date": dt_date.isoformat(),
+                "time": dt.strftime("%H:%M") if hasattr(dt, "strftime") and hasattr(dt, "hour") else None,
+            })
+        events.sort(key=lambda x: x["date"])
+        return jsonify({"events": events, "configured": True})
+    except Exception as e:
+        log.warning("job-schedule error: %s", e)
+        return jsonify({"events": [], "configured": True, "error": str(e)})
 
 
 # ── Jarvis Tool Definitions ───────────────────────────────────────────────────
@@ -6138,28 +6302,43 @@ def api_chat():
             "Use this in all temporal reasoning."
         ) % (now_chat.strftime("%A, %-m/%-d/%Y"), now_chat.strftime("%-I:%M %p %Z"))
 
-        # Inject school schedule context
+        # Mode-aware context
+        cfg_chat = get_config()
+        _app_mode = cfg_chat.get("app_mode", "school")
+        _is_summer_school = cfg_chat.get("is_summer_school", "false") == "true"
+        _has_summer_job = cfg_chat.get("has_summer_job", "false") == "true"
+        _canvas_active = not (_app_mode == "summer" and not _is_summer_school)
+
+        # Inject school schedule context (skip block-schedule in summer mode)
         try:
             today = datetime.now(TZ).date()
-            dtype = get_day_type(today)
-            school_hours = get_school_hours(today)
-            if school_hours:
-                sh, sm, eh, em = school_hours
-                system_dynamic += (
-                    "\n\nSCHOOL — Today is a %s day at Park City High School. "
-                    "School runs 7:%02d AM – %d:%02d %s. "
-                    "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
-                    "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM."
-                ) % (dtype.title(), sm, eh % 12 or 12, em, "AM" if eh < 12 else "PM")
+            if _app_mode == "school":
+                dtype = get_day_type(today)
+                school_hours = get_school_hours(today)
+                if school_hours:
+                    sh, sm, eh, em = school_hours
+                    system_dynamic += (
+                        "\n\nSCHOOL — Today is a %s day at Park City High School. "
+                        "School runs 7:%02d AM – %d:%02d %s. "
+                        "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
+                        "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM."
+                    ) % (dtype.title(), sm, eh % 12 or 12, em, "AM" if eh < 12 else "PM")
+                else:
+                    dow = today.weekday()
+                    system_dynamic += "\n\nSCHOOL — " + ("Today is a weekend — no school." if dow >= 5 else "Today is a no-school day (holiday or break).")
             else:
-                dow = today.weekday()
-                system_dynamic += "\n\nSCHOOL — " + ("Today is a weekend — no school." if dow >= 5 else "Today is a no-school day (holiday or break).")
+                mode_info = "MODE — Summer mode active."
+                if _is_summer_school:
+                    mode_info += " Student is attending summer school."
+                if _has_summer_job:
+                    mode_info += " Student has a summer job."
+                system_dynamic += "\n\n" + mode_info
         except Exception:
             pass
 
-        # Inject live assignments
+        # Inject live assignments (disabled in summer mode when not in summer school)
         try:
-            if CANVAS_ICAL_URL:
+            if _canvas_active and CANVAS_ICAL_URL:
                 cal = fetch_ical(CANVAS_ICAL_URL)
                 if cal:
                     asgn_list = parse_canvas_assignments(cal)
@@ -6183,6 +6362,25 @@ def api_chat():
                         system_dynamic += "\n\nAll Canvas assignments are completed."
         except Exception:
             log.warning("/api/chat could not fetch assignments for context")
+
+        # Inject summer bucket list context when in summer mode
+        if _app_mode == "summer":
+            try:
+                _bl_conn = get_db()
+                _bl_cur = _bl_conn.cursor()
+                _bl_cur.execute("SELECT title, category, completed FROM bucket_list ORDER BY completed, created_at DESC LIMIT 20")
+                _bl_rows = _bl_cur.fetchall()
+                _bl_cur.close(); _bl_conn.close()
+                if _bl_rows:
+                    _pending = [r["title"] for r in _bl_rows if not r["completed"]]
+                    _done_bl = [r["title"] for r in _bl_rows if r["completed"]]
+                    bl_text = "SUMMER BUCKET LIST — Pending: %s. Completed: %s." % (
+                        (", ".join(_pending) if _pending else "none"),
+                        (", ".join(_done_bl) if _done_bl else "none"),
+                    )
+                    system_dynamic += "\n\n" + bl_text
+            except Exception:
+                pass
 
         # Inject pending tasks and project context
         try:
@@ -6892,7 +7090,8 @@ Rules:
 5. Use realistic time estimates based on the task title, not just urgency
 6. Leave breathing room — do not pack every minute with work
 7. Lunch breaks: {"On Fridays, add a 30-45 min lunch break immediately after school ends." if today.weekday() == 4 else "Do NOT add a lunch break — lunch happens at school on regular school days."}
-8. Return ONLY a valid JSON array, no markdown or explanation."""
+8. MORNING PERSON — High-urgency and high-focus tasks MUST be placed in the 7:00 AM–11:00 AM window whenever free time is available there. Lower-priority tasks and free time belong later in the day.
+9. Return ONLY a valid JSON array, no markdown or explanation."""
 
             try:
                 message = client.messages.create(
