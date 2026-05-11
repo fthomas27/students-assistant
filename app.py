@@ -483,6 +483,8 @@ def init_db():
         ("news_preferences_outlet_idx", "CREATE INDEX IF NOT EXISTS idx_news_pref_outlet ON news_preferences(outlet)"),
         ("meal_plans", "CREATE TABLE IF NOT EXISTS meal_plans (id SERIAL PRIMARY KEY, plan_date DATE NOT NULL UNIQUE, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), ingredients_used TEXT NOT NULL DEFAULT '', plan_content TEXT NOT NULL DEFAULT '', structured_data TEXT NOT NULL DEFAULT '{}')"),
         ("meal_ingredients", "CREATE TABLE IF NOT EXISTS meal_ingredients (id INT PRIMARY KEY DEFAULT 1, ingredients TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("fridge_photos", "CREATE TABLE IF NOT EXISTS fridge_photos (id SERIAL PRIMARY KEY, media_type TEXT NOT NULL DEFAULT 'image/jpeg', photo_b64 TEXT NOT NULL, analyzed_ingredients TEXT NOT NULL DEFAULT '', uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("meal_preferences", "CREATE TABLE IF NOT EXISTS meal_preferences (id SERIAL PRIMARY KEY, preference_type TEXT NOT NULL, item TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'auto', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(preference_type, item))"),
         ("chat_messages", "CREATE TABLE IF NOT EXISTS chat_messages (id SERIAL PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("chat_messages_idx", "CREATE INDEX IF NOT EXISTS idx_chat_msgs_conv ON chat_messages(conversation_id, created_at)"),
         ("chat_summaries", "CREATE TABLE IF NOT EXISTS chat_summaries (conversation_id TEXT PRIMARY KEY, summary TEXT NOT NULL DEFAULT '', message_count INT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
@@ -1774,6 +1776,13 @@ def generate_briefing(force=False):
         cal2 = fetch_ical(PERSONAL_ICAL_URL)
         if cal2:
             events = list(parse_calendar_events(cal2, days_ahead=1))
+        if JOB_SCHEDULE_ICAL_URL:
+            try:
+                cal_job = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+                if cal_job:
+                    events.extend(parse_calendar_events(cal_job, days_ahead=1))
+            except Exception as _e:
+                log.warning("briefing: job calendar fetch failed: %s", _e)
         today = datetime.now(TZ).date()
         events.extend(fetch_day_calendar_events(today, days_ahead=1))
 
@@ -2231,6 +2240,166 @@ def cleanup_old_data():
         log.error("cleanup_old_data error: %s", e)
 
 
+def auto_generate_meal_plan():
+    """Nightly job: use the most recent fridge photo to generate tomorrow's meal plan."""
+    import json as _json
+    import base64 as _b64
+    try:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            log.warning("auto_generate_meal_plan: ANTHROPIC_API_KEY not set, skipping")
+            return
+
+        # Fetch latest fridge photo
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT id, media_type, photo_b64 FROM fridge_photos ORDER BY uploaded_at DESC LIMIT 1")
+        photo_row = cur.fetchone()
+        cur.execute("SELECT preference_type, item FROM meal_preferences ORDER BY preference_type, item")
+        pref_rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not photo_row:
+            log.info("auto_generate_meal_plan: no fridge photo uploaded yet, skipping")
+            return
+
+        photo_id = photo_row["id"]
+        media_type = photo_row["media_type"] or "image/jpeg"
+        photo_b64 = photo_row["photo_b64"]
+
+        # Build preference context
+        prefs_by_type = {}
+        for r in pref_rows:
+            prefs_by_type.setdefault(r["preference_type"], []).append(r["item"])
+        pref_lines = []
+        for pt, items in prefs_by_type.items():
+            pref_lines.append(f"  {pt}: {', '.join(items)}")
+        pref_context = "\n".join(pref_lines) if pref_lines else "  None recorded yet."
+
+        name = get_config().get("name", "Finn")
+        tomorrow = (datetime.now(TZ) + timedelta(days=1)).date()
+        tomorrow_str = tomorrow.strftime("%A, %B %-d")
+
+        system_prompt = (
+            "You are Jarvis, a sophisticated AI nutrition specialist and personal chef attending to a disciplined high school athlete. "
+            "Your primary directive: design meals that maximise lean protein, keep the athlete in a caloric deficit for weight cutting, "
+            "and taste genuinely good. You think like a Michelin-trained nutritionist — precise macros, balanced micronutrients, "
+            "and creative but practical recipes the athlete can realistically prepare. "
+            "You always respond with valid JSON only. No markdown, no prose outside the JSON structure."
+        )
+
+        user_prompt = (
+            f"Athlete: {name}\n"
+            f"Goal: Cutting weight while maintaining maximum muscle mass. High protein is the top priority.\n"
+            f"Plan date: {tomorrow_str}\n\n"
+            "I have attached a photo of my fridge. Please:\n"
+            "1. Identify all visible ingredients and items in the fridge.\n"
+            "2. Generate a complete daily meal plan using those ingredients.\n\n"
+            f"Known food preferences:\n{pref_context}\n\n"
+            "You may also use common pantry staples (oils, spices, condiments, eggs, basic produce) "
+            "that a typical household would have — list every assumed ingredient in assumed_ingredients.\n\n"
+            "Also, note any new food preference signals you observe (e.g. high-protein items present = likes protein foods).\n\n"
+            "Return ONLY a JSON object with this exact structure:\n"
+            "{\n"
+            '  "daily_totals": {"calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0},\n'
+            '  "fridge_ingredients": ["ingredient1", "ingredient2"],\n'
+            '  "meals": [\n'
+            "    {\n"
+            '      "type": "Breakfast",\n'
+            '      "time_suggestion": "7:00 AM",\n'
+            '      "name": "Meal name",\n'
+            '      "description": "One sentence description",\n'
+            '      "calories": 0,\n'
+            '      "protein_g": 0,\n'
+            '      "carbs_g": 0,\n'
+            '      "fat_g": 0,\n'
+            '      "key_ingredients": ["ingredient1", "ingredient2"]\n'
+            "    }\n"
+            "  ],\n"
+            '  "assumed_ingredients": [{"name": "olive oil", "used_in": ["Lunch"], "essential": false}],\n'
+            '  "new_preferences": [{"preference_type": "like", "item": "chicken breast"}],\n'
+            '  "hydration_note": "Brief hydration tip",\n'
+            '  "jarvis_note": "One motivational line from Jarvis about the plan"\n'
+            "}\n"
+            "Include 4 meals: Breakfast, Lunch, Dinner, and one Snack. "
+            "Target: 160-200g protein, 1600-2000 calories total (caloric deficit). "
+            "Honour any dislikes/allergies from the preferences. "
+            "Return ONLY valid JSON."
+        )
+
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=90.0)
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2200,
+            system=system_prompt,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": photo_b64,
+                        }
+                    },
+                    {"type": "text", "text": user_prompt}
+                ]
+            }]
+        )
+        track_api_usage(message)
+        raw = (message.content[0].text if message.content else "{}").strip()
+        if raw.startswith("```"):
+            raw = raw[3:-3].strip()
+            if raw.startswith("json"):
+                raw = raw[4:].strip()
+        plan_data = _json.loads(raw)
+
+        # Extract analyzed ingredients from fridge_ingredients field
+        fridge_ingredients = plan_data.get("fridge_ingredients", [])
+        analyzed_str = ", ".join(fridge_ingredients) if fridge_ingredients else ""
+
+        # Save new preferences discovered by Claude
+        new_prefs = plan_data.get("new_preferences", [])
+        if new_prefs:
+            conn = get_db()
+            cur = conn.cursor()
+            for p in new_prefs:
+                pt = str(p.get("preference_type", "")).strip()[:50]
+                item_val = str(p.get("item", "")).strip()[:200]
+                if pt and item_val:
+                    cur.execute(
+                        "INSERT INTO meal_preferences (preference_type, item, source) VALUES (%s, %s, 'auto') ON CONFLICT (preference_type, item) DO NOTHING",
+                        (pt, item_val)
+                    )
+            conn.commit()
+            cur.close()
+            conn.close()
+
+        # Update analyzed_ingredients on the photo row
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("UPDATE fridge_photos SET analyzed_ingredients = %s WHERE id = %s", (analyzed_str, photo_id))
+
+        # Save meal plan for tomorrow
+        plan_json = _json.dumps(plan_data)
+        ingredients_used = analyzed_str
+        cur.execute("""
+INSERT INTO meal_plans (plan_date, ingredients_used, plan_content, structured_data)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (plan_date) DO UPDATE SET
+  generated_at = NOW(), ingredients_used = EXCLUDED.ingredients_used,
+  plan_content = EXCLUDED.plan_content, structured_data = EXCLUDED.structured_data""",
+            (tomorrow, ingredients_used[:4000], plan_json, plan_json))
+        conn.commit()
+        cur.close()
+        conn.close()
+        log.info("auto_generate_meal_plan: generated meal plan for %s using photo #%d", tomorrow, photo_id)
+    except Exception as e:
+        log.error("auto_generate_meal_plan error: %s", e)
+
+
 def schedule_briefing():
     cfg = get_config()
     t = cfg.get("morning_briefing_time", "07:00")
@@ -2253,11 +2422,19 @@ def schedule_briefing():
     # Nightly cleanup of stale daily_plans rows at 02:30 (quietest hour)
     scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=30,
                       id="cleanup_old_data", replace_existing=True)
+    # Auto-generate meal plan for next day at 9 PM using latest fridge photo
+    scheduler.add_job(auto_generate_meal_plan, "cron", hour=21, minute=0,
+                      id="auto_meal_plan", replace_existing=True)
+    # Auto-generate tomorrow's daily schedule at 10 PM
+    scheduler.add_job(auto_generate_plan_job, "cron", hour=22, minute=0,
+                      id="auto_daily_plan", replace_existing=True)
     log.info("Briefing scheduled for %02d:%02d Mountain", hour, minute)
     log.info("Evening debrief scheduled for 18:30 Mountain")
     log.info("Recurring tasks processor scheduled for 00:00 Mountain")
     log.info("Weekly insight scheduled for Sun 08:00 Mountain")
     log.info("Cleanup job scheduled for 02:30 Mountain")
+    log.info("Auto meal plan scheduled for 21:00 Mountain")
+    log.info("Auto daily plan scheduled for 22:00 Mountain")
 
 
 # ── Security Functions ──────────────────────────────────────────────────────────
@@ -3139,6 +3316,7 @@ def api_sync_status():
         CANVAS_ICAL_URL: "Canvas",
         PERSONAL_ICAL_URL: "Personal",
         SPORTS_ICAL_URL: "Sports",
+        JOB_SCHEDULE_ICAL_URL: "Job",
         RED_DAY_ICAL_URL: "Red Day",
         WHITE_DAY_ICAL_URL: "White Day",
     }
@@ -3411,6 +3589,10 @@ def api_calendar():
         return fetch_source("sports", SPORTS_ICAL_URL,
                             lambda cal, d: [dict(e, source="sports") for e in parse_calendar_events(cal, days_ahead=d)])
 
+    def get_job():
+        return fetch_source("job", JOB_SCHEDULE_ICAL_URL,
+                            lambda cal, d: [dict(e, source="job") for e in parse_calendar_events(cal, days_ahead=d)])
+
     def get_canvas():
         result = []
         if not CANVAS_ICAL_URL:
@@ -3440,11 +3622,12 @@ def api_calendar():
             log.warning(f"/api/calendar: canvas failed: {e}")
         return result
 
-    # Fetch all three iCal sources concurrently
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    # Fetch all iCal sources concurrently
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(get_personal): "personal",
             executor.submit(get_sports): "sports",
+            executor.submit(get_job): "job",
             executor.submit(get_canvas): "canvas",
         }
         for future in as_completed(futures):
@@ -3951,6 +4134,104 @@ ON CONFLICT (plan_date) DO UPDATE SET
     return jsonify({"meal": new_meal, "updated_plan": current_plan})
 
 
+# ── Fridge Photo Upload ───────────────────────────────────────────────────────
+
+@app.route("/api/fridge-photo", methods=["POST"])
+def api_fridge_photo_upload():
+    """Upload a fridge photo for auto meal plan generation."""
+    if "photo" not in request.files:
+        return jsonify({"error": "No photo file provided (field name: 'photo')"}), 400
+    f = request.files["photo"]
+    if not f or not f.filename:
+        return jsonify({"error": "Empty file"}), 400
+    import base64 as _b64
+    media_type = f.content_type or "image/jpeg"
+    if not media_type.startswith("image/"):
+        return jsonify({"error": "File must be an image"}), 400
+    raw = f.read(20 * 1024 * 1024)  # 20 MB cap
+    if len(raw) > 20 * 1024 * 1024:
+        return jsonify({"error": "Image too large (max 20 MB)"}), 400
+    photo_b64 = _b64.b64encode(raw).decode("ascii")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO fridge_photos (media_type, photo_b64, uploaded_at) VALUES (%s, %s, NOW()) RETURNING id, uploaded_at",
+        (media_type, photo_b64)
+    )
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"id": row["id"], "uploaded_at": row["uploaded_at"].isoformat()})
+
+
+@app.route("/api/fridge-photo/latest", methods=["GET"])
+def api_fridge_photo_latest():
+    """Return metadata for the most recently uploaded fridge photo."""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, media_type, uploaded_at, analyzed_ingredients FROM fridge_photos ORDER BY uploaded_at DESC LIMIT 1")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return jsonify({"photo": None})
+    return jsonify({
+        "photo": {
+            "id": row["id"],
+            "media_type": row["media_type"],
+            "uploaded_at": row["uploaded_at"].isoformat(),
+            "analyzed_ingredients": row["analyzed_ingredients"],
+        }
+    })
+
+
+@app.route("/api/meal-preferences", methods=["GET"])
+def api_meal_preferences_get():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, preference_type, item, source, created_at FROM meal_preferences ORDER BY preference_type, item")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    prefs = {}
+    for r in rows:
+        pt = r["preference_type"]
+        prefs.setdefault(pt, []).append({"id": r["id"], "item": r["item"], "source": r["source"]})
+    return jsonify({"preferences": prefs})
+
+
+@app.route("/api/meal-preferences", methods=["POST"])
+def api_meal_preferences_add():
+    data = request.get_json(force=True) or {}
+    ptype = str(data.get("preference_type", "")).strip()[:50]
+    item = str(data.get("item", "")).strip()[:200]
+    if not ptype or not item:
+        return jsonify({"error": "preference_type and item are required"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO meal_preferences (preference_type, item, source) VALUES (%s, %s, 'user') ON CONFLICT (preference_type, item) DO NOTHING RETURNING id",
+        (ptype, item)
+    )
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok", "created": row is not None})
+
+
+@app.route("/api/meal-preferences/<int:pref_id>", methods=["DELETE"])
+def api_meal_preferences_delete(pref_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM meal_preferences WHERE id = %s", (pref_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
 @app.route("/api/complete", methods=["POST"])
 def api_complete():
     data = request.get_json(force=True) or {}
@@ -4077,25 +4358,26 @@ def api_availability():
             "label": "School (%s day)" % dtype.title()
         })
 
-    # Personal calendar events today
-    try:
-        cal = fetch_ical(PERSONAL_ICAL_URL)
-        if cal:
-            for e in parse_calendar_events(cal, days_ahead=1):
-                if e["date"] == today.isoformat() and not e.get("all_day"):
-                    try:
-                        es = datetime.fromisoformat(e["start_iso"])
-                        ee_str = e.get("end_iso") or e["start_iso"]
-                        ee = datetime.fromisoformat(ee_str)
-                        if es.tzinfo is None:
-                            es = es.replace(tzinfo=TZ)
-                        if ee.tzinfo is None:
-                            ee = ee.replace(tzinfo=TZ)
-                        busy.append({"start": es, "end": ee, "label": e["title"]})
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    # Personal + job calendar events today
+    for _busy_url in filter(None, [PERSONAL_ICAL_URL, JOB_SCHEDULE_ICAL_URL]):
+        try:
+            _busy_cal = fetch_ical(_busy_url)
+            if _busy_cal:
+                for e in parse_calendar_events(_busy_cal, days_ahead=1):
+                    if e["date"] == today.isoformat() and not e.get("all_day"):
+                        try:
+                            es = datetime.fromisoformat(e["start_iso"])
+                            ee_str = e.get("end_iso") or e["start_iso"]
+                            ee = datetime.fromisoformat(ee_str)
+                            if es.tzinfo is None:
+                                es = es.replace(tzinfo=TZ)
+                            if ee.tzinfo is None:
+                                ee = ee.replace(tzinfo=TZ)
+                            busy.append({"start": es, "end": ee, "label": e["title"]})
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
     # Sort and merge busy blocks
     busy.sort(key=lambda x: x["start"])
@@ -4715,12 +4997,13 @@ def api_task_suggestions():
 
         # Fetch calendar events
         calendar_events = []
-        try:
-            cal = fetch_ical(PERSONAL_ICAL_URL)
-            if cal:
-                calendar_events = parse_calendar_events(cal, days_ahead=7)
-        except Exception as e:
-            log.warning(f"Could not fetch calendar events for suggestions: {e}")
+        for _sug_url in filter(None, [PERSONAL_ICAL_URL, SPORTS_ICAL_URL, JOB_SCHEDULE_ICAL_URL]):
+            try:
+                _sug_cal = fetch_ical(_sug_url)
+                if _sug_cal:
+                    calendar_events.extend(parse_calendar_events(_sug_cal, days_ahead=7))
+            except Exception as e:
+                log.warning(f"Could not fetch calendar events for suggestions: {e}")
 
         # Get existing tasks and filter completed assignments
         existing_task_titles = set()
@@ -5851,7 +6134,7 @@ def _execute_jarvis_tool(name, inputs):
         elif name == "get_calendar_events":
             days_ahead = min(30, max(1, int(inputs.get("days_ahead", 7))))
             events = []
-            for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports")):
+            for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports"), (JOB_SCHEDULE_ICAL_URL, "job")):
                 if not url:
                     continue
                 try:
@@ -6792,264 +7075,262 @@ ORDER BY order_index ASC""", (plan_id,))
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/plan-my-day/generate", methods=["POST"])
-def api_plan_my_day_generate():
-    """Generate a new daily plan using AI."""
-    today = datetime.now(TZ).date()
+def _generate_daily_plan_for_date(target_date):
+    """Core plan generation logic. Returns dict {plan_id, items_count} or raises."""
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    today = target_date  # alias so the body below reads naturally
 
-    try:
-        with _plan_lock:
-            if not api_key:
-                return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
+    with _plan_lock:
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY not configured")
 
-            # ── Phase 1: fetch all DB data then release the connection ──────
-            # We must NOT hold the connection (or an open transaction on
-            # daily_plans) while the Claude API call is in flight.  A pending
-            # DELETE+INSERT on daily_plans would block any concurrent
-            # UPDATE daily_plans (e.g. from api_tasks_update completing a task),
-            # causing those requests to time out for 30–60 s.
-            completed_titles = set()
-            custom_estimates = {}
-            tasks_for_plan = []
+        # ── Phase 1: fetch all DB data then release the connection ──────
+        completed_titles = set()
+        custom_estimates = {}
+        tasks_for_plan = []
 
-            conn = get_db()
+        conn = get_db()
+        try:
+            cur = conn.cursor()
             try:
-                cur = conn.cursor()
-                try:
-                    cur.execute("SELECT DISTINCT assignment_title FROM completions")
-                    completed_titles = set(r["assignment_title"] for r in cur.fetchall())
-                    cur.execute("SELECT uid, minutes FROM assignment_estimates")
-                    custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
+                cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                completed_titles = set(r["assignment_title"] for r in cur.fetchall())
+                cur.execute("SELECT uid, minutes FROM assignment_estimates")
+                custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
 
-                    urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
-                    cur.execute("""
-                        SELECT id, title, due_date, urgency FROM tasks
-                        WHERE completed = FALSE
-                        AND (due_date IS NULL OR due_date <= %s)
-                        ORDER BY urgency DESC, due_date ASC
-                        LIMIT 15
-                    """, (today + timedelta(days=3),))
-                    for task_row in cur.fetchall():
-                        due_date = task_row.get("due_date")
-                        urgency = task_row.get("urgency", "medium")
-                        tasks_for_plan.append({
-                            "type": "task",
-                            "id": str(task_row["id"]),
-                            "title": task_row["title"],
-                            "due_date": str(due_date) if due_date else None,
-                            "urgency": urgency,
-                            "estimated_minutes": urgency_mins.get(urgency, 20)
-                        })
-                finally:
-                    cur.close()
+                urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
+                cur.execute("""
+                    SELECT id, title, due_date, urgency FROM tasks
+                    WHERE completed = FALSE
+                    AND (due_date IS NULL OR due_date <= %s)
+                    ORDER BY urgency DESC, due_date ASC
+                    LIMIT 15
+                """, (today + timedelta(days=3),))
+                for task_row in cur.fetchall():
+                    due_date = task_row.get("due_date")
+                    urgency = task_row.get("urgency", "medium")
+                    tasks_for_plan.append({
+                        "type": "task",
+                        "id": str(task_row["id"]),
+                        "title": task_row["title"],
+                        "due_date": str(due_date) if due_date else None,
+                        "urgency": urgency,
+                        "estimated_minutes": urgency_mins.get(urgency, 20)
+                    })
             finally:
-                conn.close()
-            # ── DB connection released — safe to call Claude now ─────────────
+                cur.close()
+        finally:
+            conn.close()
+        # ── DB connection released — safe to call Claude now ─────────────
 
-            # Fetch assignments, tasks, and calendar events
-            assignments = []
-            tasks = tasks_for_plan
-            calendar_events = []  # fixed blocks shown in the schedule
-            school_assignments = []  # assignments due during school hours
+        # Fetch assignments, tasks, and calendar events
+        assignments = []
+        tasks = tasks_for_plan
+        calendar_events = []
+        school_assignments = []
 
-            # Get assignments due today
-            try:
-                cal = fetch_ical(CANVAS_ICAL_URL)
-                if cal:
+        try:
+            cal = fetch_ical(CANVAS_ICAL_URL)
+            if cal:
+                all_asgn = parse_canvas_assignments(cal)
+                class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
+                class_avg_cache = get_class_averages_batch(class_names)
 
-                    all_asgn = parse_canvas_assignments(cal)
-                    class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
-                    class_avg_cache = get_class_averages_batch(class_names)
+                today_school_hours = get_school_hours(today)
+                school_start_dt = school_end_dt = None
+                if today_school_hours:
+                    sh, sm, eh, em = today_school_hours
+                    day_start = datetime(today.year, today.month, today.day, 0, 0, 0, tzinfo=TZ)
+                    school_start_dt = day_start.replace(hour=sh, minute=sm)
+                    school_end_dt = day_start.replace(hour=eh, minute=em)
 
-                    # Pre-compute today's school hours so we can bucket in-school
-                    # assignments under the school block instead of scheduling them.
-                    today_school_hours = get_school_hours(today)
-                    school_start_dt = school_end_dt = None
-                    if today_school_hours:
-                        sh, sm, eh, em = today_school_hours
-                        day_start = datetime.now(TZ).replace(
-                            year=today.year, month=today.month, day=today.day,
-                            second=0, microsecond=0,
-                        )
-                        school_start_dt = day_start.replace(hour=sh, minute=sm)
-                        school_end_dt = day_start.replace(hour=eh, minute=em)
-
-                    for a in all_asgn:
-                        if a["title"] in completed_titles:
-                            continue
-                        due_iso = a.get("due_iso", "")
-                        if due_iso:
-                            try:
-                                due_dt = datetime.fromisoformat(due_iso.replace("Z", "+00:00"))
-                                due_local = due_dt.astimezone(TZ)
-                                due_date = due_local.date()
-                                if due_date == today:
-                                    uid = a.get("uid", "")
-                                    if uid in custom_estimates:
-                                        est_mins = custom_estimates[uid]
-                                    else:
-                                        est_mins = estimate_assignment(a.get("title", ""), a.get("class_name", ""), class_avg_cache=class_avg_cache)
-                                    item = {
-                                        "type": "assignment",
-                                        "id": uid,
-                                        "title": a.get("title", ""),
-                                        "class": a.get("class_name", ""),
-                                        "estimated_minutes": int(est_mins)
-                                    }
-                                    in_school = (
-                                        school_start_dt is not None
-                                        and school_start_dt <= due_local <= school_end_dt
-                                    )
-                                    if in_school:
-                                        school_assignments.append(item)
-                                    else:
-                                        assignments.append(item)
-                            except Exception:
-                                pass
-            except Exception as e:
-                log.warning(f"Could not fetch assignments for plan: {e}")
-
-            # Fetch personal and sports calendar events for today
-            personal_events = []
-            sports_events = []
-            try:
-                personal_cal = fetch_ical(PERSONAL_ICAL_URL)
-                if personal_cal:
-                    personal_events = parse_calendar_events(personal_cal, days_ahead=1)
-            except Exception as e:
-                log.warning(f"Could not fetch personal calendar for plan: {e}")
-            try:
-                sports_cal = fetch_ical(SPORTS_ICAL_URL)
-                if sports_cal:
-                    sports_events = parse_calendar_events(sports_cal, days_ahead=1)
-            except Exception as e:
-                log.warning(f"Could not fetch sports calendar for plan: {e}")
-
-            for event in personal_events:
-                if event["date"] == today.isoformat():
-                    calendar_events.append({
-                        "type": "calendar",
-                        "id": "",
-                        "title": event["title"],
-                        "start_display": "All Day" if event.get("all_day") else event.get("start_display", ""),
-                        "end_display": "" if event.get("all_day") else event.get("end_display", ""),
-                        "all_day": event.get("all_day", False),
-                        "source": "personal"
-                    })
-            for event in sports_events:
-                if event["date"] == today.isoformat():
-                    calendar_events.append({
-                        "type": "calendar",
-                        "id": "",
-                        "title": event["title"] + " [SPORTS]",
-                        "start_display": "All Day" if event.get("all_day") else event.get("start_display", ""),
-                        "end_display": "" if event.get("all_day") else event.get("end_display", ""),
-                        "all_day": event.get("all_day", False),
-                        "source": "sports"
-                    })
-
-            # Compute free windows from school hours + personal + sports
-            free_windows = []
-            try:
-                now_local = datetime.now(TZ)
-                dtype = get_day_type(today)
-                school_hours = get_school_hours(today)
-
-                busy = []
-                if school_hours:
-                    sh, sm, eh, em = school_hours
-                    school_start_str = "%d:%02d %s" % (sh % 12 or 12, sm, "AM" if sh < 12 else "PM")
-                    school_end_str = "%d:%02d %s" % (eh % 12 or 12, em, "AM" if eh < 12 else "PM")
-                    school_title = "School (%s day)" % dtype.title()
-                    if school_assignments:
-                        turn_in_list = ", ".join(
-                            "%s [%s]" % (sa["title"], sa["class"]) if sa.get("class") else sa["title"]
-                            for sa in school_assignments
-                        )
-                        school_title += " — due during school: " + turn_in_list
-                    calendar_events.insert(0, {
-                        "type": "calendar",
-                        "id": "school",
-                        "title": school_title,
-                        "start_display": school_start_str,
-                        "end_display": school_end_str,
-                        "source": "school",
-                        "school_assignments": school_assignments,
-                    })
-                    busy.append({
-                        "start": now_local.replace(hour=sh, minute=sm, second=0, microsecond=0),
-                        "end": now_local.replace(hour=eh, minute=em, second=0, microsecond=0),
-                    })
-
-                for e in personal_events + sports_events:
-                    if e["date"] == today.isoformat() and not e.get("all_day") and e.get("start_iso"):
+                for a in all_asgn:
+                    if a["title"] in completed_titles:
+                        continue
+                    due_iso = a.get("due_iso", "")
+                    if due_iso:
                         try:
-                            es = datetime.fromisoformat(e["start_iso"])
-                            ee = datetime.fromisoformat(e.get("end_iso") or e["start_iso"])
-                            if es.tzinfo is None:
-                                es = es.replace(tzinfo=TZ)
-                            if ee.tzinfo is None:
-                                ee = ee.replace(tzinfo=TZ)
-                            busy.append({"start": es, "end": ee})
+                            due_dt = datetime.fromisoformat(due_iso.replace("Z", "+00:00"))
+                            due_local = due_dt.astimezone(TZ)
+                            due_date = due_local.date()
+                            if due_date == today:
+                                uid = a.get("uid", "")
+                                if uid in custom_estimates:
+                                    est_mins = custom_estimates[uid]
+                                else:
+                                    est_mins = estimate_assignment(a.get("title", ""), a.get("class_name", ""), class_avg_cache=class_avg_cache)
+                                item = {
+                                    "type": "assignment",
+                                    "id": uid,
+                                    "title": a.get("title", ""),
+                                    "class": a.get("class_name", ""),
+                                    "estimated_minutes": int(est_mins)
+                                }
+                                in_school = (
+                                    school_start_dt is not None
+                                    and school_start_dt <= due_local <= school_end_dt
+                                )
+                                if in_school:
+                                    school_assignments.append(item)
+                                else:
+                                    assignments.append(item)
                         except Exception:
                             pass
+        except Exception as e:
+            log.warning(f"Could not fetch assignments for plan: {e}")
 
-                busy.sort(key=lambda x: x["start"])
-                merged = []
-                for b in busy:
-                    if merged and b["start"] <= merged[-1]["end"]:
-                        merged[-1]["end"] = max(merged[-1]["end"], b["end"])
-                    else:
-                        merged.append(dict(b))
+        # Fetch personal, sports, and job calendar events for target date
+        personal_events = []
+        sports_events = []
+        job_events = []
+        try:
+            personal_cal = fetch_ical(PERSONAL_ICAL_URL)
+            if personal_cal:
+                personal_events = parse_calendar_events(personal_cal, days_ahead=2)
+        except Exception as e:
+            log.warning(f"Could not fetch personal calendar for plan: {e}")
+        try:
+            sports_cal = fetch_ical(SPORTS_ICAL_URL)
+            if sports_cal:
+                sports_events = parse_calendar_events(sports_cal, days_ahead=2)
+        except Exception as e:
+            log.warning(f"Could not fetch sports calendar for plan: {e}")
+        if JOB_SCHEDULE_ICAL_URL:
+            try:
+                job_cal = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+                if job_cal:
+                    job_events = parse_calendar_events(job_cal, days_ahead=2)
+            except Exception as e:
+                log.warning(f"Could not fetch job calendar for plan: {e}")
 
-                day_end = now_local.replace(hour=22, minute=0, second=0, microsecond=0)
-                cursor = now_local.replace(second=0, microsecond=0)
-                for b in merged:
-                    if b["end"] <= cursor:
-                        continue
-                    if b["start"] > cursor:
-                        mins = int((b["start"] - cursor).total_seconds() / 60)
-                        if mins >= 15:
-                            free_windows.append({
-                                "start": cursor.strftime("%-I:%M %p"),
-                                "end": b["start"].strftime("%-I:%M %p"),
-                                "minutes": mins
-                            })
-                    cursor = max(cursor, b["end"])
+        date_iso = today.isoformat()
+        for event in personal_events:
+            if event["date"] == date_iso:
+                calendar_events.append({
+                    "type": "calendar", "id": "", "title": event["title"],
+                    "start_display": "All Day" if event.get("all_day") else event.get("start_display", ""),
+                    "end_display": "" if event.get("all_day") else event.get("end_display", ""),
+                    "all_day": event.get("all_day", False), "source": "personal"
+                })
+        for event in sports_events:
+            if event["date"] == date_iso:
+                calendar_events.append({
+                    "type": "calendar", "id": "", "title": event["title"] + " [SPORTS]",
+                    "start_display": "All Day" if event.get("all_day") else event.get("start_display", ""),
+                    "end_display": "" if event.get("all_day") else event.get("end_display", ""),
+                    "all_day": event.get("all_day", False), "source": "sports"
+                })
+        for event in job_events:
+            if event["date"] == date_iso:
+                calendar_events.append({
+                    "type": "calendar", "id": "", "title": event["title"] + " [WORK]",
+                    "start_display": "All Day" if event.get("all_day") else event.get("start_display", ""),
+                    "end_display": "" if event.get("all_day") else event.get("end_display", ""),
+                    "all_day": event.get("all_day", False), "source": "job"
+                })
 
-                if cursor < day_end:
-                    mins = int((day_end - cursor).total_seconds() / 60)
+        # Compute free windows
+        free_windows = []
+        try:
+            # For today use current time as cursor; for future dates start at 7 AM
+            _actual_now = datetime.now(TZ)
+            if target_date == _actual_now.date():
+                now_local = _actual_now
+            else:
+                now_local = datetime(target_date.year, target_date.month, target_date.day, 7, 0, 0, tzinfo=TZ)
+
+            dtype = get_day_type(today)
+            school_hours = get_school_hours(today)
+
+            busy = []
+            if school_hours:
+                sh, sm, eh, em = school_hours
+                school_start_str = "%d:%02d %s" % (sh % 12 or 12, sm, "AM" if sh < 12 else "PM")
+                school_end_str = "%d:%02d %s" % (eh % 12 or 12, em, "AM" if eh < 12 else "PM")
+                school_title = "School (%s day)" % dtype.title()
+                if school_assignments:
+                    turn_in_list = ", ".join(
+                        "%s [%s]" % (sa["title"], sa["class"]) if sa.get("class") else sa["title"]
+                        for sa in school_assignments
+                    )
+                    school_title += " — due during school: " + turn_in_list
+                calendar_events.insert(0, {
+                    "type": "calendar", "id": "school", "title": school_title,
+                    "start_display": school_start_str, "end_display": school_end_str,
+                    "source": "school", "school_assignments": school_assignments,
+                })
+                busy.append({
+                    "start": now_local.replace(hour=sh, minute=sm, second=0, microsecond=0),
+                    "end": now_local.replace(hour=eh, minute=em, second=0, microsecond=0),
+                })
+
+            for e in personal_events + sports_events + job_events:
+                if e["date"] == date_iso and not e.get("all_day") and e.get("start_iso"):
+                    try:
+                        es = datetime.fromisoformat(e["start_iso"])
+                        ee = datetime.fromisoformat(e.get("end_iso") or e["start_iso"])
+                        if es.tzinfo is None:
+                            es = es.replace(tzinfo=TZ)
+                        if ee.tzinfo is None:
+                            ee = ee.replace(tzinfo=TZ)
+                        busy.append({"start": es, "end": ee})
+                    except Exception:
+                        pass
+
+            busy.sort(key=lambda x: x["start"])
+            merged = []
+            for b in busy:
+                if merged and b["start"] <= merged[-1]["end"]:
+                    merged[-1]["end"] = max(merged[-1]["end"], b["end"])
+                else:
+                    merged.append(dict(b))
+
+            day_end = now_local.replace(hour=22, minute=0, second=0, microsecond=0)
+            cursor = now_local.replace(second=0, microsecond=0)
+            for b in merged:
+                if b["end"] <= cursor:
+                    continue
+                if b["start"] > cursor:
+                    mins = int((b["start"] - cursor).total_seconds() / 60)
                     if mins >= 15:
                         free_windows.append({
                             "start": cursor.strftime("%-I:%M %p"),
-                            "end": day_end.strftime("%-I:%M %p"),
+                            "end": b["start"].strftime("%-I:%M %p"),
                             "minutes": mins
                         })
-            except Exception as e:
-                log.warning(f"Could not compute availability for plan: {e}")
+                cursor = max(cursor, b["end"])
 
-            # ── Phase 2: Claude API call (no DB connection held) ────────────
-            client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
-            def _fmt_cal(e):
-                if e.get("all_day"):
-                    return "- %s: All Day" % e["title"]
-                return "- %s: %s – %s" % (e["title"], e.get("start_display", "?"), e.get("end_display", "?"))
+            if cursor < day_end:
+                mins = int((day_end - cursor).total_seconds() / 60)
+                if mins >= 15:
+                    free_windows.append({
+                        "start": cursor.strftime("%-I:%M %p"),
+                        "end": day_end.strftime("%-I:%M %p"),
+                        "minutes": mins
+                    })
+        except Exception as e:
+            log.warning(f"Could not compute availability for plan: {e}")
 
-            cal_block_lines = ("\n".join(_fmt_cal(e) for e in calendar_events)
-                or "None (no school or calendar events today)")
+        # ── Phase 2: Claude API call ────────────────────────────────────
+        client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
 
-            free_window_lines = "\n".join(
-                "- %s – %s (%d min)" % (w["start"], w["end"], w["minutes"])
-                for w in free_windows
-            ) or "No free windows found — check calendar configuration."
+        def _fmt_cal(e):
+            if e.get("all_day"):
+                return "- %s: All Day" % e["title"]
+            return "- %s: %s – %s" % (e["title"], e.get("start_display", "?"), e.get("end_display", "?"))
 
-            in_school_block_lines = "\n".join(
-                "- %s [%s] (~%d min)" % (sa["title"], sa.get("class", ""), sa.get("estimated_minutes", 0))
-                for sa in school_assignments
-            ) or "None"
+        cal_block_lines = ("\n".join(_fmt_cal(e) for e in calendar_events)
+            or "None (no school or calendar events today)")
+        free_window_lines = "\n".join(
+            "- %s – %s (%d min)" % (w["start"], w["end"], w["minutes"])
+            for w in free_windows
+        ) or "No free windows found — check calendar configuration."
+        in_school_block_lines = "\n".join(
+            "- %s [%s] (~%d min)" % (sa["title"], sa.get("class", ""), sa.get("estimated_minutes", 0))
+            for sa in school_assignments
+        ) or "None"
 
-            schedule_prompt = f"""You are Jarvis, sir's exceptionally capable AI, building the complete daily schedule for today ({today}).
+        schedule_prompt = f"""You are Jarvis, sir's exceptionally capable AI, building the complete daily schedule for {today}.
 
 STEP 1 — FIXED CALENDAR BLOCKS (immovable — never schedule anything during these):
 {cal_block_lines}
@@ -7087,90 +7368,99 @@ Rules:
 8. MORNING PERSON — High-urgency and high-focus tasks MUST be placed in the 7:00 AM–11:00 AM window whenever free time is available there. Lower-priority tasks and free time belong later in the day.
 9. Return ONLY a valid JSON array, no markdown or explanation."""
 
-            try:
-                message = client.messages.create(
-                    model="claude-sonnet-4-6",
-                    max_tokens=2048,
-                    messages=[{"role": "user", "content": schedule_prompt}]
-                )
-                track_api_usage(message)
-                response_text = message.content[0].text if message.content else "[]"
-                # Strip markdown code fences Claude sometimes wraps around JSON
-                response_text = response_text.strip()
-                if response_text.startswith("```") and response_text.endswith("```"):
-                    response_text = response_text[3:-3].strip()
-                    if response_text.startswith("json"):
-                        response_text = response_text[4:].strip()
-                scheduled_items = json.loads(response_text)
-            except Exception as e:
-                log.warning(f"Claude plan generation failed: {e}")
-                # Fallback: create a simple schedule
-                scheduled_items = []
-                # Start after school or at 3 PM
-                start_min = 15 * 60
-                if free_windows:
-                    try:
-                        from datetime import datetime as _dt
-                        t = _dt.strptime(free_windows[0]["start"], "%I:%M %p")
-                        start_min = t.hour * 60 + t.minute
-                    except Exception:
-                        pass
-                cursor_min = start_min
-                for item in assignments + tasks:
-                    estimated_mins = item.get("estimated_minutes", 30)
-                    end_min = cursor_min + estimated_mins
-                    scheduled_items.append({
-                        "item_type": item["type"],
-                        "item_id": item["id"],
-                        "item_title": item["title"],
-                        "scheduled_start_time": f"{cursor_min // 60:02d}:{cursor_min % 60:02d}",
-                        "scheduled_end_time": f"{end_min // 60:02d}:{end_min % 60:02d}"
-                    })
-                    cursor_min = end_min
-
-            # ── Phase 3: write results — brief transaction, no long hold ───
-            conn = get_db()
-            try:
-                cur = conn.cursor()
+        try:
+            message = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=2048,
+                messages=[{"role": "user", "content": schedule_prompt}]
+            )
+            track_api_usage(message)
+            response_text = message.content[0].text if message.content else "[]"
+            response_text = response_text.strip()
+            if response_text.startswith("```") and response_text.endswith("```"):
+                response_text = response_text[3:-3].strip()
+                if response_text.startswith("json"):
+                    response_text = response_text[4:].strip()
+            scheduled_items = json.loads(response_text)
+        except Exception as e:
+            log.warning(f"Claude plan generation failed: {e}")
+            scheduled_items = []
+            start_min = 15 * 60
+            if free_windows:
                 try:
-                    # Replace any existing plan for today atomically
-                    cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
-                    cur.execute(
-                        "INSERT INTO daily_plans (plan_date, generated_at) VALUES (%s, NOW()) RETURNING id",
-                        (today,)
-                    )
-                    plan_id = cur.fetchone()["id"]
+                    from datetime import datetime as _dt
+                    t = _dt.strptime(free_windows[0]["start"], "%I:%M %p")
+                    start_min = t.hour * 60 + t.minute
+                except Exception:
+                    pass
+            cursor_min = start_min
+            for item in assignments + tasks:
+                estimated_mins = item.get("estimated_minutes", 30)
+                end_min = cursor_min + estimated_mins
+                scheduled_items.append({
+                    "item_type": item["type"],
+                    "item_id": item["id"],
+                    "item_title": item["title"],
+                    "scheduled_start_time": f"{cursor_min // 60:02d}:{cursor_min % 60:02d}",
+                    "scheduled_end_time": f"{end_min // 60:02d}:{end_min % 60:02d}"
+                })
+                cursor_min = end_min
 
-                    for idx, item in enumerate(scheduled_items):
-                        cur.execute("""
+        # ── Phase 3: write results ───────────────────────────────────────
+        conn = get_db()
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
+                cur.execute(
+                    "INSERT INTO daily_plans (plan_date, generated_at) VALUES (%s, NOW()) RETURNING id",
+                    (today,)
+                )
+                plan_id = cur.fetchone()["id"]
+                for idx, item in enumerate(scheduled_items):
+                    cur.execute("""
 INSERT INTO daily_plan_items (plan_id, item_type, item_id, item_title,
                               scheduled_start_time, scheduled_end_time, estimated_minutes, order_index)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                            (
-                                plan_id,
-                                item.get("item_type", ""),
-                                str(item.get("item_id", "")),
-                                item.get("item_title", ""),
-                                item.get("scheduled_start_time", "09:00"),
-                                item.get("scheduled_end_time", "09:30"),
-                                item.get("estimated_minutes", 30),
-                                idx
-                            )
+                        (
+                            plan_id,
+                            item.get("item_type", ""),
+                            str(item.get("item_id", "")),
+                            item.get("item_title", ""),
+                            item.get("scheduled_start_time", "09:00"),
+                            item.get("scheduled_end_time", "09:30"),
+                            item.get("estimated_minutes", 30),
+                            idx
                         )
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-                    raise
-                finally:
-                    cur.close()
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             finally:
-                conn.close()
+                cur.close()
+        finally:
+            conn.close()
 
-            return jsonify({
-                "status": "ok",
-                "plan_id": plan_id,
-                "items_count": len(scheduled_items)
-            })
+        return {"plan_id": plan_id, "items_count": len(scheduled_items)}
+
+
+def auto_generate_plan_job():
+    """Nightly scheduled job: generate tomorrow's daily plan."""
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).date()
+    try:
+        result = _generate_daily_plan_for_date(tomorrow)
+        log.info("auto_generate_plan_job: generated plan for %s (%d items)", tomorrow, result["items_count"])
+    except Exception as e:
+        log.error("auto_generate_plan_job error: %s", e)
+
+
+@app.route("/api/plan-my-day/generate", methods=["POST"])
+def api_plan_my_day_generate():
+    """Generate a new daily plan using AI."""
+    try:
+        result = _generate_daily_plan_for_date(datetime.now(TZ).date())
+        return jsonify({"status": "ok", "plan_id": result["plan_id"], "items_count": result["items_count"]})
     except Exception as e:
         log.exception("Error generating daily plan")
         return jsonify({"error": str(e)}), 500
@@ -7662,10 +7952,10 @@ def api_daily_outlook():
     except Exception as e:
         log.warning("outlook: assignments failed: %s", e)
 
-    # Personal + sports calendar events for today
+    # Personal + sports + job calendar events for today
     try:
         today_iso = today.isoformat()
-        for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports")):
+        for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports"), (JOB_SCHEDULE_ICAL_URL, "job")):
             c = fetch_ical(url)
             if not c:
                 continue
