@@ -120,11 +120,11 @@ display: block;
 }
 
 .circle-btn.active {
-transform: scale(1.22);
+transform: scale(1.18);
 background: var(--accent);
 border-color: var(--accent);
 color: #fff;
-box-shadow: 0 0 18px rgba(255,127,80,0.65), 0 0 36px rgba(255,127,80,0.28);
+box-shadow: 0 0 0 3px rgba(255,127,80,0.22), 0 4px 18px rgba(255,127,80,0.55);
 }
 
 .circle-btn:hover:not(.active) {
@@ -155,6 +155,21 @@ flex: 1;
 overflow: hidden;
 display: flex;
 flex-direction: column;
+position: relative;
+}
+
+/* Ambient backlight: a narrow radial gradient drops from the nav into the page */
+.page-area::before {
+content: '';
+position: absolute;
+top: 0;
+left: 50%;
+transform: translateX(-50%);
+width: 360px;
+height: 160px;
+background: radial-gradient(ellipse 50% 100% at 50% 0%, rgba(255,127,80,0.07) 0%, transparent 100%);
+pointer-events: none;
+z-index: 0;
 }
 
 .page {
@@ -163,6 +178,8 @@ height: 100%;
 overflow-y: auto;
 padding: 20px;
 flex-direction: column;
+position: relative;
+z-index: 1;
 }
 
 .page.active {
@@ -3228,17 +3245,17 @@ margin-bottom: 0;
 <header class="top-nav">
   <div class="top-nav-date" id="topNavDate">Loading...</div>
   <nav class="top-nav-circles" id="topNavCircles">
-    <!-- School-mode nav -->
+    <!-- School-only nav -->
     <button class="circle-btn school-nav" data-page="tasks"          onclick="navigateTo('tasks')"          title="Tasks">&#10003;<span class="circle-btn-badge" data-badge="tasks"></span></button>
     <button class="circle-btn school-nav" data-page="assignments"    onclick="navigateTo('assignments')"    title="Assignments">&#128203;<span class="circle-btn-badge" data-badge="assignments"></span></button>
     <button class="circle-btn school-nav" id="calendarNavBtn"        onclick="openCalendarModal()"          title="Calendar">&#128197;</button>
+    <!-- Always-visible -->
     <button class="circle-btn active"     data-page="home"           onclick="navigateTo('home')"           title="Home">&#8962;</button>
-    <button class="circle-btn school-nav" data-page="chat"           onclick="navigateTo('chat')"           title="Chat">&#128172;</button>
+    <button class="circle-btn"            data-page="chat"           onclick="navigateTo('chat')"           title="Chat">&#128172;</button>
     <button class="circle-btn school-nav" data-page="plan"           onclick="navigateTo('plan')"           title="Plan">&#127919;</button>
     <button class="circle-btn"            data-page="projects"       onclick="navigateTo('projects')"       title="Projects">&#128230;<span class="circle-btn-badge" data-badge="projects"></span></button>
     <button class="circle-btn"            data-page="meals"          onclick="navigateTo('meals')"          title="Meals">&#127869;</button>
-    <!-- Summer-mode nav (hidden in school mode) -->
-    <button class="circle-btn summer-nav" data-page="summer-home"    onclick="navigateTo('summer-home')"   title="Summer Home" style="display:none;">&#9728;&#65039;</button>
+    <!-- Summer-only nav -->
     <button class="circle-btn summer-nav" data-page="summer-bucket"  onclick="navigateTo('summer-bucket')" title="Bucket List" style="display:none;">&#127774;</button>
   </nav>
   <div class="top-nav-mobile">
@@ -3248,18 +3265,17 @@ margin-bottom: 0;
       <span class="nav-menu-toggle-caret">&#9662;</span>
     </button>
     <div class="nav-menu-dropdown" id="navMenuDropdown" role="menu">
-      <button class="nav-menu-item" data-page="home"                 onclick="navigateTo('home'); closeNavMenu();"          role="menuitem"><span class="nav-menu-item-icon">&#8962;</span>Home</button>
-      <!-- Summer home -->
-      <button class="nav-menu-item summer-nav" data-page="summer-home"   onclick="navigateTo('summer-home'); closeNavMenu();"  role="menuitem" style="display:none;"><span class="nav-menu-item-icon">&#9728;&#65039;</span>Summer Home</button>
-      <button class="nav-menu-item summer-nav" data-page="summer-bucket" onclick="navigateTo('summer-bucket'); closeNavMenu();" role="menuitem" style="display:none;"><span class="nav-menu-item-icon">&#127774;</span>Bucket List</button>
-      <!-- School pages -->
+      <button class="nav-menu-item" data-page="home"           onclick="navigateTo('home'); closeNavMenu();"          role="menuitem"><span class="nav-menu-item-icon">&#8962;</span>Home</button>
+      <!-- School-only pages -->
       <button class="nav-menu-item school-nav" data-page="tasks"       onclick="navigateTo('tasks'); closeNavMenu();"        role="menuitem"><span class="nav-menu-item-icon">&#10003;</span>Tasks</button>
       <button class="nav-menu-item school-nav" data-page="assignments" onclick="navigateTo('assignments'); closeNavMenu();"  role="menuitem"><span class="nav-menu-item-icon">&#128203;</span>Assignments</button>
-      <button class="nav-menu-item school-nav" data-page="chat"        onclick="navigateTo('chat'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#128172;</span>Chat</button>
       <button class="nav-menu-item school-nav" data-page="plan"        onclick="navigateTo('plan'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#127919;</span>Plan</button>
-      <!-- Shared pages -->
-      <button class="nav-menu-item" data-page="projects"    onclick="navigateTo('projects'); closeNavMenu();"    role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
-      <button class="nav-menu-item" data-page="meals"       onclick="navigateTo('meals'); closeNavMenu();"       role="menuitem"><span class="nav-menu-item-icon">&#127869;</span>Meals</button>
+      <!-- Always visible -->
+      <button class="nav-menu-item" data-page="chat"         onclick="navigateTo('chat'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#128172;</span>Chat</button>
+      <button class="nav-menu-item" data-page="projects"     onclick="navigateTo('projects'); closeNavMenu();"     role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
+      <button class="nav-menu-item" data-page="meals"        onclick="navigateTo('meals'); closeNavMenu();"        role="menuitem"><span class="nav-menu-item-icon">&#127869;</span>Meals</button>
+      <!-- Summer-only -->
+      <button class="nav-menu-item summer-nav" data-page="summer-bucket" onclick="navigateTo('summer-bucket'); closeNavMenu();" role="menuitem" style="display:none;"><span class="nav-menu-item-icon">&#127774;</span>Bucket List</button>
       <div class="nav-menu-divider"></div>
       <button class="nav-menu-item" onclick="openCalendarModal(); closeNavMenu();"                               role="menuitem"><span class="nav-menu-item-icon">&#128197;</span>Calendar</button>
       <button class="nav-menu-item" onclick="document.getElementById('pomodoroOpen').click(); closeNavMenu();"  role="menuitem"><span class="nav-menu-item-icon">&#9201;</span>Focus Timer</button>
@@ -3404,25 +3420,62 @@ margin-bottom: 0;
 <main class="page-area">
 
 <div class="page active" id="page-home">
-  <section class="home-section home-insight-section collapsed" id="homeWeeklyInsightSection" style="margin-bottom: 16px;">
-    <div class="home-insight-header" onclick="toggleWeeklyInsight()">
-      <span>📊 Weekly Insight</span>
-      <button class="insight-regen-btn" onclick="event.stopPropagation(); regenerateWeeklyInsight()" title="Regenerate">↻</button>
-      <span class="chev">▾</span>
-    </div>
-    <div class="home-insight-body" id="homeWeeklyInsightContent">
-      <p style="color:var(--text2)">Loading...</p>
-    </div>
-  </section>
-  <div class="home-grid">
-    <section class="home-section">
-      <h2 class="section-title">Morning Outlook</h2>
-      <div id="homeOutlookContent"><p style="color:var(--text2)">Loading...</p></div>
+  <div class="sidebar-header" id="homePageHeader">&#8962; Home</div>
+
+  <!-- UV / Weather Alert (summer only) -->
+  <div id="uvAlertArea" style="margin:0 0 12px;"></div>
+
+  <!-- School mode: Morning Outlook + Weekly Insight (hidden in summer) -->
+  <div id="schoolHomeContent">
+    <section class="home-section home-insight-section collapsed" id="homeWeeklyInsightSection" style="margin-bottom: 16px;">
+      <div class="home-insight-header" onclick="toggleWeeklyInsight()">
+        <span>📊 Weekly Insight</span>
+        <button class="insight-regen-btn" onclick="event.stopPropagation(); regenerateWeeklyInsight()" title="Regenerate">↻</button>
+        <span class="chev">▾</span>
+      </div>
+      <div class="home-insight-body" id="homeWeeklyInsightContent">
+        <p style="color:var(--text2)">Loading...</p>
+      </div>
     </section>
-    <section class="home-section">
-      <h2 class="section-title">Today's Plan</h2>
-      <div id="homePlanContent"><p style="color:var(--text2)">Loading...</p></div>
-    </section>
+    <div class="home-grid">
+      <section class="home-section">
+        <h2 class="section-title">Morning Outlook</h2>
+        <div id="homeOutlookContent"><p style="color:var(--text2)">Loading...</p></div>
+      </section>
+      <section class="home-section">
+        <h2 class="section-title">Today's Plan</h2>
+        <div id="homePlanContent"><p style="color:var(--text2)">Loading...</p></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Summer mode content (hidden in school mode) -->
+  <div id="summerHomeContent" style="display:none;">
+    <!-- Bucket List Progress -->
+    <div class="sidebar-section">
+      <div id="summerBucketProgress" class="bucket-progress-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-weight:600;font-size:13px;">&#127774; Bucket List</span>
+          <span id="bucketProgressText" style="font-size:12px;color:var(--text3);">0 / 0</span>
+        </div>
+        <div class="bucket-progress-bar-wrap"><div class="bucket-progress-bar" id="bucketProgressBar" style="width:0%;"></div></div>
+        <div style="font-size:11px;color:var(--text3);">adventures completed this summer</div>
+      </div>
+    </div>
+
+    <!-- Critical Tasks Only -->
+    <div class="sidebar-section">
+      <h2 class="section-title" style="font-size:13px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;padding:10px 0 0;">Critical Tasks</h2>
+      <div id="summerCriticalTasks">
+        <p style="color:var(--text3);font-size:13px;">Loading...</p>
+      </div>
+    </div>
+
+    <!-- Job Schedule (shown when hasSummerJob) -->
+    <div class="sidebar-section" id="jobScheduleSection" style="display:none;">
+      <h2 class="section-title" style="font-size:13px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;padding:10px 0 0;">&#128198; Work Schedule</h2>
+      <div id="jobScheduleList"><p style="color:var(--text3);font-size:13px;">Loading...</p></div>
+    </div>
   </div>
 </div>
 
@@ -3622,40 +3675,6 @@ margin-bottom: 0;
     <div class="meal-empty-icon">&#127869;</div>
     <div class="meal-empty-title">No plan yet</div>
     <div class="meal-empty-desc">List the ingredients you have on hand above and I'll design a high-protein, weight-cutting meal plan for tomorrow.</div>
-  </div>
-</div>
-
-<!-- ── Summer Home Page ── -->
-<div class="page" id="page-summer-home">
-  <div class="sidebar-header">&#9728;&#65039; Summer Overview</div>
-
-  <!-- UV / Weather Alert -->
-  <div id="uvAlertArea" style="margin:0 0 12px;"></div>
-
-  <!-- Bucket List Progress -->
-  <div class="sidebar-section">
-    <div id="summerBucketProgress" class="bucket-progress-card">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <span style="font-weight:600;font-size:13px;">&#127774; Bucket List</span>
-        <span id="bucketProgressText" style="font-size:12px;color:var(--text3);">0 / 0</span>
-      </div>
-      <div class="bucket-progress-bar-wrap"><div class="bucket-progress-bar" id="bucketProgressBar" style="width:0%;"></div></div>
-      <div style="font-size:11px;color:var(--text3);">adventures completed this summer</div>
-    </div>
-  </div>
-
-  <!-- Critical Tasks Only -->
-  <div class="sidebar-section">
-    <h2 class="section-title" style="font-size:13px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Critical Tasks</h2>
-    <div id="summerCriticalTasks">
-      <p style="color:var(--text3);font-size:13px;">Loading...</p>
-    </div>
-  </div>
-
-  <!-- Job Schedule (shown when hasSummerJob) -->
-  <div class="sidebar-section" id="jobScheduleSection" style="display:none;">
-    <h2 class="section-title" style="font-size:13px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">&#128198; Work Schedule</h2>
-    <div id="jobScheduleList"><p style="color:var(--text3);font-size:13px;">Loading...</p></div>
   </div>
 </div>
 
@@ -3892,13 +3911,14 @@ function navigateTo(pageName) {
   var btn = document.querySelector('.circle-btn[data-page="' + pageName + '"]');
   if (btn) btn.classList.add('active');
   updateNavMenuLabel(pageName);
-  if (pageName === 'home') loadHomePage();
+  if (pageName === 'home') {
+    if (_currentAppMode === 'summer') refreshSummerHome(); else loadHomePage();
+  }
   else if (pageName === 'tasks') loadSidebarData();
   else if (pageName === 'assignments') loadAssignments();
   else if (pageName === 'plan') loadDailyPlan();
   else if (pageName === 'projects') loadProjects();
   else if (pageName === 'meals') loadMealsPage();
-  else if (pageName === 'summer-home') refreshSummerHome();
   else if (pageName === 'summer-bucket') loadBucketList();
   else if (pageName === 'chat') {
     var msgs = document.getElementById('chatMessages');
@@ -4246,20 +4266,25 @@ function applyAppMode(mode) {
   _currentAppMode = mode;
   localStorage.setItem('appMode', mode);
   const isSummer = mode === 'summer';
-  // Toggle school-only nav elements
+
+  // Show/hide school-only and summer-only nav items
   document.querySelectorAll('.school-nav').forEach(el => { el.style.display = isSummer ? 'none' : ''; });
-  // Toggle summer-only nav elements
   document.querySelectorAll('.summer-nav').forEach(el => { el.style.display = isSummer ? '' : 'none'; });
-  // If currently on a school-only page, redirect to home
-  const schoolOnlyPages = ['assignments', 'plan', 'chat'];
+
+  // Swap home page content panels
+  const schoolContent = document.getElementById('schoolHomeContent');
+  const summerContent = document.getElementById('summerHomeContent');
+  const homeHeader = document.getElementById('homePageHeader');
+  if (schoolContent) schoolContent.style.display = isSummer ? 'none' : '';
+  if (summerContent) summerContent.style.display = isSummer ? '' : 'none';
+  if (homeHeader) homeHeader.textContent = isSummer ? '☀️ Summer' : '⌂ Home';
+
+  // If on a school-only page redirect to home
+  const schoolOnlyPages = ['assignments', 'plan'];
   const activePage = document.querySelector('.page.active');
   if (isSummer && activePage) {
     const pid = activePage.id.replace('page-', '');
     if (schoolOnlyPages.includes(pid)) navigateTo('home');
-  }
-  // Refresh summer home data if navigating to it
-  if (isSummer) {
-    refreshSummerHome();
   }
 }
 
@@ -8473,9 +8498,7 @@ loadProjects();
     localStorage.setItem('appMode', mode);
     _currentAppMode = mode;
     applyAppMode(mode);
-    // Default to summer-home in summer mode
-    if (mode === 'summer') navigateTo('summer-home');
-    else navigateTo('home');
+    navigateTo('home');
   }).catch(() => navigateTo('home'));
 })();
 
