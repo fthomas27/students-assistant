@@ -241,6 +241,7 @@ CANVAS_API_TOKEN = os.environ.get("CANVAS_API_TOKEN", "")
 CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/")
 SPORTS_ICAL_URL = os.environ.get("SPORTS_ICAL_URL", "")
 JOB_SCHEDULE_ICAL_URL = os.environ.get("JOB_SCHEDULE_ICAL_URL", "")
+MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "").strip()
 RED_DAY_ICAL_URL = os.environ.get("RED_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_7ufb5f1vj8aks1shds5ou4fhe8%40group.calendar.google.com/public/basic.ics")
 WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_64ohm1bccvi50iti8fe455stkg%40group.calendar.google.com/public/basic.ics")
 
@@ -666,6 +667,56 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""", (k, str(v)))
         _config_cache = None  # invalidate
 
 
+# ── Mem0 long-term memory ──────────────────────────────────────────────────────
+_mem0_client = None
+_mem0_client_lock = threading.Lock()
+
+def _get_mem0_client():
+    """Return a cached Mem0 MemoryClient, or None if MEM0_API_KEY is not set."""
+    global _mem0_client
+    if not MEM0_API_KEY:
+        return None
+    with _mem0_client_lock:
+        if _mem0_client is None:
+            try:
+                from mem0 import MemoryClient
+                _mem0_client = MemoryClient(api_key=MEM0_API_KEY)
+            except Exception as e:
+                log.warning("Mem0 client init failed: %s", e)
+                return None
+        return _mem0_client
+
+
+def _mem0_store_worker(user_content, assistant_content):
+    """Background: send user+assistant exchange to Mem0 for memory extraction."""
+    try:
+        client = _get_mem0_client()
+        if not client:
+            return
+        client.add(
+            [
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": assistant_content},
+            ],
+            user_id="student",
+        )
+    except Exception as e:
+        log.debug("Mem0 store error: %s", e)
+
+
+def _mem0_maybe_store_async(user_content, assistant_content):
+    """Fire-and-forget: extract and store memories from a chat exchange."""
+    if not MEM0_API_KEY or not user_content or not assistant_content:
+        return
+    t = threading.Thread(
+        target=_mem0_store_worker,
+        args=(user_content[:4000], assistant_content[:4000]),
+        daemon=True,
+    )
+    t.start()
+
+
+# ── iCal caching ──────────────────────────────────────────────────────────────
 _ical_cache = {}  # url -> (monotonic_time, Calendar)
 _ical_cache_lock = threading.Lock()
 _ical_inflight = {}  # url -> threading.Event for request coalescing
@@ -1929,6 +1980,16 @@ def generate_briefing(force=False):
             events_text, tasks_text,
         )
 
+        if MEM0_API_KEY:
+            try:
+                _m0_hits = _get_mem0_client().search("student goals study habits priorities schedule energy", user_id="student", limit=5)
+                if _m0_hits:
+                    _mem_lines = "\n".join(f"- {h['memory']}" for h in _m0_hits if h.get("memory"))
+                    if _mem_lines:
+                        prompt += "\n\nSTUDENT LONG-TERM CONTEXT (from memory — factor in naturally):\n" + _mem_lines
+            except Exception as _e:
+                log.debug("Mem0 briefing search error: %s", _e)
+
         try:
             client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
             message = client.messages.create(
@@ -2032,6 +2093,16 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
             "Maintain a refined, insightful tone. Offer constructive observations balanced with professional encouragement. "
             "Dispense with introductory pleasantries—proceed directly to substance."
         ) % (name, now_str, done_text, metrics_text, time_breakdown, remaining_text, tasks_text)
+
+        if MEM0_API_KEY:
+            try:
+                _m0d_hits = _get_mem0_client().search("productivity accomplishments energy habits goals", user_id="student", limit=5)
+                if _m0d_hits:
+                    _mem_lines_d = "\n".join(f"- {h['memory']}" for h in _m0d_hits if h.get("memory"))
+                    if _mem_lines_d:
+                        prompt += "\n\nSTUDENT LONG-TERM CONTEXT (from memory — factor in naturally):\n" + _mem_lines_d
+            except Exception as _e:
+                log.debug("Mem0 debrief search error: %s", _e)
 
         try:
             client = anthropic.Anthropic(api_key=api_key, max_retries=3, timeout=60.0)
@@ -2276,6 +2347,17 @@ def auto_generate_meal_plan():
         for pt, items in prefs_by_type.items():
             pref_lines.append(f"  {pt}: {', '.join(items)}")
         pref_context = "\n".join(pref_lines) if pref_lines else "  None recorded yet."
+
+        # Augment preferences with Mem0 long-term memories about food/diet
+        if MEM0_API_KEY:
+            try:
+                _m0_food = _get_mem0_client().search("food diet nutrition preferences allergies meals", user_id="student", limit=5)
+                if _m0_food:
+                    _mem_food = "\n".join(f"  {h['memory']}" for h in _m0_food if h.get("memory"))
+                    if _mem_food:
+                        pref_context += "\nAdditional preferences from long-term memory:\n" + _mem_food
+            except Exception as _e:
+                log.debug("Mem0 meal plan search error: %s", _e)
 
         name = get_config().get("name", "Finn")
         tomorrow = (datetime.now(TZ) + timedelta(days=1)).date()
@@ -4232,6 +4314,48 @@ def api_meal_preferences_delete(pref_id):
     return jsonify({"status": "ok"})
 
 
+# ── Mem0 Memory Management Endpoints ─────────────────────────────────────────
+
+@app.route("/api/memories", methods=["GET"])
+def api_memories_get():
+    """List all stored Mem0 long-term memories for the student."""
+    if not MEM0_API_KEY:
+        return jsonify({"memories": [], "configured": False})
+    try:
+        client = _get_mem0_client()
+        if not client:
+            return jsonify({"memories": [], "configured": False})
+        all_mems = client.get_all(user_id="student")
+        memories = [
+            {
+                "id": m.get("id", ""),
+                "memory": m.get("memory", ""),
+                "created_at": m.get("created_at", ""),
+            }
+            for m in (all_mems or [])
+        ]
+        return jsonify({"memories": memories, "configured": True, "count": len(memories)})
+    except Exception as e:
+        log.error("api_memories_get error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/memories/<memory_id>", methods=["DELETE"])
+def api_memories_delete(memory_id):
+    """Delete a specific memory by its Mem0 memory_id."""
+    if not MEM0_API_KEY:
+        return jsonify({"error": "MEM0_API_KEY not configured"}), 400
+    try:
+        client = _get_mem0_client()
+        if not client:
+            return jsonify({"error": "Mem0 client unavailable"}), 500
+        client.delete(memory_id)
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.error("api_memories_delete error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/complete", methods=["POST"])
 def api_complete():
     data = request.get_json(force=True) or {}
@@ -5971,6 +6095,30 @@ JARVIS_TOOLS = [
             "required": ["title"],
         },
     },
+    {
+        "name": "save_memory",
+        "description": (
+            "Save an important fact, preference, or insight about the student to long-term memory "
+            "so Jarvis can recall it in future conversations without being reminded. Use this "
+            "proactively when the student shares something personally significant: goals, preferences, "
+            "relationships, challenges, life events, study habits, or anything they'd want Jarvis to "
+            "remember. Write the memory as a clear, self-contained third-person statement."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "memory": {
+                    "type": "string",
+                    "description": (
+                        "A clear, standalone fact about the student written in third person. "
+                        "E.g. 'Student's goal is a 4.0 GPA this semester' or "
+                        "'Student prefers studying in the morning before 10 AM'."
+                    ),
+                },
+            },
+            "required": ["memory"],
+        },
+    },
 ]
 
 
@@ -6340,6 +6488,21 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 return {"error": "Could not load assignment details."}
             detail["course"] = course_name
             return detail
+
+        elif name == "save_memory":
+            memory_text = str(inputs.get("memory", "")).strip()[:1000]
+            if not memory_text:
+                return {"status": "skipped", "reason": "empty memory text"}
+            if not MEM0_API_KEY:
+                return {"status": "skipped", "reason": "MEM0_API_KEY not configured"}
+            try:
+                _get_mem0_client().add(
+                    [{"role": "assistant", "content": memory_text}],
+                    user_id="student",
+                )
+                return {"status": "saved", "memory": memory_text}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
 
         else:
             return {"error": f"Unknown tool: {name}"}
@@ -6777,6 +6940,35 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
         except Exception:
             log.warning("/api/chat could not load conversation recall")
 
+        # Inject Mem0 long-term memories relevant to the current message
+        if MEM0_API_KEY and messages:
+            try:
+                _latest_user_text = ""
+                for _m in reversed(messages):
+                    if _m.get("role") == "user":
+                        _c = _m.get("content", "")
+                        if isinstance(_c, list):
+                            _c = " ".join(b.get("text", "") for b in _c if isinstance(b, dict) and b.get("type") == "text")
+                        _latest_user_text = str(_c)[:300]
+                        break
+                if _latest_user_text:
+                    from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TE
+                    with _TPE(max_workers=1) as _ex:
+                        _fut = _ex.submit(_get_mem0_client().search, _latest_user_text, user_id="student", limit=6)
+                        try:
+                            _hits = _fut.result(timeout=2.5)
+                            if _hits:
+                                _mem_lines = "\n".join(f"- {h['memory']}" for h in _hits if h.get("memory"))
+                                if _mem_lines:
+                                    system_dynamic += (
+                                        "\n\nLONG-TERM MEMORY (facts Jarvis has learned about this student — "
+                                        "use naturally, do not recite verbatim):\n" + _mem_lines
+                                    )
+                        except _TE:
+                            log.debug("Mem0 search timed out — skipping")
+            except Exception as _e:
+                log.debug("Mem0 search error: %s", _e)
+
         # Persist the latest incoming user message before we start streaming.
         try:
             latest_user = next(
@@ -7005,6 +7197,14 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                     if _final_text_box[0]:
                         _chat_persist_message(conversation_id, "assistant", _final_text_box[0])
                     _chat_maybe_summarize_async(conversation_id, _api_key_for_summary)
+                    # Extract and store long-term memories from this exchange
+                    _user_text_for_mem0 = ""
+                    if latest_user:
+                        _uv = latest_user.get("content", "")
+                        if isinstance(_uv, list):
+                            _uv = " ".join(b.get("text", "") for b in _uv if isinstance(b, dict) and b.get("type") == "text")
+                        _user_text_for_mem0 = str(_uv)
+                    _mem0_maybe_store_async(_user_text_for_mem0, _final_text_box[0])
                 except Exception:
                     pass
 
