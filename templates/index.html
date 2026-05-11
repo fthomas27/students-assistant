@@ -6810,6 +6810,8 @@ async function sendMessage() {
     }
 
     const activeChips = new Map(); // tool_use_id -> { el, name, kind }
+    // Tools that run silently in the background — no chip shown to the user
+    const SILENT_TOOLS = new Set(['remember_person', 'save_memory']);
     function chipLabelFor(name, kind, input) {
       if (name === 'web_search') {
         const q = input && input.query ? String(input.query).slice(0, 60) : '';
@@ -6901,12 +6903,16 @@ async function sendMessage() {
           try { localStorage.setItem('currentConversationId', data.conversation_id); } catch (_e) {}
         }
       } else if (eventName === 'tool_start') {
-        ensureChip(data.id || ('chip-' + Date.now()), data.name, data.kind, null);
+        if (!SILENT_TOOLS.has(data.name)) {
+          ensureChip(data.id || ('chip-' + Date.now()), data.name, data.kind, null);
+        }
       } else if (eventName === 'tool_input_delta') {
         // Currently unused — tool_end carries the final input — but we keep the
         // event hook live so future UI tweaks can show the query as it streams.
       } else if (eventName === 'tool_end') {
-        finishChip(data.id, data.name, data.input || null);
+        if (!SILENT_TOOLS.has(data.name)) {
+          finishChip(data.id, data.name, data.input || null);
+        }
       } else if (eventName === 'text') {
         attachBubble();
         if (data && typeof data.delta === 'string') {

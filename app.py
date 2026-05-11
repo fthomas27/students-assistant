@@ -6191,12 +6191,12 @@ JARVIS_TOOLS = [
     {
         "name": "remember_person",
         "description": (
-            "Create or update a profile for someone the student mentions. Call this whenever the student "
-            "mentions a person by name — friend, family member, teacher, coach, classmate, or anyone else. "
-            "Add any facts shared: relationship, grade/age, school/work, interests, personality, what they "
-            "were doing together, etc. For public figures (teachers, coaches, local staff), you may also "
-            "use web_search to look up additional public information to enrich the profile. "
-            "Always call this proactively — do not wait to be asked."
+            "Create or update a person's profile when the student shares NEW facts about them. "
+            "Only call this when you have at least one of: the relationship type, or one or more new facts "
+            "(grade/age, school, sport, personality trait, something they did together, etc.). "
+            "Do NOT call it for bare name mentions with no new detail — 'I talked to Jake' alone is not enough. "
+            "For public figures (teachers, coaches, local staff), you may also use web_search to look up "
+            "additional public information before calling this tool."
         ),
         "input_schema": {
             "type": "object",
@@ -6212,7 +6212,7 @@ JARVIS_TOOLS = [
                 "facts": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of specific facts about this person. Each fact is a clear standalone sentence. E.g. ['Plays on the basketball team', 'Goes to Park City High School', 'Is in 11th grade', 'Likes gaming'].",
+                    "description": "New facts about this person not already stored. Each is a clear standalone sentence. E.g. ['Plays on the basketball team', 'Is in 11th grade', 'Likes gaming'].",
                 },
             },
             "required": ["name"],
@@ -6642,6 +6642,13 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             # Fetch existing profile
             cur.execute("SELECT relationship, facts FROM people_profiles WHERE name = %s", (person_name,))
             row = cur.fetchone()
+
+            # Skip entirely if profile already exists and there's nothing new to add
+            if row and not new_facts and not relationship:
+                cur.close()
+                conn.close()
+                return {"status": "skipped", "reason": "no new information to store"}
+
             if row:
                 existing_relationship = row["relationship"] or relationship
                 try:
@@ -6978,14 +6985,17 @@ def api_chat():
             "- Always confirm what you did in natural Jarvis character after calling a tool. "
             "Never call a tool the student did not ask for. Read back the key details before confirming so the "
             "student can catch any error.\n"
-            "- PEOPLE MEMORY: Whenever the student mentions a person by name — friend, family member, teacher, "
-            "coach, classmate, anyone — call remember_person immediately with their name, relationship, and any "
-            "facts shared (grade, school, interests, what they did together, personality traits, etc.). "
-            "Do this in the background — do not announce it or make it the subject of your reply. "
+            "- PEOPLE MEMORY: Call remember_person ONLY when there is genuinely new information to store — "
+            "at minimum the relationship type, at least one new fact about the person, or both. "
+            "A bare name mention with no new detail (e.g. 'I was talking to Jake' with nothing else) is NOT "
+            "enough — do not call the tool in that case. When new facts are present (grade, school, sport, "
+            "personality, what you did together, etc.), call remember_person silently in the background — "
+            "do not announce it or make it the subject of your reply. "
             "When you encounter a name you've seen before, use get_person_profile silently to retrieve their "
-            "profile so your response is informed by what you already know. For public figures (teachers, coaches, "
-            "local staff) you may optionally use web_search to enrich the profile with public information "
-            "before calling remember_person. "
+            "profile so your response is informed by what you already know; then only call remember_person "
+            "again if new facts emerged in this message. "
+            "For public figures (teachers, coaches, local staff) you may optionally use web_search to enrich "
+            "the profile with public information before calling remember_person. "
             "When the student asks 'what do you know about X?' or 'who is X?', call get_person_profile and "
             "present the profile conversationally. Use list_people when asked who Jarvis remembers.\n"
             "- SAVE_MEMORY: Call save_memory for significant personal facts about the student themselves "
