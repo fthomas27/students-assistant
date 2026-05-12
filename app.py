@@ -42,7 +42,7 @@ app.permanent_session_lifetime = timedelta(days=30)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SECURE=True,
-    SESSION_COOKIE_SAMESITE='Strict',
+    SESSION_COOKIE_SAMESITE='Lax',
     PREFERRED_URL_SCHEME='https'
 )
 
@@ -741,9 +741,7 @@ def _get_google_credentials():
         creds.refresh(GoogleRequest())
         return creds
     except Exception as e:
-        log.warning("Google credentials refresh failed (token may be revoked — re-auth needed): %s", e)
-        # Clear the bad token so the status endpoint correctly reports unauthorized
-        set_config({"google_refresh_token": ""})
+        log.warning("Google credentials refresh failed: %s", e)
         return None
 
 
@@ -9290,7 +9288,7 @@ def google_auth_callback():
         return redirect("/login")
     state = session.pop("google_oauth_state", None)
     if not state or state != request.args.get("state"):
-        return "OAuth state mismatch — please try again.", 400
+        return "OAuth state mismatch — your session cookie may have been blocked. Please clear cookies and try again.", 400
     try:
         from google_auth_oauthlib.flow import Flow
         redirect_uri = GOOGLE_REDIRECT_URI or request.url_root.rstrip("/") + "/google-auth/callback"
@@ -9321,10 +9319,31 @@ def google_auth_status():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
     configured = _google_configured()
-    authorized = bool(configured and get_config().get("google_refresh_token", "").strip())
+    has_token = bool(configured and get_config().get("google_refresh_token", "").strip())
+    refresh_error = None
+    authorized = False
+    if has_token:
+        try:
+            from google.oauth2.credentials import Credentials
+            from google.auth.transport.requests import Request as GoogleRequest
+            refresh_token = get_config().get("google_refresh_token", "").strip()
+            creds = Credentials(
+                token=None,
+                refresh_token=refresh_token,
+                client_id=GOOGLE_CLIENT_ID,
+                client_secret=GOOGLE_CLIENT_SECRET,
+                token_uri="https://oauth2.googleapis.com/token",
+                scopes=GOOGLE_SCOPES,
+            )
+            creds.refresh(GoogleRequest())
+            authorized = True
+        except Exception as e:
+            refresh_error = str(e)
     return jsonify({
         "configured": configured,
+        "has_token": has_token,
         "authorized": authorized,
+        "refresh_error": refresh_error,
         "auth_url": "/google-auth/start" if configured and not authorized else None,
     })
 
