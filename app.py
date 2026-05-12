@@ -42,7 +42,7 @@ app.permanent_session_lifetime = timedelta(days=30)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SECURE=True,
-    SESSION_COOKIE_SAMESITE='Strict',
+    SESSION_COOKIE_SAMESITE='Lax',
     PREFERRED_URL_SCHEME='https'
 )
 
@@ -9223,7 +9223,7 @@ def google_auth_callback():
         return redirect("/login")
     state = session.pop("google_oauth_state", None)
     if not state or state != request.args.get("state"):
-        return "OAuth state mismatch — please try again.", 400
+        return "OAuth state mismatch — your session cookie may have been blocked. Please clear cookies and try again.", 400
     try:
         from google_auth_oauthlib.flow import Flow
         redirect_uri = GOOGLE_REDIRECT_URI or request.url_root.rstrip("/") + "/google-auth/callback"
