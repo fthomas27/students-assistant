@@ -465,7 +465,7 @@ def init_db():
         ("debrief_cache", "CREATE TABLE IF NOT EXISTS debrief_cache (id INT PRIMARY KEY DEFAULT 1, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL DEFAULT '')"),
         ("insight_cache", "CREATE TABLE IF NOT EXISTS insight_cache (id INT PRIMARY KEY DEFAULT 1, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL DEFAULT '')"),
         ("tasks", "CREATE TABLE IF NOT EXISTS tasks (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, due_date DATE, created_by_parent BOOLEAN NOT NULL DEFAULT FALSE)"),
-        ("projects", "CREATE TABLE IF NOT EXISTS projects (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', lead TEXT NOT NULL DEFAULT '', members TEXT NOT NULL DEFAULT '', last_checkin TIMESTAMPTZ, checkin_interval_days INT NOT NULL DEFAULT 7)"),
+        ("projects", "CREATE TABLE IF NOT EXISTS projects (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', lead TEXT NOT NULL DEFAULT '', members TEXT NOT NULL DEFAULT '', last_checkin TIMESTAMPTZ, checkin_interval_days INT NOT NULL DEFAULT 7, done_at TIMESTAMPTZ)"),
         ("project_notes", "CREATE TABLE IF NOT EXISTS project_notes (id SERIAL PRIMARY KEY, project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), content TEXT NOT NULL)"),
         ("project_tasks", "CREATE TABLE IF NOT EXISTS project_tasks (id SERIAL PRIMARY KEY, project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', assignee TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', due_date DATE)"),
         ("recurring_tasks", "CREATE TABLE IF NOT EXISTS recurring_tasks (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', recurrence TEXT NOT NULL, last_created_at TIMESTAMPTZ, active BOOLEAN NOT NULL DEFAULT TRUE)"),
@@ -587,6 +587,14 @@ ON CONFLICT (ip_address) DO NOTHING""")
 
     try:
         cur.execute("ALTER TABLE completions ADD COLUMN submitted BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    try:
+        cur.execute("ALTER TABLE projects ADD COLUMN done_at TIMESTAMPTZ")
         conn.commit()
     except psycopg2.Error:
         conn.rollback()
@@ -2297,17 +2305,21 @@ ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content"
 
 
 def cleanup_old_data():
-    """Prune daily_plans rows older than 60 days. daily_plan_items cascades."""
+    """Prune old data: daily_plans older than 60 days; done projects older than 7 days."""
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute("DELETE FROM daily_plans WHERE plan_date < CURRENT_DATE - INTERVAL '60 days'")
-        deleted = cur.rowcount
+        deleted_plans = cur.rowcount
+        cur.execute("DELETE FROM projects WHERE status = 'done' AND done_at < NOW() - INTERVAL '7 days'")
+        deleted_projects = cur.rowcount
         conn.commit()
         cur.close()
         conn.close()
-        if deleted:
-            log.info("cleanup_old_data: deleted %d daily_plans rows older than 60 days", deleted)
+        if deleted_plans:
+            log.info("cleanup_old_data: deleted %d daily_plans rows older than 60 days", deleted_plans)
+        if deleted_projects:
+            log.info("cleanup_old_data: deleted %d done projects older than 7 days", deleted_projects)
     except Exception as e:
         log.error("cleanup_old_data error: %s", e)
 
@@ -5571,6 +5583,14 @@ def api_projects_update(project_id):
             except (TypeError, ValueError):
                 if key == "checkin_interval_days":
                     updates[db_field] = 7
+
+    # Track when a project is marked done (for 7-day auto-delete)
+    if "status" in data:
+        new_status = str(data["status"]).strip().lower()
+        if new_status == "done":
+            updates["done_at"] = pgsql.SQL("NOW()")
+        else:
+            updates["done_at"] = pgsql.SQL("NULL")
 
     # Add checkin_now if requested
     if data.get("checkin_now"):
