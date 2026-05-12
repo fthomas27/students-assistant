@@ -741,7 +741,9 @@ def _get_google_credentials():
         creds.refresh(GoogleRequest())
         return creds
     except Exception as e:
-        log.warning("Google credentials refresh failed: %s", e)
+        log.warning("Google credentials refresh failed (token may be revoked — re-auth needed): %s", e)
+        # Clear the bad token so the status endpoint correctly reports unauthorized
+        set_config({"google_refresh_token": ""})
         return None
 
 
@@ -7006,7 +7008,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             if creds is None:
                 if not _google_configured():
                     return {"error": "Google not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables."}
-                return {"error": "Google not authorized. Visit /google-auth/start to connect your Google account."}
+                return {"error": "Google account not connected or token expired. Please visit /google-auth/start to re-link your Google account."}
 
             from googleapiclient.discovery import build as _gbuild
 
@@ -9305,6 +9307,9 @@ def google_auth_callback():
         if creds.refresh_token:
             set_config({"google_refresh_token": creds.refresh_token})
             log.info("Google refresh token stored successfully")
+        else:
+            log.error("Google OAuth callback: no refresh_token returned — authorization incomplete")
+            return redirect("/?google_error=no_refresh_token")
         return redirect("/?google_connected=1")
     except Exception as e:
         log.error("google_auth_callback error: %s", e)
