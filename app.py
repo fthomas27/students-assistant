@@ -245,6 +245,21 @@ MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "").strip()
 RED_DAY_ICAL_URL = os.environ.get("RED_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_7ufb5f1vj8aks1shds5ou4fhe8%40group.calendar.google.com/public/basic.ics")
 WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_64ohm1bccvi50iti8fe455stkg%40group.calendar.google.com/public/basic.ics")
 
+# ── Google OAuth2 ──────────────────────────────────────────────────────────────
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/classroom.courses.readonly",
+    "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
+    "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly",
+    "https://www.googleapis.com/auth/gmail.readonly",
+]
+
 # ── Default values ─────────────────────────────────────────────────────────────
 DEFAULT_ESTIMATE_MINS = 30
 
@@ -695,6 +710,50 @@ def _get_mem0_client():
                 log.warning("Mem0 client init failed: %s", e)
                 return None
         return _mem0_client
+
+
+# ── Google OAuth2 helpers ──────────────────────────────────────────────────────
+
+def _google_configured():
+    return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+
+
+def _get_google_credentials():
+    """Return refreshed google.oauth2.credentials.Credentials, or None if not authorized."""
+    if not _google_configured():
+        return None
+    refresh_token = get_config().get("google_refresh_token", "").strip()
+    if not refresh_token:
+        return None
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request as GoogleRequest
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET,
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=GOOGLE_SCOPES,
+        )
+        creds.refresh(GoogleRequest())
+        return creds
+    except Exception as e:
+        log.warning("Google credentials refresh failed: %s", e)
+        return None
+
+
+def _google_client_config():
+    redirect_uri = GOOGLE_REDIRECT_URI or "http://localhost:5000/google-auth/callback"
+    return {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri],
+        }
+    }
 
 
 def _mem0_store_worker(user_content, assistant_content):
@@ -6269,6 +6328,106 @@ JARVIS_TOOLS = [
             "properties": {},
         },
     },
+    # ── Google Workspace tools ────────────────────────────────────────────────
+    {
+        "name": "search_google_drive",
+        "description": (
+            "Search Google Drive for files by name or content. Returns file IDs, names, types, and "
+            "modification dates. Use when the student asks about a document, notes, or file stored in Drive."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search terms, e.g. 'biology notes' or 'AP Calc study guide'"},
+                "max_results": {"type": "integer", "description": "Max files to return (default 10, max 20)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "read_google_drive_file",
+        "description": (
+            "Read the text content of a Google Drive file — supports Google Docs, Sheets (as CSV), "
+            "Slides, and plain text. Pass the file ID from search_google_drive."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "Google Drive file ID"},
+                "file_name": {"type": "string", "description": "Optional: file name hint for context"},
+            },
+            "required": ["file_id"],
+        },
+    },
+    {
+        "name": "list_google_drive_files",
+        "description": "List files in Google Drive. Optionally pass a folder_id to list a specific folder.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "folder_id": {"type": "string", "description": "Drive folder ID to list (omit for recent/all files)"},
+                "max_results": {"type": "integer", "description": "Max files to return (default 20, max 50)"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "read_google_sheet",
+        "description": "Read rows from a Google Sheets spreadsheet. Returns a 2-D array of cell values.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "spreadsheet_id": {"type": "string", "description": "Google Sheets file ID (from Drive search)"},
+                "range": {"type": "string", "description": "A1-notation range like 'Sheet1!A1:Z100'; omit to read first sheet"},
+            },
+            "required": ["spreadsheet_id"],
+        },
+    },
+    {
+        "name": "list_google_classroom_courses",
+        "description": "List the student's active Google Classroom courses (name, section, ID).",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_google_classroom_assignments",
+        "description": (
+            "Get coursework and assignments for a Google Classroom course. "
+            "Use the course ID from list_google_classroom_courses."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "course_id": {"type": "string", "description": "Google Classroom course ID"},
+            },
+            "required": ["course_id"],
+        },
+    },
+    {
+        "name": "search_gmail",
+        "description": (
+            "Search Gmail for messages matching a query. Returns subjects, senders, dates, and snippets. "
+            "Useful for finding emails from teachers, school notices, or assignment feedback."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Gmail search query, e.g. 'from:teacher@school.edu subject:grade'"},
+                "max_results": {"type": "integer", "description": "Max messages to return (default 10, max 25)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "read_gmail_message",
+        "description": "Read the full body of a Gmail message by its ID (from search_gmail).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Gmail message ID"},
+            },
+            "required": ["message_id"],
+        },
+    },
 ]
 
 
@@ -6788,6 +6947,197 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                     "last_updated": r["updated_at"].isoformat() if r["updated_at"] else None,
                 })
             return {"people": people, "count": len(people)}
+
+        # ── Google Workspace tools ────────────────────────────────────────────
+        elif name in ("search_google_drive", "read_google_drive_file", "list_google_drive_files",
+                      "read_google_sheet", "list_google_classroom_courses",
+                      "get_google_classroom_assignments", "search_gmail", "read_gmail_message"):
+            creds = _get_google_credentials()
+            if creds is None:
+                if not _google_configured():
+                    return {"error": "Google not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables."}
+                return {"error": "Google not authorized. Visit /google-auth/start to connect your Google account."}
+
+            from googleapiclient.discovery import build as _gbuild
+
+            if name == "search_google_drive":
+                query_raw = str(inputs.get("query", "")).strip()
+                if not query_raw:
+                    return {"error": "query is required"}
+                max_results = min(int(inputs.get("max_results", 10)), 20)
+                safe_q = query_raw.replace("\\", "\\\\").replace("'", "\\'")
+                drive_query = f"(name contains '{safe_q}' or fullText contains '{safe_q}') and trashed=false"
+                svc = _gbuild("drive", "v3", credentials=creds, cache_discovery=False)
+                result = svc.files().list(
+                    q=drive_query,
+                    pageSize=max_results,
+                    fields="files(id,name,mimeType,modifiedTime,webViewLink,parents)",
+                ).execute()
+                files = result.get("files", [])
+                return {"files": files, "count": len(files)}
+
+            elif name == "read_google_drive_file":
+                file_id = str(inputs.get("file_id", "")).strip()
+                if not file_id:
+                    return {"error": "file_id is required"}
+                svc = _gbuild("drive", "v3", credentials=creds, cache_discovery=False)
+                meta = svc.files().get(fileId=file_id, fields="name,mimeType").execute()
+                mime = meta.get("mimeType", "")
+                name_hint = meta.get("name", inputs.get("file_name", file_id))
+                google_export_map = {
+                    "application/vnd.google-apps.document": "text/plain",
+                    "application/vnd.google-apps.spreadsheet": "text/csv",
+                    "application/vnd.google-apps.presentation": "text/plain",
+                    "application/vnd.google-apps.drawing": "image/svg+xml",
+                }
+                if mime in google_export_map:
+                    export_mime = google_export_map[mime]
+                    if export_mime == "image/svg+xml":
+                        return {"file_id": file_id, "name": name_hint, "mime_type": mime, "content": None, "note": "Drawing files cannot be exported as text."}
+                    raw = svc.files().export(fileId=file_id, mimeType=export_mime).execute()
+                    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+                elif mime.startswith("text/"):
+                    import io
+                    from googleapiclient.http import MediaIoBaseDownload
+                    buf = io.BytesIO()
+                    dl = MediaIoBaseDownload(buf, svc.files().get_media(fileId=file_id))
+                    done = False
+                    while not done:
+                        _, done = dl.next_chunk()
+                    text = buf.getvalue().decode("utf-8", errors="replace")
+                else:
+                    return {"file_id": file_id, "name": name_hint, "mime_type": mime, "content": None, "note": "Binary file — cannot extract text content."}
+                return {"file_id": file_id, "name": name_hint, "mime_type": mime, "content": text[:60000]}
+
+            elif name == "list_google_drive_files":
+                folder_id = str(inputs.get("folder_id", "")).strip()
+                max_results = min(int(inputs.get("max_results", 20)), 50)
+                svc = _gbuild("drive", "v3", credentials=creds, cache_discovery=False)
+                if folder_id:
+                    q = f"'{folder_id}' in parents and trashed=false"
+                else:
+                    q = "trashed=false"
+                result = svc.files().list(
+                    q=q,
+                    pageSize=max_results,
+                    orderBy="modifiedTime desc",
+                    fields="files(id,name,mimeType,modifiedTime,webViewLink)",
+                ).execute()
+                files = result.get("files", [])
+                return {"files": files, "count": len(files)}
+
+            elif name == "read_google_sheet":
+                spreadsheet_id = str(inputs.get("spreadsheet_id", "")).strip()
+                if not spreadsheet_id:
+                    return {"error": "spreadsheet_id is required"}
+                range_name = str(inputs.get("range", "")).strip()
+                svc = _gbuild("sheets", "v4", credentials=creds, cache_discovery=False)
+                if not range_name:
+                    meta = svc.spreadsheets().get(
+                        spreadsheetId=spreadsheet_id,
+                        fields="sheets(properties(title))",
+                    ).execute()
+                    sheets = meta.get("sheets", [])
+                    range_name = sheets[0]["properties"]["title"] if sheets else "Sheet1"
+                result = svc.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id, range=range_name
+                ).execute()
+                rows = result.get("values", [])
+                return {"spreadsheet_id": spreadsheet_id, "range": range_name, "rows": rows, "row_count": len(rows)}
+
+            elif name == "list_google_classroom_courses":
+                svc = _gbuild("classroom", "v1", credentials=creds, cache_discovery=False)
+                result = svc.courses().list(studentId="me", courseStates=["ACTIVE"]).execute()
+                courses = result.get("courses", [])
+                return {
+                    "courses": [
+                        {"id": c["id"], "name": c.get("name", ""), "section": c.get("section", ""), "room": c.get("room", "")}
+                        for c in courses
+                    ],
+                    "count": len(courses),
+                }
+
+            elif name == "get_google_classroom_assignments":
+                course_id = str(inputs.get("course_id", "")).strip()
+                if not course_id:
+                    return {"error": "course_id is required"}
+                svc = _gbuild("classroom", "v1", credentials=creds, cache_discovery=False)
+                work = svc.courses().courseWork().list(
+                    courseId=course_id, orderBy="updateTime desc", pageSize=20
+                ).execute()
+                items = []
+                for cw in work.get("courseWork", []):
+                    item = {
+                        "id": cw["id"],
+                        "title": cw.get("title", ""),
+                        "description": (cw.get("description") or "")[:500],
+                        "state": cw.get("state", ""),
+                        "due_date": None,
+                    }
+                    if "dueDate" in cw:
+                        dd = cw["dueDate"]
+                        item["due_date"] = f"{dd.get('year',0):04d}-{dd.get('month',0):02d}-{dd.get('day',0):02d}"
+                    items.append(item)
+                return {"course_id": course_id, "assignments": items, "count": len(items)}
+
+            elif name == "search_gmail":
+                gmail_query = str(inputs.get("query", "")).strip()
+                if not gmail_query:
+                    return {"error": "query is required"}
+                max_results = min(int(inputs.get("max_results", 10)), 25)
+                svc = _gbuild("gmail", "v1", credentials=creds, cache_discovery=False)
+                result = svc.users().messages().list(
+                    userId="me", q=gmail_query, maxResults=max_results
+                ).execute()
+                messages = result.get("messages", [])
+                details = []
+                for msg in messages[:max_results]:
+                    md = svc.users().messages().get(
+                        userId="me", id=msg["id"], format="metadata",
+                        metadataHeaders=["Subject", "From", "Date"],
+                    ).execute()
+                    hdrs = {h["name"]: h["value"] for h in md.get("payload", {}).get("headers", [])}
+                    details.append({
+                        "id": msg["id"],
+                        "subject": hdrs.get("Subject", ""),
+                        "from": hdrs.get("From", ""),
+                        "date": hdrs.get("Date", ""),
+                        "snippet": md.get("snippet", ""),
+                    })
+                return {"messages": details, "count": len(details)}
+
+            elif name == "read_gmail_message":
+                import base64 as _b64
+
+                def _extract_gmail_body(payload):
+                    mime = payload.get("mimeType", "")
+                    data = payload.get("body", {}).get("data", "")
+                    if data and mime in ("text/plain", "text/html"):
+                        try:
+                            return _b64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+                        except Exception:
+                            return ""
+                    for part in payload.get("parts", []):
+                        body = _extract_gmail_body(part)
+                        if body:
+                            return body
+                    return ""
+
+                msg_id = str(inputs.get("message_id", "")).strip()
+                if not msg_id:
+                    return {"error": "message_id is required"}
+                svc = _gbuild("gmail", "v1", credentials=creds, cache_discovery=False)
+                msg = svc.users().messages().get(userId="me", id=msg_id, format="full").execute()
+                hdrs = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                body = _extract_gmail_body(msg.get("payload", {}))
+                return {
+                    "id": msg_id,
+                    "subject": hdrs.get("Subject", ""),
+                    "from": hdrs.get("From", ""),
+                    "to": hdrs.get("To", ""),
+                    "date": hdrs.get("Date", ""),
+                    "body": body[:12000],
+                }
 
         else:
             return {"error": f"Unknown tool: {name}"}
@@ -8839,6 +9189,83 @@ try:
         log.info("Background scheduler started")
 except Exception as e:
     log.warning(f"Background scheduler failed to start: {e}")
+
+# ── Google OAuth2 routes ──────────────────────────────────────────────────────
+
+@app.route("/google-auth/start")
+def google_auth_start():
+    if not session.get("authenticated"):
+        return redirect("/login")
+    if not _google_configured():
+        return "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables first.", 400
+    try:
+        from google_auth_oauthlib.flow import Flow
+        redirect_uri = GOOGLE_REDIRECT_URI or request.url_root.rstrip("/") + "/google-auth/callback"
+        cfg = _google_client_config()
+        cfg["web"]["redirect_uris"] = [redirect_uri]
+        flow = Flow.from_client_config(cfg, scopes=GOOGLE_SCOPES)
+        flow.redirect_uri = redirect_uri
+        auth_url, state = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent",
+        )
+        session["google_oauth_state"] = state
+        return redirect(auth_url)
+    except Exception as e:
+        log.error("google_auth_start error: %s", e)
+        return f"Error starting Google auth: {e}", 500
+
+
+@app.route("/google-auth/callback")
+def google_auth_callback():
+    if not session.get("authenticated"):
+        return redirect("/login")
+    state = session.pop("google_oauth_state", None)
+    if not state or state != request.args.get("state"):
+        return "OAuth state mismatch — please try again.", 400
+    try:
+        from google_auth_oauthlib.flow import Flow
+        redirect_uri = GOOGLE_REDIRECT_URI or request.url_root.rstrip("/") + "/google-auth/callback"
+        cfg = _google_client_config()
+        cfg["web"]["redirect_uris"] = [redirect_uri]
+        flow = Flow.from_client_config(cfg, scopes=GOOGLE_SCOPES, state=state)
+        flow.redirect_uri = redirect_uri
+        # Reconstruct the full authorization response URL using the correct scheme
+        auth_response = request.url
+        if auth_response.startswith("http://") and redirect_uri.startswith("https://"):
+            auth_response = "https://" + auth_response[len("http://"):]
+        flow.fetch_token(authorization_response=auth_response)
+        creds = flow.credentials
+        if creds.refresh_token:
+            set_config({"google_refresh_token": creds.refresh_token})
+            log.info("Google refresh token stored successfully")
+        return redirect("/?google_connected=1")
+    except Exception as e:
+        log.error("google_auth_callback error: %s", e)
+        return f"Google OAuth error: {e}", 500
+
+
+@app.route("/api/google/status")
+def google_auth_status():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    configured = _google_configured()
+    authorized = bool(configured and get_config().get("google_refresh_token", "").strip())
+    return jsonify({
+        "configured": configured,
+        "authorized": authorized,
+        "auth_url": "/google-auth/start" if configured and not authorized else None,
+    })
+
+
+@app.route("/api/google/disconnect", methods=["POST"])
+def google_disconnect():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    set_config({"google_refresh_token": ""})
+    return jsonify({"status": "disconnected"})
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
