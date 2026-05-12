@@ -593,8 +593,9 @@ ON CONFLICT (ip_address) DO NOTHING""")
         conn = get_db()
         cur = conn.cursor()
 
+    # Add notes column to bucket_list if it doesn't exist yet
     try:
-        cur.execute("ALTER TABLE projects ADD COLUMN done_at TIMESTAMPTZ")
+        cur.execute("ALTER TABLE bucket_list ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''")
         conn.commit()
     except psycopg2.Error:
         conn.rollback()
@@ -5834,7 +5835,7 @@ def api_config_post():
 def api_bucket_list_get():
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, title, category, completed, completed_at, created_at FROM bucket_list ORDER BY completed, created_at DESC")
+    cur.execute("SELECT id, title, category, notes, completed, completed_at, created_at FROM bucket_list ORDER BY completed, created_at DESC")
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -5842,6 +5843,7 @@ def api_bucket_list_get():
         "id": r["id"],
         "title": r["title"],
         "category": r["category"],
+        "notes": r["notes"],
         "completed": r["completed"],
         "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
         "created_at": r["created_at"].isoformat(),
@@ -5851,18 +5853,19 @@ def api_bucket_list_get():
 @app.route("/api/bucket-list", methods=["POST"])
 def api_bucket_list_post():
     data = request.get_json(force=True) or {}
-    title = str(data.get("title", "")).strip()[:500]
+    title    = str(data.get("title",    "")).strip()[:500]
     category = str(data.get("category", "")).strip()[:100]
+    notes    = str(data.get("notes",    "")).strip()[:2000]
     if not title:
         return jsonify({"error": "title required"}), 400
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("INSERT INTO bucket_list (title, category) VALUES (%s, %s) RETURNING id, created_at", (title, category))
+    cur.execute("INSERT INTO bucket_list (title, category, notes) VALUES (%s, %s, %s) RETURNING id, created_at", (title, category, notes))
     row = cur.fetchone()
     conn.commit()
     cur.close()
     conn.close()
-    return jsonify({"id": row["id"], "title": title, "category": category, "completed": False, "completed_at": None, "created_at": row["created_at"].isoformat()}), 201
+    return jsonify({"id": row["id"], "title": title, "category": category, "notes": notes, "completed": False, "completed_at": None, "created_at": row["created_at"].isoformat()}), 201
 
 
 @app.route("/api/bucket-list/<int:item_id>", methods=["PATCH"])
@@ -5877,6 +5880,8 @@ def api_bucket_list_patch(item_id):
         cur.execute("UPDATE bucket_list SET title=%s WHERE id=%s", (str(data["title"])[:500], item_id))
     if "category" in data:
         cur.execute("UPDATE bucket_list SET category=%s WHERE id=%s", (str(data["category"])[:100], item_id))
+    if "notes" in data:
+        cur.execute("UPDATE bucket_list SET notes=%s WHERE id=%s", (str(data["notes"])[:2000], item_id))
     conn.commit()
     cur.close()
     conn.close()
@@ -7098,8 +7103,9 @@ def api_chat():
         except Exception:
             log.warning("/api/chat could not fetch assignments for context")
 
-        # Inject summer bucket list context when in summer mode
+        # Inject summer context (bucket list + job schedule) when in summer mode
         if _app_mode == "summer":
+            # Bucket list (prioritised — placed before tasks)
             try:
                 _bl_conn = get_db()
                 _bl_cur = _bl_conn.cursor()
@@ -7107,15 +7113,142 @@ def api_chat():
                 _bl_rows = _bl_cur.fetchall()
                 _bl_cur.close(); _bl_conn.close()
                 if _bl_rows:
-                    _pending = [r["title"] for r in _bl_rows if not r["completed"]]
+                    _pending = ["[%s] %s" % (r["category"], r["title"]) if r["category"] else r["title"]
+                                for r in _bl_rows if not r["completed"]]
                     _done_bl = [r["title"] for r in _bl_rows if r["completed"]]
-                    bl_text = "SUMMER BUCKET LIST — Pending: %s. Completed: %s." % (
+                    bl_text = "SUMMER BUCKET LIST (priority context) — Pending: %s. Completed: %s." % (
                         (", ".join(_pending) if _pending else "none"),
                         (", ".join(_done_bl) if _done_bl else "none"),
                     )
                     system_dynamic += "\n\n" + bl_text
             except Exception:
                 pass
+
+            # Job schedule — inject upcoming shifts when student has a summer job
+            if _has_summer_job and JOB_SCHEDULE_ICAL_URL:
+                try:
+                    _job_cal = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+                    if _job_cal:
+                        _tz = get_tz()
+                        _today = datetime.now(_tz).date()
+                        _job_end = _today + timedelta(days=7)
+                        _job_events = recurring_ical_events.of(_job_cal).between(
+                            datetime.combine(_today, datetime.min.time(), tzinfo=_tz),
+                            datetime.combine(_job_end, datetime.max.time(), tzinfo=_tz),
+                        )
+                        _shifts = []
+                        for ev in _job_events:
+                            _ds = ev.get("DTSTART")
+                            if not _ds:
+                                continue
+                            _dt = _ds.dt
+                            _date_str = _dt.strftime("%A %-m/%-d") if hasattr(_dt, "strftime") else str(_dt)
+                            _time_str = _dt.strftime("%-I:%M %p") if hasattr(_dt, "hour") else ""
+                            _shifts.append("%s %s — %s" % (_date_str, _time_str, str(ev.get("SUMMARY", "Work"))))
+                        if _shifts:
+                            system_dynamic += "\n\nJOB SCHEDULE (next 7 days): " + "; ".join(_shifts[:10]) + "."
+                except Exception:
+                    pass
+
+            # Summer daily plan — today's scheduled items
+            try:
+                _sp_conn = get_db()
+                _sp_cur = _sp_conn.cursor()
+                _sp_cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s", (datetime.now(TZ).date(),))
+                _sp_plan = _sp_cur.fetchone()
+                if _sp_plan:
+                    _sp_cur.execute("""
+SELECT item_type, item_title, scheduled_start_time, scheduled_end_time, completed
+FROM daily_plan_items WHERE plan_id = %s ORDER BY order_index ASC LIMIT 20""", (_sp_plan["id"],))
+                    _sp_items = _sp_cur.fetchall()
+                    if _sp_items:
+                        _sp_lines = "; ".join(
+                            "%s–%s %s%s" % (
+                                str(i["scheduled_start_time"])[:5] if i["scheduled_start_time"] else "?",
+                                str(i["scheduled_end_time"])[:5] if i["scheduled_end_time"] else "?",
+                                i["item_title"],
+                                " (done)" if i["completed"] else "",
+                            )
+                            for i in _sp_items
+                        )
+                        system_dynamic += "\n\nSUMMER DAILY PLAN (today's schedule): " + _sp_lines + "."
+                _sp_cur.close(); _sp_conn.close()
+            except Exception:
+                pass
+
+        # Inject meal plan and preferences context
+        try:
+            import json as _mp_json
+            _mp_conn = get_db()
+            _mp_cur = _mp_conn.cursor()
+            _today_date = datetime.now(TZ).date()
+            _tomorrow_date = _today_date + timedelta(days=1)
+            _mp_cur.execute(
+                "SELECT plan_date, structured_data, ingredients_used FROM meal_plans "
+                "WHERE plan_date IN (%s, %s) ORDER BY plan_date DESC LIMIT 1",
+                (_today_date, _tomorrow_date)
+            )
+            _mp_row = _mp_cur.fetchone()
+            _mp_cur.execute(
+                "SELECT preference_type, item FROM meal_preferences ORDER BY preference_type, item LIMIT 30"
+            )
+            _pref_rows = _mp_cur.fetchall()
+            _mp_cur.close(); _mp_conn.close()
+
+            if _mp_row:
+                _mp_structured = {}
+                try:
+                    _mp_structured = _mp_json.loads(_mp_row["structured_data"] or "{}")
+                except Exception:
+                    pass
+                _mp_meals = _mp_structured.get("meals", [])
+                _mp_totals = _mp_structured.get("daily_totals", {})
+                _mp_assumed = _mp_structured.get("assumed_ingredients", [])
+                _mp_hydration = _mp_structured.get("hydration_note", "")
+                _mp_note = _mp_structured.get("jarvis_note", "")
+                if _mp_meals:
+                    _mp_meal_lines = "; ".join(
+                        "%s %s: %s (%d kcal, %dg protein, %dg carbs, %dg fat) — key ingredients: %s" % (
+                            m.get("type", "?"),
+                            m.get("time_suggestion", ""),
+                            m.get("name", "?"),
+                            m.get("calories", 0),
+                            m.get("protein_g", 0),
+                            m.get("carbs_g", 0),
+                            m.get("fat_g", 0),
+                            ", ".join(m.get("key_ingredients", [])[:4]),
+                        )
+                        for m in _mp_meals
+                    )
+                    _mp_totals_text = "Daily totals: %d kcal, %dg protein, %dg carbs, %dg fat" % (
+                        _mp_totals.get("calories", 0), _mp_totals.get("protein_g", 0),
+                        _mp_totals.get("carbs_g", 0), _mp_totals.get("fat_g", 0),
+                    )
+                    _mp_plan_label = _mp_row["plan_date"].strftime("%A %-m/%-d")
+                    system_dynamic += "\n\nMEAL PLAN (%s): %s. %s." % (
+                        _mp_plan_label, _mp_meal_lines, _mp_totals_text
+                    )
+                    if _mp_hydration:
+                        system_dynamic += " %s." % _mp_hydration
+                    if _mp_note:
+                        system_dynamic += " %s" % _mp_note
+                    if _mp_assumed:
+                        _assumed_names = ", ".join(a.get("name", "") for a in _mp_assumed if a.get("name"))
+                        if _assumed_names:
+                            system_dynamic += " Assumed pantry items: %s." % _assumed_names
+                    if _mp_row["ingredients_used"]:
+                        system_dynamic += " Confirmed ingredients: %s." % str(_mp_row["ingredients_used"])[:300]
+
+            if _pref_rows:
+                _prefs_by_type = {}
+                for _pr in _pref_rows:
+                    _prefs_by_type.setdefault(_pr["preference_type"], []).append(_pr["item"])
+                _pref_lines = "; ".join(
+                    "%s: %s" % (pt, ", ".join(items)) for pt, items in _prefs_by_type.items()
+                )
+                system_dynamic += "\n\nMEAL PREFERENCES: " + _pref_lines + "."
+        except Exception:
+            log.warning("/api/chat could not load meal plan/preferences for context")
 
         # Inject pending tasks and project context
         try:
@@ -7287,10 +7420,70 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
         messages_loop = list(messages)
         actions_taken = []
 
+        # Prepend fridge photo as an image message so Jarvis can see it directly
+        try:
+            _fridge_conn = get_db()
+            _fridge_cur = _fridge_conn.cursor()
+            _fridge_cur.execute(
+                "SELECT media_type, photo_b64, uploaded_at FROM fridge_photos ORDER BY uploaded_at DESC LIMIT 1"
+            )
+            _fridge_row = _fridge_cur.fetchone()
+            _fridge_cur.close(); _fridge_conn.close()
+            if _fridge_row and _fridge_row["photo_b64"]:
+                _fridge_ts = _fridge_row["uploaded_at"].strftime("%-m/%-d at %-I:%M %p")
+                messages_loop = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": _fridge_row["media_type"],
+                                    "data": _fridge_row["photo_b64"],
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": "[Fridge photo uploaded %s — reference this when discussing available ingredients or meal planning.]" % _fridge_ts,
+                            },
+                        ],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Understood. I have logged the current fridge contents for meal planning reference.",
+                    },
+                ] + messages_loop
+        except Exception:
+            log.warning("/api/chat could not prepend fridge photo to messages")
+
+        # Fetch today's morning briefing to use as a stable cached system block.
+        # The briefing is generated once at 7 AM and doesn't change, so marking it
+        # ephemeral lets Anthropic cache it — saving input tokens on every chat turn.
+        _morning_briefing_block = None
+        try:
+            _brief_conn = get_db()
+            _brief_cur = _brief_conn.cursor()
+            _brief_cur.execute("SELECT content, generated_at FROM briefing_cache WHERE id = 1")
+            _brief_row = _brief_cur.fetchone()
+            _brief_cur.close(); _brief_conn.close()
+            if _brief_row and _brief_row["content"]:
+                _brief_gen = _brief_row["generated_at"]
+                _brief_today = _brief_gen and _brief_gen.astimezone(TZ).date() == datetime.now(TZ).date()
+                if _brief_today:
+                    _morning_briefing_block = (
+                        "MORNING OUTLOOK (generated at %s — your pre-computed daily priorities; "
+                        "use as authoritative context for today's focus):\n%s"
+                    ) % (_brief_gen.astimezone(TZ).strftime("%-I:%M %p"), _brief_row["content"])
+        except Exception:
+            log.warning("/api/chat could not load morning briefing for context")
+
         system_blocks = [
             {"type": "text", "text": system_static, "cache_control": {"type": "ephemeral"}},
-            {"type": "text", "text": system_dynamic},
         ]
+        if _morning_briefing_block:
+            system_blocks.append({"type": "text", "text": _morning_briefing_block, "cache_control": {"type": "ephemeral"}})
+        system_blocks.append({"type": "text", "text": system_dynamic})
 
         # Captured by the generator below — Python closures over mutable list.
         _final_text_box = [""]
