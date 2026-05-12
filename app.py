@@ -6682,6 +6682,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                     _get_mem0_client().add(
                         [{"role": "assistant", "content": _facts_text}],
                         user_id="student",
+                        metadata={"person": person_name},
                     )
                 except Exception as _e:
                     log.debug("Mem0 person sync error: %s", _e)
@@ -6718,10 +6719,19 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             mem0_mentions = []
             if MEM0_API_KEY:
                 try:
-                    _hits = _get_mem0_client().search(f"about {person_name}", user_id="student", limit=8)
-                    mem0_mentions = [h["memory"] for h in (_hits or []) if h.get("memory") and person_name.lower() in h["memory"].lower()]
+                    _hits = _get_mem0_client().search(
+                        person_name,
+                        user_id="student",
+                        filters={"AND": [{"metadata": {"person": person_name}}]},
+                        limit=8,
+                    )
+                    mem0_mentions = [h["memory"] for h in (_hits or []) if h.get("memory")]
                 except Exception:
-                    pass
+                    try:
+                        _hits = _get_mem0_client().search(f"about {person_name}", user_id="student", limit=8)
+                        mem0_mentions = [h["memory"] for h in (_hits or []) if h.get("memory") and person_name.lower() in h["memory"].lower()]
+                    except Exception:
+                        pass
             return {
                 "found": True,
                 "name": row["name"],
