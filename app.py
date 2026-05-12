@@ -591,7 +591,7 @@ ON CONFLICT (ip_address) DO NOTHING""")
 
     # Add notes column to bucket_list if it doesn't exist yet
     try:
-        cur.execute("ALTER TABLE bucket_list ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
+        cur.execute("ALTER TABLE bucket_list ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''")
         conn.commit()
     except psycopg2.Error:
         conn.rollback()
