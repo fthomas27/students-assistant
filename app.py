@@ -8949,27 +8949,22 @@ def api_news_preferences():
 @app.route("/api/daily-outlook", methods=["POST"])
 def api_daily_outlook():
     """Assemble the Morning Outlook payload in one call."""
+    import concurrent.futures
     today = datetime.now(TZ).date()
-    payload = {
-        "generated_at": datetime.now(TZ).isoformat(),
-        "assignments_events": {"assignments": [], "events": []},
-        "tasks": [],
-        "stocks": None,
-        "weather": None,
-        "quote": None,
-        "news": {"national": [], "local": []},
-    }
+    today_iso = today.isoformat()
 
-    # Assignments due today + completed-title filter
-    try:
-        cal = fetch_ical(CANVAS_ICAL_URL)
-        if cal:
+    def _get_assignments():
+        try:
+            cal = fetch_ical(CANVAS_ICAL_URL)
+            if not cal:
+                return []
             conn = get_db()
             cur = conn.cursor()
             cur.execute("SELECT DISTINCT assignment_title FROM completions")
             done = set(r["assignment_title"] for r in cur.fetchall())
             cur.close()
             conn.close()
+            out = []
             for a in parse_canvas_assignments(cal):
                 if a["title"] in done:
                     continue
@@ -8981,83 +8976,122 @@ def api_daily_outlook():
                 except Exception:
                     continue
                 if d == today:
-                    payload["assignments_events"]["assignments"].append({
+                    out.append({
                         "title": a.get("title", ""),
                         "class_name": a.get("class_name", ""),
                         "due_display": a.get("due_display", ""),
                         "due_iso": a.get("due_iso", ""),
                     })
-    except Exception as e:
-        log.warning("outlook: assignments failed: %s", e)
+            return out
+        except Exception as e:
+            log.warning("outlook: assignments failed: %s", e)
+            return []
 
-    # Personal + sports + job calendar events for today
-    try:
-        today_iso = today.isoformat()
-        for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports"), (JOB_SCHEDULE_ICAL_URL, "job")):
-            c = fetch_ical(url)
-            if not c:
-                continue
-            for e in parse_calendar_events(c, days_ahead=1):
-                if e.get("date") == today_iso:
-                    payload["assignments_events"]["events"].append({
-                        "title": e.get("title", ""),
-                        "start_display": "All Day" if e.get("all_day") else e.get("start_display", ""),
-                        "end_display": "" if e.get("all_day") else e.get("end_display", ""),
-                        "all_day": e.get("all_day", False),
-                        "source": tag,
-                    })
-    except Exception as e:
-        log.warning("outlook: events failed: %s", e)
+    def _get_events():
+        try:
+            out = []
+            for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports"), (JOB_SCHEDULE_ICAL_URL, "job")):
+                c = fetch_ical(url)
+                if not c:
+                    continue
+                for e in parse_calendar_events(c, days_ahead=1):
+                    if e.get("date") == today_iso:
+                        out.append({
+                            "title": e.get("title", ""),
+                            "start_display": "All Day" if e.get("all_day") else e.get("start_display", ""),
+                            "end_display": "" if e.get("all_day") else e.get("end_display", ""),
+                            "all_day": e.get("all_day", False),
+                            "source": tag,
+                        })
+            return out
+        except Exception as e:
+            log.warning("outlook: events failed: %s", e)
+            return []
 
-    # Tasks due today (or overdue + today)
-    try:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, title, urgency, due_date, notes FROM tasks "
-            "WHERE completed = FALSE AND (due_date IS NULL OR due_date <= %s) "
-            "ORDER BY urgency DESC, due_date ASC NULLS LAST LIMIT 10",
-            (today,)
-        )
-        for r in cur.fetchall():
-            payload["tasks"].append({
+    def _get_tasks():
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, title, urgency, due_date, notes FROM tasks "
+                "WHERE completed = FALSE AND (due_date IS NULL OR due_date <= %s) "
+                "ORDER BY urgency DESC, due_date ASC NULLS LAST LIMIT 10",
+                (today,)
+            )
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            return [{
                 "id": r["id"],
                 "title": r["title"],
                 "urgency": r["urgency"],
                 "due_date": r["due_date"].isoformat() if r["due_date"] else None,
                 "notes": (r["notes"] or "")[:300],
-            })
-        cur.close()
-        conn.close()
-    except Exception as e:
-        log.warning("outlook: tasks failed: %s", e)
+            } for r in rows]
+        except Exception as e:
+            log.warning("outlook: tasks failed: %s", e)
+            return []
 
-    # Stocks
-    try:
-        payload["stocks"] = build_portfolio_snapshot()
-    except Exception as e:
-        log.warning("outlook: stocks failed: %s", e)
+    def _get_stocks():
+        try:
+            return build_portfolio_snapshot()
+        except Exception as e:
+            log.warning("outlook: stocks failed: %s", e)
+            return None
 
-    # Weather
-    try:
-        payload["weather"] = fetch_weather()
-    except Exception as e:
-        log.warning("outlook: weather failed: %s", e)
+    def _get_weather():
+        try:
+            return fetch_weather()
+        except Exception as e:
+            log.warning("outlook: weather failed: %s", e)
+            return None
 
-    # Quote
-    try:
-        payload["quote"] = fetch_quote_of_day()
-    except Exception as e:
-        log.warning("outlook: quote failed: %s", e)
+    def _get_quote():
+        try:
+            return fetch_quote_of_day()
+        except Exception as e:
+            log.warning("outlook: quote failed: %s", e)
+            return None
 
-    # News
-    try:
-        payload["news"]["national"] = fetch_news("national", limit=3)
-        payload["news"]["local"] = fetch_news("local", limit=3)
-    except Exception as e:
-        log.warning("outlook: news failed: %s", e)
+    def _get_news_national():
+        try:
+            return fetch_news("national", limit=3)
+        except Exception as e:
+            log.warning("outlook: news national failed: %s", e)
+            return []
 
-    return jsonify(payload)
+    def _get_news_local():
+        try:
+            return fetch_news("local", limit=3)
+        except Exception as e:
+            log.warning("outlook: news local failed: %s", e)
+            return []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        f_assignments = ex.submit(_get_assignments)
+        f_events = ex.submit(_get_events)
+        f_tasks = ex.submit(_get_tasks)
+        f_stocks = ex.submit(_get_stocks)
+        f_weather = ex.submit(_get_weather)
+        f_quote = ex.submit(_get_quote)
+        f_news_nat = ex.submit(_get_news_national)
+        f_news_loc = ex.submit(_get_news_local)
+
+    return jsonify({
+        "generated_at": datetime.now(TZ).isoformat(),
+        "assignments_events": {
+            "assignments": f_assignments.result(),
+            "events": f_events.result(),
+        },
+        "tasks": f_tasks.result(),
+        "stocks": f_stocks.result(),
+        "weather": f_weather.result(),
+        "quote": f_quote.result(),
+        "news": {
+            "national": f_news_nat.result(),
+            "local": f_news_loc.result(),
+        },
+    })
 
 
 @app.route("/api/outlook/news-detail", methods=["POST"])
