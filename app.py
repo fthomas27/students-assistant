@@ -6400,8 +6400,8 @@ def api_chat():
                         _today = datetime.now(_tz).date()
                         _job_end = _today + timedelta(days=7)
                         _job_events = recurring_ical_events.of(_job_cal).between(
-                            datetime.combine(_today, datetime.min.time()),
-                            datetime.combine(_job_end, datetime.max.time()),
+                            datetime.combine(_today, datetime.min.time(), tzinfo=_tz),
+                            datetime.combine(_job_end, datetime.max.time(), tzinfo=_tz),
                         )
                         _shifts = []
                         for ev in _job_events:
