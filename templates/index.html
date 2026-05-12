@@ -2265,6 +2265,82 @@ animation: pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   opacity: 0.65;
 }
 
+/* ── Gmail draft confirmation card ── */
+.gmail-confirm-card {
+  margin-top: 12px;
+  border: 1px solid rgba(255,127,80,0.35);
+  border-radius: 10px;
+  background: rgba(255,127,80,0.07);
+  padding: 14px 16px 12px;
+  max-width: 520px;
+}
+.gmail-confirm-card .gcc-header {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+.gmail-confirm-card .gcc-field {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 5px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.gmail-confirm-card .gcc-label {
+  color: var(--text3);
+  min-width: 52px;
+  flex-shrink: 0;
+}
+.gmail-confirm-card .gcc-value {
+  color: var(--text1);
+  word-break: break-word;
+}
+.gmail-confirm-card .gcc-body {
+  margin-top: 10px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text2);
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+.gmail-confirm-card .gcc-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.gcc-send-btn {
+  padding: 7px 18px;
+  border-radius: 7px;
+  border: none;
+  background: #22c55e;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.gcc-send-btn:hover { opacity: .85; }
+.gcc-send-btn:disabled { opacity: .45; cursor: default; }
+.gcc-discard-btn {
+  padding: 7px 14px;
+  border-radius: 7px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: transparent;
+  color: var(--text3);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.gcc-discard-btn:hover { color: var(--text1); border-color: rgba(255,255,255,0.3); }
+.gcc-discard-btn:disabled { opacity: .45; cursor: default; }
+
 .jarvis-stream-text {
   white-space: pre-wrap;
 }
@@ -7307,6 +7383,15 @@ async function sendMessage() {
         create_project: '✨ Creating project…',
         add_project_task: '➕ Adding project task…',
         get_briefing: '📰 Fetching briefing…',
+        create_email_draft: '✉️ Composing email draft…',
+        search_google_drive: '📂 Searching Google Drive…',
+        read_google_drive_file: '📄 Reading Drive file…',
+        list_google_drive_files: '📂 Listing Drive files…',
+        read_google_sheet: '📊 Reading spreadsheet…',
+        list_google_classroom_courses: '🏫 Fetching Classroom courses…',
+        get_google_classroom_assignments: '📋 Loading Classroom assignments…',
+        search_gmail: '📧 Searching Gmail…',
+        read_gmail_message: '📧 Reading email…',
       };
       return map[name] || `⚙ Running ${name}…`;
     }
@@ -7467,6 +7552,9 @@ async function sendMessage() {
       if (actionPayload.project_task_added) {
         loadProjects();
       }
+      if (actionPayload.gmail_draft_pending) {
+        renderGmailConfirmCard(bubble, actionPayload.gmail_draft_pending);
+      }
     }
 
     pushConversation({ role: 'assistant', content: assistantText });
@@ -7486,6 +7574,64 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function renderGmailConfirmCard(bubble, draft) {
+  const card = document.createElement('div');
+  card.className = 'gmail-confirm-card';
+  card.innerHTML = `
+    <div class="gcc-header">✉️ Email Draft — Review Before Sending</div>
+    <div class="gcc-field"><span class="gcc-label">To:</span><span class="gcc-value">${escapeHtml(draft.to || '')}</span></div>
+    ${draft.cc ? `<div class="gcc-field"><span class="gcc-label">CC:</span><span class="gcc-value">${escapeHtml(draft.cc)}</span></div>` : ''}
+    <div class="gcc-field"><span class="gcc-label">Subject:</span><span class="gcc-value">${escapeHtml(draft.subject || '')}</span></div>
+    <div class="gcc-body">${escapeHtml(draft.body || '')}</div>
+    <div class="gcc-actions">
+      <button class="gcc-send-btn" id="gcc-send-${draft.draft_id}">Send Email</button>
+      <button class="gcc-discard-btn" id="gcc-discard-${draft.draft_id}">Discard</button>
+    </div>
+  `;
+  bubble.appendChild(card);
+
+  const sendBtn = card.querySelector(`#gcc-send-${draft.draft_id}`);
+  const discardBtn = card.querySelector(`#gcc-discard-${draft.draft_id}`);
+
+  sendBtn.addEventListener('click', async () => {
+    sendBtn.disabled = true;
+    discardBtn.disabled = true;
+    sendBtn.textContent = 'Sending…';
+    try {
+      const res = await fetch(`/api/google/gmail/drafts/${draft.draft_id}/send`, { method: 'POST', headers: {'X-CSRFToken': document.querySelector('meta[name=csrf-token]')?.content || ''} });
+      const data = await res.json();
+      if (res.ok) {
+        card.innerHTML = '<div class="gcc-header" style="color:#22c55e;">✅ Email sent successfully.</div>';
+        showToast('Email sent!', 'success', 2500);
+      } else {
+        sendBtn.disabled = false;
+        discardBtn.disabled = false;
+        sendBtn.textContent = 'Send Email';
+        showToast('Failed to send: ' + (data.error || 'Unknown error'), 'error');
+      }
+    } catch (e) {
+      sendBtn.disabled = false;
+      discardBtn.disabled = false;
+      sendBtn.textContent = 'Send Email';
+      showToast('Network error while sending.', 'error');
+    }
+  });
+
+  discardBtn.addEventListener('click', async () => {
+    sendBtn.disabled = true;
+    discardBtn.disabled = true;
+    try {
+      await fetch(`/api/google/gmail/drafts/${draft.draft_id}`, { method: 'DELETE' });
+      card.innerHTML = '<div class="gcc-header" style="color:var(--text3);">Draft discarded.</div>';
+      showToast('Draft discarded.', 'success', 1800);
+    } catch (e) {
+      sendBtn.disabled = false;
+      discardBtn.disabled = false;
+      showToast('Could not discard draft.', 'error');
+    }
+  });
 }
 
 function priorityRadioGroupHTML(inputId, selected) {
