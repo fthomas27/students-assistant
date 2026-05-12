@@ -1219,6 +1219,105 @@ background: #ff6a3a;
 transform: scale(0.92);
 }
 
+/* Slash command palette */
+.chat-input-wrapper {
+  position: relative;
+}
+
+.slash-palette {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  margin-bottom: 6px;
+  overflow: hidden;
+  box-shadow: 0 -8px 32px rgba(0,0,0,0.55);
+  z-index: 200;
+  display: none;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.slash-palette.visible {
+  display: block;
+}
+
+.slash-palette-header {
+  padding: 7px 14px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text3);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.slash-cmd {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 14px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.slash-cmd:hover,
+.slash-cmd.active {
+  background: var(--surface2);
+}
+
+.slash-cmd-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--surface3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
+  transition: background 0.1s;
+}
+
+.slash-cmd.active .slash-cmd-icon {
+  background: var(--accent);
+}
+
+.slash-cmd-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.slash-cmd-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: 'SF Mono', 'Fira Code', 'Menlo', monospace;
+}
+
+.slash-cmd-desc {
+  font-size: 11px;
+  color: var(--text3);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slash-cmd-params {
+  font-size: 11px;
+  color: var(--accent);
+  font-family: 'SF Mono', 'Fira Code', 'Menlo', monospace;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
 .send-btn:disabled {
 background: var(--surface3);
 color: var(--text3);
@@ -3523,10 +3622,13 @@ margin-bottom: 0;
         </div>
       </div>
     </div>
-    <div class="chat-input-area">
-      <textarea class="chat-input" id="chatInput" placeholder="Ask me anything..." rows="1"></textarea>
-      <button class="mic-btn" id="micBtn" type="button" title="Voice input" style="display:none">🎤</button>
-      <button class="send-btn" id="sendBtn" type="button" onclick="sendMessage()">→</button>
+    <div class="chat-input-wrapper">
+      <div id="slashPalette" class="slash-palette"></div>
+      <div class="chat-input-area">
+        <textarea class="chat-input" id="chatInput" placeholder="Ask me anything... (type / for commands)" rows="1"></textarea>
+        <button class="mic-btn" id="micBtn" type="button" title="Voice input" style="display:none">🎤</button>
+        <button class="send-btn" id="sendBtn" type="button" onclick="sendMessage()">→</button>
+      </div>
     </div>
   </div>
 </div>
@@ -6737,12 +6839,244 @@ chatInput.addEventListener('paste', () => setTimeout(resizeChatInput, 0));
   recognition.onerror = () => micBtn.classList.remove('recording');
 })();
 
-async function sendMessage() {
-  const message = chatInput.value.trim();
-  if (!message) return;
+// ── Slash command palette ─────────────────────────────────────────────────────
 
+const SLASH_COMMANDS = [
+  {
+    name: '/findperson',
+    icon: '🔍',
+    desc: 'Research someone online and build a full persona',
+    params: 'name  [location]  [contact]',
+    template: '/findperson ',
+  },
+  {
+    name: '/assignments',
+    icon: '📚',
+    desc: 'List upcoming Canvas assignments with due dates',
+    params: '',
+    template: '/assignments',
+  },
+  {
+    name: '/grades',
+    icon: '📊',
+    desc: 'Pull live Canvas grades for all classes',
+    params: '',
+    template: '/grades',
+  },
+  {
+    name: '/todo',
+    icon: '✅',
+    desc: 'Show all pending tasks sorted by urgency',
+    params: '',
+    template: '/todo',
+  },
+  {
+    name: '/schedule',
+    icon: '📅',
+    desc: "Show today's calendar and block schedule",
+    params: '',
+    template: '/schedule',
+  },
+  {
+    name: '/briefing',
+    icon: '🌅',
+    desc: "Get today's morning briefing and priorities",
+    params: '',
+    template: '/briefing',
+  },
+  {
+    name: '/quiz',
+    icon: '🧠',
+    desc: 'Generate a practice quiz on any subject',
+    params: 'topic',
+    template: '/quiz ',
+  },
+  {
+    name: '/essay',
+    icon: '✍️',
+    desc: 'Outline or draft an essay',
+    params: 'topic  [type]',
+    template: '/essay ',
+  },
+  {
+    name: '/summarize',
+    icon: '📝',
+    desc: 'Summarize pasted text or a URL',
+    params: 'text or URL',
+    template: '/summarize ',
+  },
+  {
+    name: '/timer',
+    icon: '⏱️',
+    desc: 'Set a focus timer reminder',
+    params: 'minutes',
+    template: '/timer ',
+  },
+];
+
+// Expand a slash command into a detailed Jarvis prompt.
+// Returns null if the message is not a slash command.
+function expandSlashCommand(msg) {
+  const t = msg.trim();
+
+  if (/^\/findperson\b/i.test(t)) {
+    const rest = t.replace(/^\/findperson\s*/i, '').trim();
+    if (!rest) return 'I need you to research a person for me, but you forgot to include their name. Who should I look up?';
+    return (
+      `Research this person and build me a detailed profile: "${rest}". ` +
+      `Use web_search and web_fetch to find their background, professional history, ` +
+      `social media presence, location, contact details, affiliations, and any other ` +
+      `publicly available information. Then compile everything into a structured persona ` +
+      `and save it with remember_person. Present the final profile in clear sections: ` +
+      `Basic Info, Background, Online Presence, and Notable Facts.`
+    );
+  }
+
+  if (/^\/assignments$/i.test(t)) {
+    return 'Show me all my upcoming Canvas assignments with their due dates. Group them by class and highlight anything due in the next 3 days.';
+  }
+
+  if (/^\/grades$/i.test(t)) {
+    return 'Pull my current Canvas grades for all classes and show me where I stand in each course.';
+  }
+
+  if (/^\/todo$/i.test(t)) {
+    return 'Show me all my pending tasks sorted by urgency. Include due dates and any notes for each one.';
+  }
+
+  if (/^\/schedule$/i.test(t)) {
+    return "Show me today's full schedule — calendar events, block schedule, and anything else on my agenda for the rest of the day.";
+  }
+
+  if (/^\/briefing$/i.test(t)) {
+    return "Give me today's morning briefing — what assignments are due, what's on my calendar, and what should I prioritize today?";
+  }
+
+  if (/^\/quiz\b/i.test(t)) {
+    const topic = t.replace(/^\/quiz\s*/i, '').trim();
+    if (!topic) return 'Generate a practice quiz on a topic relevant to my current upcoming assignments.';
+    return `Generate a practice quiz on: ${topic}. Include 8–10 questions mixing multiple choice and short answer, then provide the answer key at the end.`;
+  }
+
+  if (/^\/essay\b/i.test(t)) {
+    const rest = t.replace(/^\/essay\s*/i, '').trim();
+    if (!rest) return 'Help me write an essay. What topic and type of essay do you need?';
+    return `Help me write an essay about: ${rest}. Start with a detailed outline (thesis, main arguments, supporting evidence per paragraph), then offer to draft any section I request.`;
+  }
+
+  if (/^\/summarize\b/i.test(t)) {
+    const rest = t.replace(/^\/summarize\s*/i, '').trim();
+    if (!rest) return 'What would you like me to summarize? Paste the text or give me a URL.';
+    return `Please summarize the following concisely, pulling out the key points and main takeaways:\n\n${rest}`;
+  }
+
+  if (/^\/timer\b/i.test(t)) {
+    const mins = t.replace(/^\/timer\s*/i, '').trim();
+    if (!mins) return 'How many minutes should I set the focus timer for?';
+    return `I'm starting a ${mins}-minute focus session. Acknowledge it and give me one short motivational line to kick things off.`;
+  }
+
+  return null;
+}
+
+// ── Palette UI ────────────────────────────────────────────────────────────────
+
+const slashPalette = document.getElementById('slashPalette');
+let slashFiltered = [];
+let slashActiveIdx = 0;
+let slashVisible = false;
+
+function renderSlashPalette(filtered) {
+  slashFiltered = filtered;
+  if (!filtered.length) { hideSlashPalette(); return; }
+  if (slashActiveIdx >= filtered.length) slashActiveIdx = 0;
+
+  slashPalette.innerHTML =
+    '<div class="slash-palette-header">Commands</div>' +
+    filtered.map((cmd, i) => `
+      <div class="slash-cmd${i === slashActiveIdx ? ' active' : ''}" data-idx="${i}">
+        <div class="slash-cmd-icon">${cmd.icon}</div>
+        <div class="slash-cmd-info">
+          <div class="slash-cmd-name">${cmd.name}</div>
+          <div class="slash-cmd-desc">${cmd.desc}</div>
+        </div>
+        ${cmd.params ? `<div class="slash-cmd-params">${cmd.params}</div>` : ''}
+      </div>`).join('');
+
+  slashPalette.querySelectorAll('.slash-cmd').forEach(el => {
+    el.addEventListener('mousedown', e => {
+      e.preventDefault();
+      selectSlashCommand(parseInt(el.dataset.idx, 10));
+    });
+  });
+
+  slashPalette.classList.add('visible');
+  slashVisible = true;
+}
+
+function hideSlashPalette() {
+  slashPalette.classList.remove('visible');
+  slashVisible = false;
+  slashActiveIdx = 0;
+}
+
+function selectSlashCommand(idx) {
+  const cmd = slashFiltered[idx];
+  if (!cmd) return;
+  chatInput.value = cmd.template;
+  chatInput.focus();
+  resizeChatInput();
+  hideSlashPalette();
+}
+
+function updateSlashPalette() {
+  const val = chatInput.value;
+  if (!val.startsWith('/')) { hideSlashPalette(); return; }
+  const query = val.toLowerCase();
+  const filtered = SLASH_COMMANDS.filter(c => c.name.toLowerCase().startsWith(query));
+  renderSlashPalette(filtered);
+}
+
+// Capture-phase listener so arrow/enter keys are handled before the send listener.
+chatInput.addEventListener('keydown', e => {
+  if (!slashVisible) return;
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    slashActiveIdx = (slashActiveIdx - 1 + slashFiltered.length) % slashFiltered.length;
+    renderSlashPalette(slashFiltered);
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    slashActiveIdx = (slashActiveIdx + 1) % slashFiltered.length;
+    renderSlashPalette(slashFiltered);
+  } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    selectSlashCommand(slashActiveIdx);
+  } else if (e.key === 'Escape') {
+    hideSlashPalette();
+  }
+}, true);
+
+chatInput.addEventListener('input', updateSlashPalette);
+
+document.addEventListener('click', e => {
+  if (!slashPalette.contains(e.target) && e.target !== chatInput) hideSlashPalette();
+});
+
+// ── sendMessage (with slash-command expansion) ────────────────────────────────
+
+async function sendMessage() {
+  const rawMessage = chatInput.value.trim();
+  if (!rawMessage) return;
+
+  hideSlashPalette();
   chatInput.value = '';
   chatInput.style.height = 'auto';
+
+  // Expand slash commands: display label stays compact, Claude gets the full prompt.
+  const expanded = expandSlashCommand(rawMessage);
+  const displayMessage = rawMessage;
+  const sendContent = expanded || rawMessage;
 
   const messagesDiv = document.getElementById('chatMessages');
   if (messagesDiv.querySelector('.empty-state')) {
@@ -6751,13 +7085,13 @@ async function sendMessage() {
 
   const userBubble = document.createElement('div');
   userBubble.className = 'message user';
-  userBubble.innerHTML = `<div class="message-bubble">${escapeHtml(message)}</div>`;
+  userBubble.innerHTML = `<div class="message-bubble">${escapeHtml(displayMessage)}</div>`;
   messagesDiv.appendChild(userBubble);
   renderMessageWithDelay(userBubble);
   triggerHaptic('light');
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
-  pushConversation({ role: 'user', content: message });
+  pushConversation({ role: 'user', content: sendContent });
 
   const loadingBubble = document.createElement('div');
   loadingBubble.className = 'message assistant';
