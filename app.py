@@ -258,6 +258,7 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
     "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly",
     "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
 ]
 
 # ── Default values ─────────────────────────────────────────────────────────────
@@ -506,6 +507,7 @@ def init_db():
         ("chat_summaries", "CREATE TABLE IF NOT EXISTS chat_summaries (conversation_id TEXT PRIMARY KEY, summary TEXT NOT NULL DEFAULT '', message_count INT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("bucket_list", "CREATE TABLE IF NOT EXISTS bucket_list (id SERIAL PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("people_profiles", "CREATE TABLE IF NOT EXISTS people_profiles (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, relationship TEXT NOT NULL DEFAULT '', facts TEXT NOT NULL DEFAULT '[]', mem0_synced BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("gmail_drafts", "CREATE TABLE IF NOT EXISTS gmail_drafts (id SERIAL PRIMARY KEY, to_addr TEXT NOT NULL, cc_addr TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
     ]
 
     for table_name, create_sql in tables:
@@ -6330,6 +6332,24 @@ JARVIS_TOOLS = [
     },
     # ── Google Workspace tools ────────────────────────────────────────────────
     {
+        "name": "create_email_draft",
+        "description": (
+            "Compose an email for the student to review. The email will NOT be sent automatically — "
+            "a confirmation card appears in the UI so the student can read it and click Send. "
+            "Use this whenever the student asks to send, reply to, or compose any email."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email address(es), comma-separated"},
+                "cc": {"type": "string", "description": "CC addresses, comma-separated (optional)"},
+                "subject": {"type": "string", "description": "Email subject line"},
+                "body": {"type": "string", "description": "Full email body (plain text)"},
+            },
+            "required": ["to", "subject", "body"],
+        },
+    },
+    {
         "name": "search_google_drive",
         "description": (
             "Search Google Drive for files by name or content. Returns file IDs, names, types, and "
@@ -6949,6 +6969,36 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             return {"people": people, "count": len(people)}
 
         # ── Google Workspace tools ────────────────────────────────────────────
+        elif name == "create_email_draft":
+            creds = _get_google_credentials()
+            if creds is None:
+                if not _google_configured():
+                    return {"error": "Google not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."}
+                return {"error": "Google not authorized. Visit /google-auth/start to connect your Google account."}
+            to_addr = str(inputs.get("to", "")).strip()
+            subject = str(inputs.get("subject", "")).strip()
+            body = str(inputs.get("body", "")).strip()
+            cc_addr = str(inputs.get("cc", "")).strip()
+            if not to_addr or not subject:
+                return {"error": "to and subject are required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO gmail_drafts (to_addr, cc_addr, subject, body) VALUES (%s,%s,%s,%s) RETURNING id",
+                (to_addr, cc_addr, subject, body),
+            )
+            draft_id = cur.fetchone()["id"]
+            conn.commit(); cur.close(); conn.close()
+            log.info(f"Gmail draft {draft_id} created for {to_addr!r}")
+            return {
+                "status": "awaiting_confirmation",
+                "draft_id": draft_id,
+                "to": to_addr,
+                "cc": cc_addr,
+                "subject": subject,
+                "body_preview": body[:300],
+            }
+
         elif name in ("search_google_drive", "read_google_drive_file", "list_google_drive_files",
                       "read_google_sheet", "list_google_classroom_courses",
                       "get_google_classroom_assignments", "search_gmail", "read_gmail_message"):
@@ -8018,6 +8068,21 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                     "stock_note_symbol": next((a["result"].get("symbol") for a in actions_taken if a["tool"] == "save_stock_note"), None),
                     "project_created_title": next((a["result"].get("title") for a in actions_taken if a["tool"] == "create_project"), None),
                     "project_created_task_count": next((a["result"].get("task_count") for a in actions_taken if a["tool"] == "create_project"), None),
+                    "gmail_draft_pending": next(
+                        (
+                            {
+                                "draft_id": a["result"].get("draft_id"),
+                                "to": a["result"].get("to"),
+                                "cc": a["result"].get("cc"),
+                                "subject": a["result"].get("subject"),
+                                "body": a["result"].get("body_preview"),
+                            }
+                            for a in actions_taken
+                            if a["tool"] == "create_email_draft"
+                            and (a.get("result") or {}).get("status") == "awaiting_confirmation"
+                        ),
+                        None,
+                    ),
                 }
                 yield _sse_pack("action", action_payload)
                 yield _sse_pack("done", {"conversation_id": conversation_id})
@@ -9265,6 +9330,79 @@ def google_disconnect():
         return jsonify({"error": "Not authenticated"}), 401
     set_config({"google_refresh_token": ""})
     return jsonify({"status": "disconnected"})
+
+
+@app.route("/api/google/gmail/drafts")
+def gmail_list_drafts():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, to_addr, cc_addr, subject, body, created_at FROM gmail_drafts "
+        "WHERE status='pending' ORDER BY created_at DESC"
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    for r in rows:
+        if r.get("created_at") and hasattr(r["created_at"], "isoformat"):
+            r["created_at"] = r["created_at"].isoformat()
+    return jsonify({"drafts": rows})
+
+
+@app.route("/api/google/gmail/drafts/<int:draft_id>/send", methods=["POST"])
+def gmail_send_draft(draft_id):
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    creds = _get_google_credentials()
+    if not creds:
+        return jsonify({"error": "Google not authorized. Visit /google-auth/start."}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT to_addr, cc_addr, subject, body FROM gmail_drafts WHERE id=%s AND status='pending'",
+        (draft_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return jsonify({"error": "Draft not found or already processed"}), 404
+    try:
+        import email.mime.text as _mime_text
+        import base64 as _b64
+        msg = _mime_text.MIMEText(row["body"], "plain", "utf-8")
+        msg["to"] = row["to_addr"]
+        msg["subject"] = row["subject"]
+        if row["cc_addr"]:
+            msg["cc"] = row["cc_addr"]
+        raw = _b64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        from googleapiclient.discovery import build as _gbuild
+        svc = _gbuild("gmail", "v1", credentials=creds, cache_discovery=False)
+        svc.users().messages().send(userId="me", body={"raw": raw}).execute()
+        cur.execute("UPDATE gmail_drafts SET status='sent' WHERE id=%s", (draft_id,))
+        conn.commit()
+        log.info(f"Gmail draft {draft_id} sent to {row['to_addr']!r}")
+    except Exception as e:
+        conn.rollback()
+        log.error("gmail_send_draft error: %s", e)
+        cur.close(); conn.close()
+        return jsonify({"error": str(e)}), 500
+    cur.close(); conn.close()
+    return jsonify({"status": "sent"})
+
+
+@app.route("/api/google/gmail/drafts/<int:draft_id>", methods=["DELETE"])
+def gmail_discard_draft(draft_id):
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE gmail_drafts SET status='discarded' WHERE id=%s AND status='pending'",
+        (draft_id,),
+    )
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"status": "discarded"})
 
 
 if __name__ == "__main__":
