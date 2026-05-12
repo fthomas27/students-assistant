@@ -593,6 +593,15 @@ ON CONFLICT (ip_address) DO NOTHING""")
         conn = get_db()
         cur = conn.cursor()
 
+    # Add notes column to bucket_list if it doesn't exist yet
+    try:
+        cur.execute("ALTER TABLE bucket_list ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
     # Insert default config values
     defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas", "app_mode": "school", "is_summer_school": "false", "has_summer_job": "false"}
     for k, v in defaults.items():
@@ -5814,7 +5823,7 @@ def api_config_post():
 def api_bucket_list_get():
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, title, category, completed, completed_at, created_at FROM bucket_list ORDER BY completed, created_at DESC")
+    cur.execute("SELECT id, title, category, notes, completed, completed_at, created_at FROM bucket_list ORDER BY completed, created_at DESC")
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -5822,6 +5831,7 @@ def api_bucket_list_get():
         "id": r["id"],
         "title": r["title"],
         "category": r["category"],
+        "notes": r["notes"],
         "completed": r["completed"],
         "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
         "created_at": r["created_at"].isoformat(),
@@ -5831,18 +5841,19 @@ def api_bucket_list_get():
 @app.route("/api/bucket-list", methods=["POST"])
 def api_bucket_list_post():
     data = request.get_json(force=True) or {}
-    title = str(data.get("title", "")).strip()[:500]
+    title    = str(data.get("title",    "")).strip()[:500]
     category = str(data.get("category", "")).strip()[:100]
+    notes    = str(data.get("notes",    "")).strip()[:2000]
     if not title:
         return jsonify({"error": "title required"}), 400
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("INSERT INTO bucket_list (title, category) VALUES (%s, %s) RETURNING id, created_at", (title, category))
+    cur.execute("INSERT INTO bucket_list (title, category, notes) VALUES (%s, %s, %s) RETURNING id, created_at", (title, category, notes))
     row = cur.fetchone()
     conn.commit()
     cur.close()
     conn.close()
-    return jsonify({"id": row["id"], "title": title, "category": category, "completed": False, "completed_at": None, "created_at": row["created_at"].isoformat()}), 201
+    return jsonify({"id": row["id"], "title": title, "category": category, "notes": notes, "completed": False, "completed_at": None, "created_at": row["created_at"].isoformat()}), 201
 
 
 @app.route("/api/bucket-list/<int:item_id>", methods=["PATCH"])
@@ -5857,6 +5868,8 @@ def api_bucket_list_patch(item_id):
         cur.execute("UPDATE bucket_list SET title=%s WHERE id=%s", (str(data["title"])[:500], item_id))
     if "category" in data:
         cur.execute("UPDATE bucket_list SET category=%s WHERE id=%s", (str(data["category"])[:100], item_id))
+    if "notes" in data:
+        cur.execute("UPDATE bucket_list SET notes=%s WHERE id=%s", (str(data["notes"])[:2000], item_id))
     conn.commit()
     cur.close()
     conn.close()
@@ -7068,8 +7081,9 @@ def api_chat():
         except Exception:
             log.warning("/api/chat could not fetch assignments for context")
 
-        # Inject summer bucket list context when in summer mode
+        # Inject summer context (bucket list + job schedule) when in summer mode
         if _app_mode == "summer":
+            # Bucket list (prioritised — placed before tasks)
             try:
                 _bl_conn = get_db()
                 _bl_cur = _bl_conn.cursor()
@@ -7077,15 +7091,42 @@ def api_chat():
                 _bl_rows = _bl_cur.fetchall()
                 _bl_cur.close(); _bl_conn.close()
                 if _bl_rows:
-                    _pending = [r["title"] for r in _bl_rows if not r["completed"]]
+                    _pending = ["[%s] %s" % (r["category"], r["title"]) if r["category"] else r["title"]
+                                for r in _bl_rows if not r["completed"]]
                     _done_bl = [r["title"] for r in _bl_rows if r["completed"]]
-                    bl_text = "SUMMER BUCKET LIST — Pending: %s. Completed: %s." % (
+                    bl_text = "SUMMER BUCKET LIST (priority context) — Pending: %s. Completed: %s." % (
                         (", ".join(_pending) if _pending else "none"),
                         (", ".join(_done_bl) if _done_bl else "none"),
                     )
                     system_dynamic += "\n\n" + bl_text
             except Exception:
                 pass
+
+            # Job schedule — inject upcoming shifts when student has a summer job
+            if _has_summer_job and JOB_SCHEDULE_ICAL_URL:
+                try:
+                    _job_cal = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+                    if _job_cal:
+                        _tz = get_tz()
+                        _today = datetime.now(_tz).date()
+                        _job_end = _today + timedelta(days=7)
+                        _job_events = recurring_ical_events.of(_job_cal).between(
+                            datetime.combine(_today, datetime.min.time(), tzinfo=_tz),
+                            datetime.combine(_job_end, datetime.max.time(), tzinfo=_tz),
+                        )
+                        _shifts = []
+                        for ev in _job_events:
+                            _ds = ev.get("DTSTART")
+                            if not _ds:
+                                continue
+                            _dt = _ds.dt
+                            _date_str = _dt.strftime("%A %-m/%-d") if hasattr(_dt, "strftime") else str(_dt)
+                            _time_str = _dt.strftime("%-I:%M %p") if hasattr(_dt, "hour") else ""
+                            _shifts.append("%s %s — %s" % (_date_str, _time_str, str(ev.get("SUMMARY", "Work"))))
+                        if _shifts:
+                            system_dynamic += "\n\nJOB SCHEDULE (next 7 days): " + "; ".join(_shifts[:10]) + "."
+                except Exception:
+                    pass
 
         # Inject pending tasks and project context
         try:

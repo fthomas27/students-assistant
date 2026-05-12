@@ -2284,6 +2284,33 @@ font-weight: 500;
 color: var(--text);
 }
 
+/* Bucket list category preset buttons */
+.bucket-preset-btn {
+padding: 3px 8px;
+background: var(--surface3);
+border: 1px solid var(--border2);
+border-radius: 12px;
+color: var(--text2);
+font-size: 11px;
+cursor: pointer;
+transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.bucket-preset-btn:hover,
+.bucket-preset-btn.selected { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* Bucket list category filter tabs */
+.bucket-filter-tab {
+padding: 4px 10px;
+background: var(--surface2);
+border: 1px solid var(--border);
+border-radius: 12px;
+color: var(--text3);
+font-size: 11px;
+cursor: pointer;
+transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.bucket-filter-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
 /* Toggle switch */
 .settings-toggle {
 display: inline-flex;
@@ -3245,17 +3272,17 @@ margin-bottom: 0;
 <header class="top-nav">
   <div class="top-nav-date" id="topNavDate">Loading...</div>
   <nav class="top-nav-circles" id="topNavCircles">
-    <!-- School-only nav -->
-    <button class="circle-btn school-nav" data-page="tasks"          onclick="navigateTo('tasks')"          title="Tasks">&#10003;<span class="circle-btn-badge" data-badge="tasks"></span></button>
-    <button class="circle-btn school-nav" data-page="assignments"    onclick="navigateTo('assignments')"    title="Assignments">&#128203;<span class="circle-btn-badge" data-badge="assignments"></span></button>
-    <button class="circle-btn school-nav" id="calendarNavBtn"        onclick="openCalendarModal()"          title="Calendar">&#128197;</button>
+    <!-- School-only -->
+    <button class="circle-btn school-only-nav" data-page="assignments" onclick="navigateTo('assignments')" title="Assignments">&#128203;<span class="circle-btn-badge" data-badge="assignments"></span></button>
+    <button class="circle-btn school-only-nav" data-page="plan"        onclick="navigateTo('plan')"        title="Plan">&#127919;</button>
     <!-- Always-visible -->
+    <button class="circle-btn"            data-page="tasks"          onclick="navigateTo('tasks')"          title="Tasks">&#10003;<span class="circle-btn-badge" data-badge="tasks"></span></button>
+    <button class="circle-btn"            id="calendarNavBtn"        onclick="openCalendarModal()"          title="Calendar">&#128197;</button>
     <button class="circle-btn active"     data-page="home"           onclick="navigateTo('home')"           title="Home">&#8962;</button>
     <button class="circle-btn"            data-page="chat"           onclick="navigateTo('chat')"           title="Chat">&#128172;</button>
-    <button class="circle-btn school-nav" data-page="plan"           onclick="navigateTo('plan')"           title="Plan">&#127919;</button>
     <button class="circle-btn"            data-page="projects"       onclick="navigateTo('projects')"       title="Projects">&#128230;<span class="circle-btn-badge" data-badge="projects"></span></button>
     <button class="circle-btn"            data-page="meals"          onclick="navigateTo('meals')"          title="Meals">&#127869;</button>
-    <!-- Summer-only nav -->
+    <!-- Summer-only -->
     <button class="circle-btn summer-nav" data-page="summer-bucket"  onclick="navigateTo('summer-bucket')" title="Bucket List" style="display:none;">&#127774;</button>
   </nav>
   <div class="top-nav-mobile">
@@ -3266,14 +3293,14 @@ margin-bottom: 0;
     </button>
     <div class="nav-menu-dropdown" id="navMenuDropdown" role="menu">
       <button class="nav-menu-item" data-page="home"           onclick="navigateTo('home'); closeNavMenu();"          role="menuitem"><span class="nav-menu-item-icon">&#8962;</span>Home</button>
-      <!-- School-only pages -->
-      <button class="nav-menu-item school-nav" data-page="tasks"       onclick="navigateTo('tasks'); closeNavMenu();"        role="menuitem"><span class="nav-menu-item-icon">&#10003;</span>Tasks</button>
-      <button class="nav-menu-item school-nav" data-page="assignments" onclick="navigateTo('assignments'); closeNavMenu();"  role="menuitem"><span class="nav-menu-item-icon">&#128203;</span>Assignments</button>
-      <button class="nav-menu-item school-nav" data-page="plan"        onclick="navigateTo('plan'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#127919;</span>Plan</button>
       <!-- Always visible -->
-      <button class="nav-menu-item" data-page="chat"         onclick="navigateTo('chat'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#128172;</span>Chat</button>
-      <button class="nav-menu-item" data-page="projects"     onclick="navigateTo('projects'); closeNavMenu();"     role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
-      <button class="nav-menu-item" data-page="meals"        onclick="navigateTo('meals'); closeNavMenu();"        role="menuitem"><span class="nav-menu-item-icon">&#127869;</span>Meals</button>
+      <button class="nav-menu-item" data-page="tasks"        onclick="navigateTo('tasks'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#10003;</span>Tasks</button>
+      <button class="nav-menu-item" data-page="chat"         onclick="navigateTo('chat'); closeNavMenu();"          role="menuitem"><span class="nav-menu-item-icon">&#128172;</span>Chat</button>
+      <button class="nav-menu-item" data-page="projects"     onclick="navigateTo('projects'); closeNavMenu();"      role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
+      <button class="nav-menu-item" data-page="meals"        onclick="navigateTo('meals'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#127869;</span>Meals</button>
+      <!-- School-only -->
+      <button class="nav-menu-item school-only-nav" data-page="assignments" onclick="navigateTo('assignments'); closeNavMenu();"  role="menuitem"><span class="nav-menu-item-icon">&#128203;</span>Assignments</button>
+      <button class="nav-menu-item school-only-nav" data-page="plan"        onclick="navigateTo('plan'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#127919;</span>Plan</button>
       <!-- Summer-only -->
       <button class="nav-menu-item summer-nav" data-page="summer-bucket" onclick="navigateTo('summer-bucket'); closeNavMenu();" role="menuitem" style="display:none;"><span class="nav-menu-item-icon">&#127774;</span>Bucket List</button>
       <div class="nav-menu-divider"></div>
@@ -3693,15 +3720,37 @@ margin-bottom: 0;
 
 <!-- ── Bucket List / Adventure Tracker Page ── -->
 <div class="page" id="page-summer-bucket">
+  <!-- Header + progress bar -->
   <div class="sidebar-header" style="display:flex;justify-content:space-between;align-items:center;">
-    <span>&#127774; Bucket List</span>
-    <button onclick="openAddBucketItem()" style="background:none;border:none;color:var(--text);cursor:pointer;font-size:18px;padding:0;line-height:1;" title="Add item">+</button>
+    <span>&#127774; Bucket List &amp; Adventures</span>
+    <button onclick="openAddBucketItem()" style="background:none;border:none;color:var(--text);cursor:pointer;font-size:20px;padding:0;line-height:1;" title="Add item">+</button>
+  </div>
+  <div style="padding:0 0 10px;">
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:4px;">
+      <span>Progress</span>
+      <span id="bucketPageProgressText">0 / 0</span>
+    </div>
+    <div class="bucket-progress-bar-wrap"><div class="bucket-progress-bar" id="bucketPageProgressBar" style="width:0%;"></div></div>
   </div>
 
-  <!-- Add Item Inline Form (hidden by default) -->
-  <div id="bucketAddForm" style="display:none;padding:10px;background:var(--surface2);border-radius:var(--r-sm);margin-bottom:12px;border:1px solid var(--border);">
+  <!-- Category filter tabs -->
+  <div id="bucketCategoryFilters" style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px;"></div>
+
+  <!-- Add Item Inline Form -->
+  <div id="bucketAddForm" style="display:none;padding:12px;background:var(--surface2);border-radius:var(--r-sm);margin-bottom:12px;border:1px solid var(--border);">
     <input id="bucketTitleInput" type="text" placeholder="What do you want to do this summer?" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;margin-bottom:6px;box-sizing:border-box;">
-    <input id="bucketCategoryInput" type="text" placeholder="Category (e.g. Adventure, Food, Travel)" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;margin-bottom:8px;box-sizing:border-box;">
+    <!-- Adventure category presets -->
+    <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;" id="bucketCategoryPresets">
+      <span style="font-size:11px;color:var(--text3);align-self:center;margin-right:2px;">Category:</span>
+      <button type="button" onclick="setBucketCategory('Adventure')"   class="bucket-preset-btn">&#127956; Adventure</button>
+      <button type="button" onclick="setBucketCategory('Travel')"      class="bucket-preset-btn">&#9992;&#65039; Travel</button>
+      <button type="button" onclick="setBucketCategory('Food')"        class="bucket-preset-btn">&#127829; Food</button>
+      <button type="button" onclick="setBucketCategory('Social')"      class="bucket-preset-btn">&#128101; Social</button>
+      <button type="button" onclick="setBucketCategory('Creative')"    class="bucket-preset-btn">&#127912; Creative</button>
+      <button type="button" onclick="setBucketCategory('Fitness')"     class="bucket-preset-btn">&#127939; Fitness</button>
+    </div>
+    <input id="bucketCategoryInput" type="text" placeholder="Or type a custom category..." style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;margin-bottom:6px;box-sizing:border-box;">
+    <textarea id="bucketNotesInput" rows="2" placeholder="Notes or details (optional)" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;margin-bottom:8px;box-sizing:border-box;resize:vertical;"></textarea>
     <div style="display:flex;gap:6px;">
       <button onclick="saveBucketItem()" style="flex:1;padding:7px;background:var(--accent);border:none;border-radius:var(--r-sm);color:#fff;font-weight:600;cursor:pointer;font-size:12px;">Add</button>
       <button onclick="closeBucketAddForm()" style="flex:1;padding:7px;background:var(--surface3);border:none;border-radius:var(--r-sm);color:var(--text);cursor:pointer;font-size:12px;">Cancel</button>
@@ -4232,13 +4281,15 @@ function saveSettings() {
   const isSummerSchool = document.getElementById('isSummerSchoolCheck').checked;
   const hasSummerJob = document.getElementById('hasSummerJobCheck').checked;
 
+  const cfgPayload = { name: customName, timezone, app_mode: mode, is_summer_school: String(isSummerSchool), has_summer_job: String(hasSummerJob) };
   fetch('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: customName, timezone, app_mode: mode, is_summer_school: String(isSummerSchool), has_summer_job: String(hasSummerJob) }),
+    body: JSON.stringify(cfgPayload),
   }).catch(() => {});
 
-  applyAppMode(mode);
+  // Build a minimal cfg-like object so applyAppMode can gate on is_summer_school
+  applyAppMode(mode, { is_summer_school: isSummerSchool, has_summer_job: hasSummerJob });
   closeSettingsModal();
   alert('Settings saved successfully');
 }
@@ -4273,31 +4324,47 @@ function setAppMode(mode) {
   localStorage.setItem('appMode', mode);
   _applyModeButtons(mode);
   document.getElementById('summerQuestionsDiv').style.display = mode === 'summer' ? 'block' : 'none';
+  // Preview nav change immediately using current checkbox state
+  const isSummerSchool = document.getElementById('isSummerSchoolCheck')?.checked || false;
+  const hasSummerJob   = document.getElementById('hasSummerJobCheck')?.checked || false;
+  applyAppMode(mode, { is_summer_school: isSummerSchool, has_summer_job: hasSummerJob });
 }
 
-function applyAppMode(mode) {
+// cfg is the /api/config response; pass it in so we can gate on is_summer_school
+function applyAppMode(mode, cfg) {
   _currentAppMode = mode;
   localStorage.setItem('appMode', mode);
   const isSummer = mode === 'summer';
+  const isSummerSchool = cfg ? !!cfg.is_summer_school : false;
 
-  // Show/hide school-only and summer-only nav items
-  document.querySelectorAll('.school-nav').forEach(el => { el.style.display = isSummer ? 'none' : ''; });
+  // school-only-nav: hidden in summer UNLESS is_summer_school=true (assignments/plan)
+  document.querySelectorAll('.school-only-nav').forEach(el => {
+    const page = el.dataset.page;
+    if (isSummer) {
+      // assignments stays if summer school; plan always hidden in summer
+      el.style.display = (page === 'assignments' && isSummerSchool) ? '' : 'none';
+    } else {
+      el.style.display = '';
+    }
+  });
+
+  // summer-only-nav: only visible in summer
   document.querySelectorAll('.summer-nav').forEach(el => { el.style.display = isSummer ? '' : 'none'; });
 
   // Swap home page content panels
   const schoolContent = document.getElementById('schoolHomeContent');
   const summerContent = document.getElementById('summerHomeContent');
-  const homeHeader = document.getElementById('homePageHeader');
+  const homeHeader   = document.getElementById('homePageHeader');
   if (schoolContent) schoolContent.style.display = isSummer ? 'none' : '';
   if (summerContent) summerContent.style.display = isSummer ? '' : 'none';
   if (homeHeader) homeHeader.textContent = isSummer ? '☀️ Summer' : '⌂ Home';
 
-  // If on a school-only page redirect to home
-  const schoolOnlyPages = ['assignments', 'plan'];
+  // If on a now-hidden page, redirect to home
+  const hiddenInSummer = ['plan'].concat(isSummerSchool ? [] : ['assignments']);
   const activePage = document.querySelector('.page.active');
   if (isSummer && activePage) {
     const pid = activePage.id.replace('page-', '');
-    if (schoolOnlyPages.includes(pid)) navigateTo('home');
+    if (hiddenInSummer.includes(pid)) navigateTo('home');
   }
 }
 
@@ -4331,15 +4398,7 @@ function loadUVAlert() {
 }
 
 function loadBucketProgress() {
-  fetch('/api/bucket-list').then(r => r.json()).then(items => {
-    const total = items.length;
-    const done = items.filter(i => i.completed).length;
-    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    const txt = document.getElementById('bucketProgressText');
-    const bar = document.getElementById('bucketProgressBar');
-    if (txt) txt.textContent = done + ' / ' + total;
-    if (bar) bar.style.width = pct + '%';
-  }).catch(() => {});
+  fetch('/api/bucket-list').then(r => r.json()).then(items => _refreshBucketProgress(items)).catch(() => {});
 }
 
 function loadSummerCriticalTasks() {
@@ -4379,48 +4438,104 @@ function loadJobSchedule() {
   }).catch(() => { el.innerHTML = '<p style="color:var(--text3);font-size:12px;">Could not load schedule.</p>'; });
 }
 
-// ── Bucket List CRUD ──────────────────────────────────────────────────────────
+// ── Bucket List CRUD + Filters ────────────────────────────────────────────────
+
+let _bucketFilter = 'All';  // active category filter
+
+function _refreshBucketProgress(items) {
+  const total = items.length;
+  const done  = items.filter(i => i.completed).length;
+  const pct   = total ? Math.round((done / total) * 100) : 0;
+  // page-level bars
+  const pt = document.getElementById('bucketPageProgressText');
+  const pb = document.getElementById('bucketPageProgressBar');
+  if (pt) pt.textContent = done + ' / ' + total;
+  if (pb) pb.style.width = pct + '%';
+  // home card bars
+  const ht = document.getElementById('bucketProgressText');
+  const hb = document.getElementById('bucketProgressBar');
+  if (ht) ht.textContent = done + ' / ' + total;
+  if (hb) hb.style.width = pct + '%';
+}
+
+function _buildCategoryFilters(items) {
+  const wrap = document.getElementById('bucketCategoryFilters');
+  if (!wrap) return;
+  const cats = ['All', ...new Set(items.map(i => i.category).filter(Boolean))];
+  wrap.innerHTML = cats.map(c =>
+    `<button class="bucket-filter-tab${c === _bucketFilter ? ' active' : ''}" onclick="setBucketFilter('${c.replace(/'/g,"\\'")}')">
+      ${escapeHtml(c)}${c !== 'All' ? ' <span style="color:inherit;opacity:.7;">('+items.filter(i=>i.category===c).length+')</span>' : ''}
+    </button>`
+  ).join('');
+}
+
+function setBucketFilter(cat) {
+  _bucketFilter = cat;
+  fetch('/api/bucket-list').then(r => r.json()).then(items => {
+    _buildCategoryFilters(items);
+    _renderBucketItems(items);
+  });
+}
 
 function loadBucketList() {
   const el = document.getElementById('bucketListContainer');
   if (!el) return;
   fetch('/api/bucket-list').then(r => r.json()).then(items => {
-    if (!items.length) {
-      el.innerHTML = '<p style="color:var(--text3);font-size:13px;">Your bucket list is empty — add something exciting!</p>';
-      return;
-    }
-    const pending = items.filter(i => !i.completed);
-    const done = items.filter(i => i.completed);
-    let html = '';
-    if (pending.length) {
-      html += pending.map(i => renderBucketItem(i)).join('');
-    }
-    if (done.length) {
-      html += `<div style="margin:14px 0 6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;">Completed (${done.length})</div>`;
-      html += done.map(i => renderBucketItem(i)).join('');
-    }
-    el.innerHTML = html;
+    _refreshBucketProgress(items);
+    _buildCategoryFilters(items);
+    _renderBucketItems(items);
   }).catch(() => { el.innerHTML = '<p style="color:var(--text3);font-size:13px;">Could not load bucket list.</p>'; });
+}
+
+function _renderBucketItems(allItems) {
+  const el = document.getElementById('bucketListContainer');
+  if (!el) return;
+  const items = _bucketFilter === 'All' ? allItems : allItems.filter(i => i.category === _bucketFilter);
+  if (!items.length) {
+    el.innerHTML = `<p style="color:var(--text3);font-size:13px;">${_bucketFilter === 'All' ? "Your bucket list is empty — add something exciting!" : "No items in this category yet."}</p>`;
+    return;
+  }
+  const pending = items.filter(i => !i.completed);
+  const done    = items.filter(i => i.completed);
+  let html = '';
+  if (pending.length) html += pending.map(renderBucketItem).join('');
+  if (done.length) {
+    html += `<div style="margin:16px 0 6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-weight:700;">✓ Completed (${done.length})</div>`;
+    html += done.map(renderBucketItem).join('');
+  }
+  el.innerHTML = html;
 }
 
 function renderBucketItem(item) {
   const titleStyle = item.completed ? 'text-decoration:line-through;color:var(--text3);' : '';
-  const catChip = item.category ? `<span style="font-size:10px;color:var(--accent);background:rgba(255,127,80,0.12);border-radius:4px;padding:1px 5px;margin-left:6px;">${escapeHtml(item.category)}</span>` : '';
-  return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);" id="bucket-item-${item.id}">
-    <input type="checkbox" ${item.completed ? 'checked' : ''} onchange="toggleBucketItem(${item.id}, this)" style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;flex-shrink:0;">
-    <span style="flex:1;font-size:13px;${titleStyle}">${escapeHtml(item.title)}${catChip}</span>
-    <button onclick="deleteBucketItem(${item.id})" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:0 2px;flex-shrink:0;" title="Delete">✕</button>
+  const catChip    = item.category
+    ? `<span style="font-size:10px;color:var(--accent);background:rgba(255,127,80,0.13);border-radius:4px;padding:1px 6px;margin-left:5px;white-space:nowrap;">${escapeHtml(item.category)}</span>`
+    : '';
+  const notesRow  = item.notes
+    ? `<div style="font-size:11px;color:var(--text3);margin-top:3px;padding-left:26px;line-height:1.4;">${escapeHtml(item.notes)}</div>`
+    : '';
+  const doneDate  = item.completed && item.completed_at
+    ? `<div style="font-size:10px;color:var(--green);margin-top:2px;padding-left:26px;">Completed ${new Date(item.completed_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</div>`
+    : '';
+  return `<div style="padding:9px 0;border-bottom:1px solid var(--border);" id="bucket-item-${item.id}">
+    <div style="display:flex;align-items:flex-start;gap:10px;">
+      <input type="checkbox" ${item.completed ? 'checked' : ''} onchange="toggleBucketItem(${item.id}, this)"
+        style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;flex-shrink:0;margin-top:1px;">
+      <span style="flex:1;font-size:13px;${titleStyle}">${escapeHtml(item.title)}${catChip}</span>
+      <button onclick="deleteBucketItem(${item.id})" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:13px;padding:0 2px;flex-shrink:0;" title="Delete">✕</button>
+    </div>
+    ${notesRow}${doneDate}
   </div>`;
 }
 
 function toggleBucketItem(id, cb) {
   fetch('/api/bucket-list/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({completed: cb.checked}) })
-    .then(r => r.json()).then(() => { loadBucketList(); loadBucketProgress(); }).catch(() => { cb.checked = !cb.checked; });
+    .then(r => r.json()).then(() => loadBucketList()).catch(() => { cb.checked = !cb.checked; });
 }
 
 function deleteBucketItem(id) {
-  if (!confirm('Delete this bucket list item?')) return;
-  fetch('/api/bucket-list/' + id, { method: 'DELETE' }).then(() => { loadBucketList(); loadBucketProgress(); });
+  if (!confirm('Delete this item?')) return;
+  fetch('/api/bucket-list/' + id, { method: 'DELETE' }).then(() => loadBucketList());
 }
 
 function openAddBucketItem() {
@@ -4430,15 +4545,28 @@ function openAddBucketItem() {
 
 function closeBucketAddForm() {
   const form = document.getElementById('bucketAddForm');
-  if (form) { form.style.display = 'none'; document.getElementById('bucketTitleInput').value = ''; document.getElementById('bucketCategoryInput').value = ''; }
+  if (!form) return;
+  form.style.display = 'none';
+  document.getElementById('bucketTitleInput').value  = '';
+  document.getElementById('bucketCategoryInput').value = '';
+  document.getElementById('bucketNotesInput').value   = '';
+  document.querySelectorAll('.bucket-preset-btn').forEach(b => b.classList.remove('selected'));
+}
+
+function setBucketCategory(cat) {
+  document.getElementById('bucketCategoryInput').value = cat;
+  document.querySelectorAll('.bucket-preset-btn').forEach(b => {
+    b.classList.toggle('selected', b.textContent.trim().endsWith(cat));
+  });
 }
 
 function saveBucketItem() {
-  const title = (document.getElementById('bucketTitleInput').value || '').trim();
+  const title    = (document.getElementById('bucketTitleInput').value    || '').trim();
   const category = (document.getElementById('bucketCategoryInput').value || '').trim();
-  if (!title) return;
-  fetch('/api/bucket-list', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({title, category}) })
-    .then(r => r.json()).then(() => { closeBucketAddForm(); loadBucketList(); loadBucketProgress(); });
+  const notes    = (document.getElementById('bucketNotesInput').value    || '').trim();
+  if (!title) { document.getElementById('bucketTitleInput').focus(); return; }
+  fetch('/api/bucket-list', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({title, category, notes}) })
+    .then(r => r.json()).then(() => { closeBucketAddForm(); loadBucketList(); });
 }
 
 function confirmLogout() {
@@ -8516,7 +8644,7 @@ loadProjects();
     const mode = cfg.app_mode || 'school';
     localStorage.setItem('appMode', mode);
     _currentAppMode = mode;
-    applyAppMode(mode);
+    applyAppMode(mode, cfg);
     navigateTo('home');
   }).catch(() => navigateTo('home'));
 })();
