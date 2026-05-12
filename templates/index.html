@@ -6923,12 +6923,17 @@ function expandSlashCommand(msg) {
     const rest = t.replace(/^\/findperson\s*/i, '').trim();
     if (!rest) return 'I need you to research a person for me, but you forgot to include their name. Who should I look up?';
     return (
-      `Research this person and build me a detailed profile: "${rest}". ` +
-      `Use web_search and web_fetch to find their background, professional history, ` +
-      `social media presence, location, contact details, affiliations, and any other ` +
-      `publicly available information. Then compile everything into a structured persona ` +
-      `and save it with remember_person. Present the final profile in clear sections: ` +
-      `Basic Info, Background, Online Presence, and Notable Facts.`
+      `Do a thorough deep-dive research on this person: "${rest}". ` +
+      `Take as much time as you need — do not rush this. ` +
+      `Run multiple web_search queries from different angles (full name, name + location, name + employer, name + social media, name + any contact info provided, etc.). ` +
+      `For every promising result, use web_fetch to read the actual page and extract details — don't rely on snippet previews alone. ` +
+      `Keep searching until you feel confident you have a comprehensive picture. ` +
+      `Look for: full name and aliases, age/DOB, current and past locations, current and past employers or schools, ` +
+      `job titles and professional history, social media profiles (LinkedIn, Instagram, X/Twitter, Facebook, TikTok, etc.), ` +
+      `contact information (email, phone, address), family members or known associates, interests and hobbies, ` +
+      `public records or news mentions, and anything else publicly available. ` +
+      `Once you have gathered everything, compile it all into a detailed, well-organized persona profile with clearly labeled sections. ` +
+      `Do NOT save anything to memory — just present the full profile to me.`
     );
   }
 
