@@ -9211,6 +9211,7 @@ def google_auth_start():
             prompt="consent",
         )
         session["google_oauth_state"] = state
+        set_config({"google_oauth_pending_state": state})
         return redirect(auth_url)
     except Exception as e:
         log.error("google_auth_start error: %s", e)
@@ -9221,9 +9222,11 @@ def google_auth_start():
 def google_auth_callback():
     if not session.get("authenticated"):
         return redirect("/login")
-    state = session.pop("google_oauth_state", None)
-    if not state or state != request.args.get("state"):
-        return "OAuth state mismatch — your session cookie may have been blocked. Please clear cookies and try again.", 400
+    incoming_state = request.args.get("state")
+    state = session.pop("google_oauth_state", None) or get_config().get("google_oauth_pending_state", "")
+    set_config({"google_oauth_pending_state": ""})
+    if not state or state != incoming_state:
+        return "OAuth state mismatch — please try the connection again from /google-auth/start.", 400
     try:
         from google_auth_oauthlib.flow import Flow
         redirect_uri = GOOGLE_REDIRECT_URI or request.url_root.rstrip("/") + "/google-auth/callback"
