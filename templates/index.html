@@ -3617,6 +3617,19 @@ margin-bottom: 0;
     </div>
   </div>
 
+  <!-- Fridge Photo Upload Card -->
+  <div class="meal-ingredients-card" id="fridgePhotoCard">
+    <div class="meal-ingredients-label" style="display:flex;align-items:center;gap:10px;">
+      <span>&#128247; Fridge Photo</span>
+      <span style="font-size:12px;color:var(--text3);font-weight:400;">Auto-plans tomorrow's meals every night at 9 PM</span>
+    </div>
+    <div id="fridgePhotoStatus" style="font-size:13px;color:var(--text3);margin-bottom:10px;">Loading...</div>
+    <input type="file" id="fridgePhotoInput" accept="image/*" style="display:none;" onchange="uploadFridgePhoto(this)">
+    <button class="meal-generate-btn" style="margin-top:0;background:rgba(139,92,246,0.18);border:1px solid rgba(139,92,246,0.35);color:#a78bfa;" onclick="document.getElementById('fridgePhotoInput').click()" id="fridgeUploadBtn">
+      <span id="fridgeUploadBtnText">&#128247; Upload Fridge Photo</span>
+    </button>
+  </div>
+
   <!-- Ingredient Input Card -->
   <div class="meal-ingredients-card">
     <div class="meal-ingredients-label">What's in your kitchen?</div>
@@ -6925,6 +6938,8 @@ async function sendMessage() {
     }
 
     const activeChips = new Map(); // tool_use_id -> { el, name, kind }
+    // Tools that run silently in the background — no chip shown to the user
+    const SILENT_TOOLS = new Set(['remember_person', 'save_memory']);
     function chipLabelFor(name, kind, input) {
       if (name === 'web_search') {
         const q = input && input.query ? String(input.query).slice(0, 60) : '';
@@ -7016,12 +7031,16 @@ async function sendMessage() {
           try { localStorage.setItem('currentConversationId', data.conversation_id); } catch (_e) {}
         }
       } else if (eventName === 'tool_start') {
-        ensureChip(data.id || ('chip-' + Date.now()), data.name, data.kind, null);
+        if (!SILENT_TOOLS.has(data.name)) {
+          ensureChip(data.id || ('chip-' + Date.now()), data.name, data.kind, null);
+        }
       } else if (eventName === 'tool_input_delta') {
         // Currently unused — tool_end carries the final input — but we keep the
         // event hook live so future UI tweaks can show the query as it streams.
       } else if (eventName === 'tool_end') {
-        finishChip(data.id, data.name, data.input || null);
+        if (!SILENT_TOOLS.has(data.name)) {
+          finishChip(data.id, data.name, data.input || null);
+        }
       } else if (eventName === 'text') {
         attachBubble();
         if (data && typeof data.delta === 'string') {
@@ -8915,7 +8934,65 @@ let _mealCurrentPlan        = null;   // finalized plan (for add-food updates)
 let _mealAssumedStates      = {};
 const _mealCardStore        = {};     // cardId → {meal, ingredientsUsed}
 
+function loadFridgePhotoStatus() {
+  fetch('/api/fridge-photo/latest')
+    .then(r => r.json())
+    .then(data => {
+      const el = document.getElementById('fridgePhotoStatus');
+      if (!el) return;
+      if (!data.photo) {
+        el.textContent = 'No photo uploaded yet — upload one to enable auto meal planning.';
+        el.style.color = 'var(--text3)';
+      } else {
+        const d = new Date(data.photo.uploaded_at);
+        const dateStr = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        const ingr = data.photo.analyzed_ingredients
+          ? ' · Jarvis found: ' + data.photo.analyzed_ingredients.split(',').slice(0, 4).join(', ') + (data.photo.analyzed_ingredients.split(',').length > 4 ? '…' : '')
+          : '';
+        el.innerHTML = `<span style="color:#48c78e;">&#10003; Last upload: ${dateStr}</span>${ingr}`;
+      }
+    })
+    .catch(() => {
+      const el = document.getElementById('fridgePhotoStatus');
+      if (el) el.textContent = 'Could not load photo status.';
+    });
+}
+
+async function uploadFridgePhoto(input) {
+  if (!input.files || !input.files[0]) return;
+  const btn = document.getElementById('fridgeUploadBtn');
+  const btnText = document.getElementById('fridgeUploadBtnText');
+  const statusEl = document.getElementById('fridgePhotoStatus');
+  btn.disabled = true;
+  btnText.textContent = 'Uploading…';
+  if (statusEl) statusEl.textContent = 'Uploading photo…';
+
+  const formData = new FormData();
+  formData.append('photo', input.files[0]);
+
+  try {
+    const resp = await fetch('/api/fridge-photo', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (resp.ok) {
+      const d = new Date(data.uploaded_at);
+      const dateStr = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      if (statusEl) {
+        statusEl.innerHTML = `<span style="color:#48c78e;">&#10003; Uploaded ${dateStr} — Jarvis will auto-generate your meal plan at 9 PM tonight.</span>`;
+      }
+    } else {
+      if (statusEl) statusEl.textContent = 'Upload failed: ' + (data.error || 'unknown error');
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Upload error — please try again.';
+  } finally {
+    btn.disabled = false;
+    btnText.textContent = '&#128247; Upload Fridge Photo';
+    input.value = '';
+  }
+}
+
 function loadMealsPage() {
+  loadFridgePhotoStatus();
   fetch('/api/meals')
     .then(r => r.json())
     .then(data => {
