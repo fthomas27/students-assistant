@@ -736,7 +736,6 @@ def _get_google_credentials():
             client_id=GOOGLE_CLIENT_ID,
             client_secret=GOOGLE_CLIENT_SECRET,
             token_uri="https://oauth2.googleapis.com/token",
-            scopes=GOOGLE_SCOPES,
         )
         creds.refresh(GoogleRequest())
         return creds
@@ -9336,6 +9335,11 @@ def google_auth_callback():
         auth_response = request.url
         if auth_response.startswith("http://") and redirect_uri.startswith("https://"):
             auth_response = "https://" + auth_response[len("http://"):]
+        # Allow Google to return a different scope set (e.g. previously-granted
+        # scopes like gmail.send, or restricted scopes not granted in test mode)
+        # without raising a hard error.
+        import os as _os
+        _os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
         flow.fetch_token(authorization_response=auth_response)
         creds = flow.credentials
         if creds.refresh_token:
@@ -9369,7 +9373,6 @@ def google_auth_status():
                 client_id=GOOGLE_CLIENT_ID,
                 client_secret=GOOGLE_CLIENT_SECRET,
                 token_uri="https://oauth2.googleapis.com/token",
-                scopes=GOOGLE_SCOPES,
             )
             creds.refresh(GoogleRequest())
             authorized = True
