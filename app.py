@@ -6716,6 +6716,66 @@ JARVIS_TOOLS = [
             "required": ["form_id"],
         },
     },
+    {
+        "name": "update_form_info",
+        "description": "Update the title and/or description of an existing Google Form.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "form_id": {"type": "string", "description": "Google Form ID"},
+                "title": {"type": "string", "description": "New form title (omit to keep existing)"},
+                "description": {"type": "string", "description": "New form description (omit to keep existing)"},
+            },
+            "required": ["form_id"],
+        },
+    },
+    {
+        "name": "update_form_question",
+        "description": (
+            "Update an existing question in a Google Form. Use read_google_form first to get the item_id. "
+            "You can change the title, required status, and options (for choice questions). "
+            "To change question type, delete it and re-add it with add_form_question."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "form_id": {"type": "string", "description": "Google Form ID"},
+                "item_id": {"type": "string", "description": "Item ID from read_google_form"},
+                "title": {"type": "string", "description": "New question text (omit to keep existing)"},
+                "required": {"type": "boolean", "description": "Whether the answer is required"},
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New answer choices for MULTIPLE_CHOICE / CHECKBOX / DROPDOWN (omit to keep existing)",
+                },
+            },
+            "required": ["form_id", "item_id"],
+        },
+    },
+    {
+        "name": "delete_form_question",
+        "description": "Delete a question from an existing Google Form. Use read_google_form first to get the item_id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "form_id": {"type": "string", "description": "Google Form ID"},
+                "item_id": {"type": "string", "description": "Item ID from read_google_form"},
+            },
+            "required": ["form_id", "item_id"],
+        },
+    },
+    {
+        "name": "delete_slide",
+        "description": "Delete a slide from a Google Slides presentation. Use read_google_slides first to get the slide_id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "presentation_id": {"type": "string", "description": "Google Slides presentation ID"},
+                "slide_id": {"type": "string", "description": "Slide object ID from read_google_slides"},
+            },
+            "required": ["presentation_id", "slide_id"],
+        },
+    },
 ]
 
 
@@ -7276,6 +7336,8 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             "create_drive_folder", "delete_drive_file", "move_drive_file", "rename_drive_file",
             "read_google_slides", "create_google_slides", "add_google_slide", "update_slide_text",
             "read_google_form", "create_google_form", "add_form_question", "get_form_responses",
+            "update_form_info", "update_form_question", "delete_form_question",
+            "delete_slide",
         ):
             creds = _get_google_credentials()
             if creds is None:
@@ -7817,6 +7879,90 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                         "answers": answers,
                     })
                 return {"form_id": form_id, "response_count": len(out), "responses": out}
+
+            elif name == "update_form_info":
+                form_id = str(inputs.get("form_id", "")).strip()
+                if not form_id:
+                    return {"error": "form_id is required"}
+                new_title = inputs.get("title")
+                new_desc = inputs.get("description")
+                if new_title is None and new_desc is None:
+                    return {"error": "Provide at least one of title or description to update"}
+                svc = _gbuild("forms", "v1", credentials=creds, cache_discovery=False)
+                info_update = {}
+                mask_fields = []
+                if new_title is not None:
+                    info_update["title"] = str(new_title).strip()
+                    mask_fields.append("title")
+                if new_desc is not None:
+                    info_update["description"] = str(new_desc).strip()
+                    mask_fields.append("description")
+                svc.forms().batchUpdate(
+                    formId=form_id,
+                    body={"requests": [{"updateFormInfo": {"info": info_update, "updateMask": ",".join(mask_fields)}}]},
+                ).execute()
+                return {"status": "updated", "form_id": form_id, "updated_fields": mask_fields}
+
+            elif name == "update_form_question":
+                form_id = str(inputs.get("form_id", "")).strip()
+                item_id = str(inputs.get("item_id", "")).strip()
+                if not form_id or not item_id:
+                    return {"error": "form_id and item_id are required"}
+                svc = _gbuild("forms", "v1", credentials=creds, cache_discovery=False)
+                existing_form = svc.forms().get(formId=form_id).execute()
+                all_items = existing_form.get("items", [])
+                item_index = next((i for i, it in enumerate(all_items) if it.get("itemId") == item_id), None)
+                if item_index is None:
+                    return {"error": f"Item {item_id} not found in form {form_id}"}
+                existing_item = all_items[item_index]
+                updated_item = {k: v for k, v in existing_item.items()}
+                mask_fields = []
+                if "title" in inputs:
+                    updated_item["title"] = str(inputs["title"])
+                    mask_fields.append("title")
+                existing_q = (updated_item.get("questionItem") or {}).get("question") or {}
+                if "required" in inputs:
+                    existing_q["required"] = bool(inputs["required"])
+                    mask_fields.append("questionItem.question.required")
+                if "options" in inputs:
+                    choice_type = (existing_q.get("choiceQuestion") or {}).get("type", "MULTIPLE_CHOICE")
+                    existing_q["choiceQuestion"] = {
+                        "type": choice_type,
+                        "options": [{"value": o} for o in inputs["options"]],
+                    }
+                    mask_fields.append("questionItem.question.choiceQuestion")
+                if "questionItem" not in updated_item:
+                    updated_item["questionItem"] = {}
+                updated_item["questionItem"]["question"] = existing_q
+                svc.forms().batchUpdate(
+                    formId=form_id,
+                    body={"requests": [{"updateItem": {"item": updated_item, "location": {"index": item_index}, "updateMask": ",".join(mask_fields)}}]},
+                ).execute()
+                return {"status": "question_updated", "form_id": form_id, "item_id": item_id}
+
+            elif name == "delete_form_question":
+                form_id = str(inputs.get("form_id", "")).strip()
+                item_id = str(inputs.get("item_id", "")).strip()
+                if not form_id or not item_id:
+                    return {"error": "form_id and item_id are required"}
+                svc = _gbuild("forms", "v1", credentials=creds, cache_discovery=False)
+                svc.forms().batchUpdate(
+                    formId=form_id,
+                    body={"requests": [{"deleteItem": {"location": {"itemId": item_id}}}]},
+                ).execute()
+                return {"status": "question_deleted", "form_id": form_id, "item_id": item_id}
+
+            elif name == "delete_slide":
+                pres_id = str(inputs.get("presentation_id", "")).strip()
+                slide_id = str(inputs.get("slide_id", "")).strip()
+                if not pres_id or not slide_id:
+                    return {"error": "presentation_id and slide_id are required"}
+                svc = _gbuild("slides", "v1", credentials=creds, cache_discovery=False)
+                svc.presentations().batchUpdate(
+                    presentationId=pres_id,
+                    body={"requests": [{"deleteObject": {"objectId": slide_id}}]},
+                ).execute()
+                return {"status": "slide_deleted", "presentation_id": pres_id, "slide_id": slide_id}
 
             elif name == "read_gmail_message":
                 import base64 as _b64
