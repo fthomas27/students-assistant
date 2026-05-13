@@ -1800,8 +1800,9 @@ def _promote_overdue_to_tasks():
     """Auto-create a task for each overdue Canvas assignment not yet in the task list.
 
     Runs inside get_canvas_assignments_with_overdue() every time assignments are
-    fetched. Uses promoted_to_task flag to ensure each assignment is only promoted once.
-    Already-completed assignments are skipped.
+    fetched. Uses an atomic UPDATE...RETURNING claim on the cache's promoted_to_task
+    flag so concurrent calls (briefing job, notification job, chat tabs) cannot
+    double-insert tasks. Already-completed assignments are claimed but no task is created.
     """
     try:
         now_iso = datetime.now(TZ).isoformat()
@@ -1809,7 +1810,6 @@ def _promote_overdue_to_tasks():
         conn = get_db()
         cur = conn.cursor()
 
-        # Assignments that are overdue, not yet promoted, and not completed
         cur.execute("SELECT DISTINCT assignment_title FROM completions")
         done_titles = set(r["assignment_title"] for r in cur.fetchall())
 
@@ -1825,37 +1825,38 @@ def _promote_overdue_to_tasks():
 
         promoted = 0
         for row in candidates:
-            if row["title"] in done_titles:
-                # Already completed — mark promoted so we don't revisit
-                cur.execute(
-                    "UPDATE canvas_assignments_cache SET promoted_to_task = TRUE WHERE uid = %s",
-                    (row["uid"],))
+            # Atomic claim: only one process can flip promoted_to_task FALSE -> TRUE.
+            # If we don't get a row back, another process already claimed it.
+            cur.execute(
+                "UPDATE canvas_assignments_cache SET promoted_to_task = TRUE "
+                "WHERE uid = %s AND promoted_to_task = FALSE RETURNING uid",
+                (row["uid"],))
+            if not cur.fetchone():
                 continue
 
-            # Parse the due date for the task due_date column
+            if row["title"] in done_titles:
+                # Already completed — claim is enough, don't create a task
+                continue
+
+            # Skip if a matching incomplete task already exists (manual or prior promotion)
+            cur.execute(
+                "SELECT id FROM tasks WHERE title = %s AND completed = FALSE LIMIT 1",
+                (row["title"],))
+            if cur.fetchone():
+                continue
+
             try:
                 due_date = datetime.fromisoformat(row["due_iso"]).date()
             except Exception:
                 due_date = None
-
             notes = f"Overdue Canvas assignment — {row['class_name']}" if row["class_name"] else "Overdue Canvas assignment"
-
-            # Insert task only if no task with the same title already exists
             cur.execute(
-                "SELECT id FROM tasks WHERE title = %s AND completed = FALSE LIMIT 1",
-                (row["title"],))
-            if not cur.fetchone():
-                cur.execute(
-                    "INSERT INTO tasks (title, urgency, due_date, notes) VALUES (%s, 'high', %s, %s)",
-                    (row["title"], due_date, notes))
-                promoted += 1
-                log.info("Promoted overdue Canvas assignment to task: %r", row["title"])
+                "INSERT INTO tasks (title, urgency, due_date, notes) VALUES (%s, 'high', %s, %s)",
+                (row["title"], due_date, notes))
+            promoted += 1
+            log.info("Promoted overdue Canvas assignment to task: %r", row["title"])
 
-            cur.execute(
-                "UPDATE canvas_assignments_cache SET promoted_to_task = TRUE WHERE uid = %s",
-                (row["uid"],))
-
-        if promoted or candidates:
+        if candidates:
             conn.commit()
         cur.close(); conn.close()
     except Exception as e:
@@ -2060,22 +2061,31 @@ def _is_big_work_assignment(a):
 
 # ── ntfy push notification helpers ────────────────────────────────────────────
 
+_NTFY_PRIORITY_MAP = {"min": 1, "low": 2, "default": 3, "high": 4, "urgent": 5}
+
+
 def send_ntfy_notification(title, message, priority="default", tags=None):
-    """Send a push notification via ntfy. Returns True on success."""
+    """Send a push notification via ntfy. Returns True on success.
+
+    Uses ntfy's JSON publish endpoint so UTF-8 titles/messages (em-dashes, emoji,
+    accented characters) work without RFC-2047 encoding tricks.
+    """
     if not NTFY_TOPIC:
         return False
-    headers = {
-        "Title": title[:255],
-        "Priority": priority,
-        "Tags": ",".join(tags or []),
-        "Content-Type": "text/plain; charset=utf-8",
+    payload = {
+        "topic": NTFY_TOPIC,
+        "title": (title or "")[:255],
+        "message": message or "",
+        "priority": _NTFY_PRIORITY_MAP.get(priority, 3),
+        "tags": [str(t) for t in (tags or []) if t],
     }
+    headers = {"Content-Type": "application/json"}
     if NTFY_TOKEN:
         headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
     try:
         resp = requests.post(
-            f"{NTFY_SERVER.rstrip('/')}/{NTFY_TOPIC}",
-            data=message.encode("utf-8"),
+            NTFY_SERVER.rstrip("/"),
+            json=payload,
             headers=headers,
             timeout=10,
         )
@@ -3007,13 +3017,14 @@ def check_meal_timing_nudges():
             meal_name = str(meal.get("name", "Meal")).strip()
             if not meal_time_str:
                 continue
+            meal_dt = None
             for fmt in ("%I:%M %p", "%H:%M", "%-I:%M %p"):
                 try:
                     t = datetime.strptime(meal_time_str, fmt)
                     meal_dt = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
                     break
                 except ValueError:
-                    meal_dt = None
+                    continue
             if not meal_dt:
                 continue
             minutes_until = (meal_dt - now).total_seconds() / 60
