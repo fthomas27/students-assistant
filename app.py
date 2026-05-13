@@ -526,6 +526,8 @@ def init_db():
         ("gmail_drafts_conv_idx", "CREATE INDEX IF NOT EXISTS idx_gmail_drafts_conv ON gmail_drafts(conversation_id) WHERE conversation_id != ''"),
         ("notification_log", "CREATE TABLE IF NOT EXISTS notification_log (id SERIAL PRIMARY KEY, notification_key TEXT UNIQUE NOT NULL, title TEXT NOT NULL DEFAULT '', sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("notification_log_idx", "CREATE INDEX IF NOT EXISTS idx_notification_log_key_sent ON notification_log(notification_key, sent_at DESC)"),
+        ("canvas_assignments_cache", "CREATE TABLE IF NOT EXISTS canvas_assignments_cache (uid TEXT PRIMARY KEY, title TEXT NOT NULL, class_name TEXT NOT NULL DEFAULT '', due_iso TEXT NOT NULL, due_display TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("canvas_assignments_cache_due_idx", "CREATE INDEX IF NOT EXISTS idx_canvas_cache_due ON canvas_assignments_cache(due_iso)"),
     ]
 
     for table_name, create_sql in tables:
@@ -1755,6 +1757,89 @@ def parse_canvas_assignments(cal):
     return assignments
 
 
+def _cache_canvas_assignments(assignments):
+    """Persist seen Canvas assignments so overdue ones survive Canvas iCal pruning."""
+    if not assignments:
+        return
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        for a in assignments:
+            uid = (a.get("uid") or "").strip() or a["title"]
+            cur.execute("""
+INSERT INTO canvas_assignments_cache
+    (uid, title, class_name, due_iso, due_display, description, urgency, last_seen_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+ON CONFLICT (uid) DO UPDATE SET
+    title       = EXCLUDED.title,
+    class_name  = EXCLUDED.class_name,
+    due_iso     = EXCLUDED.due_iso,
+    due_display = EXCLUDED.due_display,
+    description = EXCLUDED.description,
+    urgency     = EXCLUDED.urgency,
+    last_seen_at = NOW()""",
+                (uid, a["title"], a.get("class_name", ""),
+                 a.get("due_iso", ""), a.get("due_display", ""),
+                 a.get("description", "")[:1000], a.get("urgency", "low")))
+        conn.commit()
+        cur.close(); conn.close()
+    except Exception as e:
+        log.warning("_cache_canvas_assignments failed: %s", e)
+
+
+def get_canvas_assignments_with_overdue(cal):
+    """Return upcoming Canvas assignments PLUS any overdue ones not yet completed.
+
+    Canvas drops past-due events from its iCal feed; this function caches every
+    assignment seen from the live feed and re-surfaces overdue ones until the
+    student explicitly marks them done via complete_assignment.
+    """
+    # 1. Live upcoming assignments from Canvas iCal
+    live = parse_canvas_assignments(cal)
+
+    # 2. Persist them so we don't lose them after Canvas prunes the feed
+    _cache_canvas_assignments(live)
+
+    # 3. Merge in overdue assignments from cache that are not yet completed
+    try:
+        now_iso = datetime.now(TZ).isoformat()
+        lookback_iso = (datetime.now(TZ) - timedelta(days=90)).isoformat()
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        done_titles = set(r["assignment_title"] for r in cur.fetchall())
+        cur.execute("""
+            SELECT uid, title, class_name, due_iso, due_display, description
+            FROM canvas_assignments_cache
+            WHERE due_iso < %s AND due_iso > %s
+            ORDER BY due_iso DESC""",
+            (now_iso, lookback_iso))
+        cached_overdue = cur.fetchall()
+        cur.close(); conn.close()
+
+        live_titles = {a["title"] for a in live}
+        for row in cached_overdue:
+            if row["title"] in done_titles:
+                continue
+            if row["title"] in live_titles:
+                continue  # already in upcoming feed
+            live.append({
+                "uid": row["uid"],
+                "title": row["title"],
+                "class_name": row["class_name"],
+                "due_iso": row["due_iso"],
+                "due_display": f"OVERDUE — was due {row['due_display']}",
+                "description": row["description"],
+                "urgency": "high",
+                "overdue": True,
+            })
+    except Exception as e:
+        log.warning("get_canvas_assignments_with_overdue cache lookup failed: %s", e)
+
+    live.sort(key=lambda x: x.get("due_iso", ""))
+    return live
+
+
 def parse_calendar_events(cal, days_ahead=30):
     events = []
     now_local = datetime.now(TZ)
@@ -1974,7 +2059,7 @@ def generate_briefing(force=False):
         assignments = []
         cal = fetch_ical(CANVAS_ICAL_URL)
         if cal:
-            assignments = parse_canvas_assignments(cal)
+            assignments = get_canvas_assignments_with_overdue(cal)
 
         events = []
         cal2 = fetch_ical(PERSONAL_ICAL_URL)
@@ -2241,7 +2326,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         cal = fetch_ical(CANVAS_ICAL_URL)
         remaining_asgn = []
         if cal:
-            all_asgn = parse_canvas_assignments(cal)
+            all_asgn = get_canvas_assignments_with_overdue(cal)
             done_titles = {d["assignment_title"] for d in done_today}
             remaining_asgn = [a for a in all_asgn if a["title"] not in done_titles]
 
@@ -2375,7 +2460,7 @@ WHERE status = 'active'""")
         upcoming_assignments = []
         cal = fetch_ical(CANVAS_ICAL_URL)
         if cal:
-            all_asgn = parse_canvas_assignments(cal)
+            all_asgn = get_canvas_assignments_with_overdue(cal)
             for a in all_asgn:
                 d = _assignment_due_date_local(a)
                 if today <= d <= week_ahead:
@@ -2667,7 +2752,7 @@ def _notif_canvas_assignments():
         cal = fetch_ical(CANVAS_ICAL_URL)
         if not cal:
             return []
-        assignments = parse_canvas_assignments(cal)
+        assignments = get_canvas_assignments_with_overdue(cal)
         conn = get_db()
         cur = conn.cursor()
         cur.execute("SELECT DISTINCT assignment_title FROM completions")
@@ -4158,7 +4243,7 @@ def api_assignments():
         conn.close()
         log.info(f"/api/assignments: db query took {time.time()-t2:.2f}s")
         t3 = time.time()
-        assignments = parse_canvas_assignments(cal)
+        assignments = get_canvas_assignments_with_overdue(cal)
         result = []
         for a in assignments:
             if a["title"] in submitted_titles:
@@ -4276,7 +4361,7 @@ def api_calendar():
             else:
                 log.info(f"/api/calendar: canvas took {elapsed:.2f}s")
             if cal:
-                for a in parse_canvas_assignments(cal):
+                for a in get_canvas_assignments_with_overdue(cal):
                     result.append({
                         "title": a["title"],
                         "start_display": a["due_display"],
@@ -5771,7 +5856,7 @@ def api_task_suggestions():
         try:
             cal = fetch_ical(CANVAS_ICAL_URL)
             if cal:
-                assignments = parse_canvas_assignments(cal)
+                assignments = get_canvas_assignments_with_overdue(cal)
         except Exception as e:
             log.warning(f"Could not fetch assignments for suggestions: {e}")
 
@@ -7582,7 +7667,7 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
                 cal = fetch_ical(CANVAS_ICAL_URL)
                 if not cal:
                     return {"assignments": [], "error": "Could not fetch Canvas calendar"}
-                asgn_list = parse_canvas_assignments(cal)
+                asgn_list = get_canvas_assignments_with_overdue(cal)
                 conn = get_db()
                 cur = conn.cursor()
                 cur.execute("SELECT DISTINCT assignment_title FROM completions")
@@ -9226,7 +9311,7 @@ def api_chat():
             if _canvas_active and CANVAS_ICAL_URL:
                 cal = fetch_ical(CANVAS_ICAL_URL)
                 if cal:
-                    asgn_list = parse_canvas_assignments(cal)
+                    asgn_list = get_canvas_assignments_with_overdue(cal)
                     try:
                         _conn = get_db()
                         _cur = _conn.cursor()
@@ -9980,7 +10065,7 @@ def _generate_daily_plan_for_date(target_date):
         try:
             cal = fetch_ical(CANVAS_ICAL_URL)
             if cal:
-                all_asgn = parse_canvas_assignments(cal)
+                all_asgn = get_canvas_assignments_with_overdue(cal)
                 class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
                 class_avg_cache = get_class_averages_batch(class_names)
 
@@ -10775,7 +10860,7 @@ def api_daily_outlook():
             cur.close()
             conn.close()
             out = []
-            for a in parse_canvas_assignments(cal):
+            for a in get_canvas_assignments_with_overdue(cal):
                 if a["title"] in done:
                     continue
                 due_iso = a.get("due_iso", "")
