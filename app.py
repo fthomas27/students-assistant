@@ -621,6 +621,15 @@ ON CONFLICT (ip_address) DO NOTHING""")
         conn = get_db()
         cur = conn.cursor()
 
+    # Add conversation_id to gmail_drafts for existing deployments
+    try:
+        cur.execute("ALTER TABLE gmail_drafts ADD COLUMN IF NOT EXISTS conversation_id TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
     # Insert default config values
     defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas", "app_mode": "school", "is_summer_school": "false", "has_summer_job": "false"}
     for k, v in defaults.items():
@@ -7118,7 +7127,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 "to": to_addr,
                 "cc": cc_addr,
                 "subject": subject,
-                "body_preview": body[:300],
+                "body_preview": body[:8000],
             }
 
         elif name in (
@@ -9693,7 +9702,7 @@ def gmail_send_draft(draft_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT to_addr, cc_addr, subject, body FROM gmail_drafts WHERE id=%s AND status='pending'",
+        "SELECT to_addr, cc_addr, subject, body, conversation_id FROM gmail_drafts WHERE id=%s AND status='pending'",
         (draft_id,),
     )
     row = cur.fetchone()
@@ -9720,7 +9729,7 @@ def gmail_send_draft(draft_id):
             _chat_persist_message(
                 row["conversation_id"],
                 "user",
-                f"[Notification: Email draft "{row['subject']}" to {row['to_addr']} was sent by the student.]",
+                f"[Notification: Email draft '{row['subject']}' to {row['to_addr']} was sent by the student.]",
             )
     except Exception as e:
         conn.rollback()
@@ -9742,16 +9751,19 @@ def gmail_discard_draft(draft_id):
         (draft_id,),
     )
     row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        return jsonify({"error": "Draft not found or already processed"}), 404
     cur.execute(
-        "UPDATE gmail_drafts SET status='discarded' WHERE id=%s AND status='pending'",
+        "UPDATE gmail_drafts SET status='discarded' WHERE id=%s",
         (draft_id,),
     )
     conn.commit()
-    if row and row.get("conversation_id"):
+    if row.get("conversation_id"):
         _chat_persist_message(
             row["conversation_id"],
             "user",
-            f"[Notification: Email draft "{row['subject']}" to {row['to_addr']} was discarded by the student.]",
+            f"[Notification: Email draft '{row['subject']}' to {row['to_addr']} was discarded by the student.]",
         )
     cur.close(); conn.close()
     return jsonify({"status": "discarded"})
