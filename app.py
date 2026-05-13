@@ -256,6 +256,11 @@ GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
 NOAA_API_TOKEN   = os.environ.get("NOAA_API_TOKEN", "")
 GUARDIAN_API_KEY = os.environ.get("GUARDIAN_API_KEY", "")
 
+# ── ntfy push notifications ────────────────────────────────────────────────────
+NTFY_TOPIC  = os.environ.get("NTFY_TOPIC", "").strip()
+NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").strip()
+NTFY_TOKEN  = os.environ.get("NTFY_TOKEN", "").strip()
+
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive",               # full Drive access (create/edit/delete)
     "https://www.googleapis.com/auth/documents",           # read/write Google Docs
@@ -519,6 +524,10 @@ def init_db():
         ("people_profiles", "CREATE TABLE IF NOT EXISTS people_profiles (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, relationship TEXT NOT NULL DEFAULT '', facts TEXT NOT NULL DEFAULT '[]', mem0_synced BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("gmail_drafts", "CREATE TABLE IF NOT EXISTS gmail_drafts (id SERIAL PRIMARY KEY, to_addr TEXT NOT NULL, cc_addr TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', conversation_id TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("gmail_drafts_conv_idx", "CREATE INDEX IF NOT EXISTS idx_gmail_drafts_conv ON gmail_drafts(conversation_id) WHERE conversation_id != ''"),
+        ("notification_log", "CREATE TABLE IF NOT EXISTS notification_log (id SERIAL PRIMARY KEY, notification_key TEXT UNIQUE NOT NULL, title TEXT NOT NULL DEFAULT '', sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("notification_log_idx", "CREATE INDEX IF NOT EXISTS idx_notification_log_key_sent ON notification_log(notification_key, sent_at DESC)"),
+        ("canvas_assignments_cache", "CREATE TABLE IF NOT EXISTS canvas_assignments_cache (uid TEXT PRIMARY KEY, title TEXT NOT NULL, class_name TEXT NOT NULL DEFAULT '', due_iso TEXT NOT NULL, due_display TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', promoted_to_task BOOLEAN NOT NULL DEFAULT FALSE, first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("canvas_assignments_cache_due_idx", "CREATE INDEX IF NOT EXISTS idx_canvas_cache_due ON canvas_assignments_cache(due_iso)"),
     ]
 
     for table_name, create_sql in tables:
@@ -633,6 +642,15 @@ ON CONFLICT (ip_address) DO NOTHING""")
     # Add conversation_id to gmail_drafts for existing deployments
     try:
         cur.execute("ALTER TABLE gmail_drafts ADD COLUMN IF NOT EXISTS conversation_id TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    # Add promoted_to_task flag to canvas_assignments_cache for existing deployments
+    try:
+        cur.execute("ALTER TABLE canvas_assignments_cache ADD COLUMN IF NOT EXISTS promoted_to_task BOOLEAN NOT NULL DEFAULT FALSE")
         conn.commit()
     except psycopg2.Error:
         conn.rollback()
@@ -1748,6 +1766,159 @@ def parse_canvas_assignments(cal):
     return assignments
 
 
+def _cache_canvas_assignments(assignments):
+    """Persist seen Canvas assignments so overdue ones survive Canvas iCal pruning."""
+    if not assignments:
+        return
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        for a in assignments:
+            uid = (a.get("uid") or "").strip() or a["title"]
+            cur.execute("""
+INSERT INTO canvas_assignments_cache
+    (uid, title, class_name, due_iso, due_display, description, urgency, last_seen_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+ON CONFLICT (uid) DO UPDATE SET
+    title       = EXCLUDED.title,
+    class_name  = EXCLUDED.class_name,
+    due_iso     = EXCLUDED.due_iso,
+    due_display = EXCLUDED.due_display,
+    description = EXCLUDED.description,
+    urgency     = EXCLUDED.urgency,
+    last_seen_at = NOW()""",
+                (uid, a["title"], a.get("class_name", ""),
+                 a.get("due_iso", ""), a.get("due_display", ""),
+                 a.get("description", "")[:1000], a.get("urgency", "low")))
+        conn.commit()
+        cur.close(); conn.close()
+    except Exception as e:
+        log.warning("_cache_canvas_assignments failed: %s", e)
+
+
+def _promote_overdue_to_tasks():
+    """Auto-create a task for each overdue Canvas assignment not yet in the task list.
+
+    Runs inside get_canvas_assignments_with_overdue() every time assignments are
+    fetched. Uses an atomic UPDATE...RETURNING claim on the cache's promoted_to_task
+    flag so concurrent calls (briefing job, notification job, chat tabs) cannot
+    double-insert tasks. Already-completed assignments are claimed but no task is created.
+    """
+    try:
+        now_iso = datetime.now(TZ).isoformat()
+        lookback_iso = (datetime.now(TZ) - timedelta(days=90)).isoformat()
+        conn = get_db()
+        cur = conn.cursor()
+
+        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        done_titles = set(r["assignment_title"] for r in cur.fetchall())
+
+        cur.execute("""
+            SELECT uid, title, class_name, due_iso, due_display
+            FROM canvas_assignments_cache
+            WHERE due_iso < %s
+              AND due_iso > %s
+              AND promoted_to_task = FALSE
+            ORDER BY due_iso ASC""",
+            (now_iso, lookback_iso))
+        candidates = cur.fetchall()
+
+        promoted = 0
+        for row in candidates:
+            # Atomic claim: only one process can flip promoted_to_task FALSE -> TRUE.
+            # If we don't get a row back, another process already claimed it.
+            cur.execute(
+                "UPDATE canvas_assignments_cache SET promoted_to_task = TRUE "
+                "WHERE uid = %s AND promoted_to_task = FALSE RETURNING uid",
+                (row["uid"],))
+            if not cur.fetchone():
+                continue
+
+            if row["title"] in done_titles:
+                # Already completed — claim is enough, don't create a task
+                continue
+
+            # Skip if a matching incomplete task already exists (manual or prior promotion)
+            cur.execute(
+                "SELECT id FROM tasks WHERE title = %s AND completed = FALSE LIMIT 1",
+                (row["title"],))
+            if cur.fetchone():
+                continue
+
+            try:
+                due_date = datetime.fromisoformat(row["due_iso"]).date()
+            except Exception:
+                due_date = None
+            notes = f"Overdue Canvas assignment — {row['class_name']}" if row["class_name"] else "Overdue Canvas assignment"
+            cur.execute(
+                "INSERT INTO tasks (title, urgency, due_date, notes) VALUES (%s, 'high', %s, %s)",
+                (row["title"], due_date, notes))
+            promoted += 1
+            log.info("Promoted overdue Canvas assignment to task: %r", row["title"])
+
+        if candidates:
+            conn.commit()
+        cur.close(); conn.close()
+    except Exception as e:
+        log.warning("_promote_overdue_to_tasks failed: %s", e)
+
+
+def get_canvas_assignments_with_overdue(cal):
+    """Return upcoming Canvas assignments PLUS any overdue ones not yet completed.
+
+    Canvas drops past-due events from its iCal feed; this function caches every
+    assignment seen from the live feed and re-surfaces overdue ones until the
+    student explicitly marks them done via complete_assignment.
+    """
+    # 1. Live upcoming assignments from Canvas iCal
+    live = parse_canvas_assignments(cal)
+
+    # 2. Persist them so we don't lose them after Canvas prunes the feed
+    _cache_canvas_assignments(live)
+
+    # 3. Promote any newly overdue assignments to the task list
+    _promote_overdue_to_tasks()
+
+    # 4. Merge in overdue assignments from cache that are not yet completed
+    try:
+        now_iso = datetime.now(TZ).isoformat()
+        lookback_iso = (datetime.now(TZ) - timedelta(days=90)).isoformat()
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        done_titles = set(r["assignment_title"] for r in cur.fetchall())
+        cur.execute("""
+            SELECT uid, title, class_name, due_iso, due_display, description
+            FROM canvas_assignments_cache
+            WHERE due_iso < %s AND due_iso > %s
+            ORDER BY due_iso DESC""",
+            (now_iso, lookback_iso))
+        cached_overdue = cur.fetchall()
+        cur.close(); conn.close()
+
+        live_titles = {a["title"] for a in live}
+        for row in cached_overdue:
+            if row["title"] in done_titles:
+                continue
+            if row["title"] in live_titles:
+                continue  # already in upcoming feed
+            live.append({
+                "uid": row["uid"],
+                "title": row["title"],
+                "class_name": row["class_name"],
+                "due_iso": row["due_iso"],
+                "due_display": f"OVERDUE — was due {row['due_display']}",
+                "description": row["description"],
+                "urgency": "high",
+                "overdue": True,
+            })
+    except Exception as e:
+        log.warning("get_canvas_assignments_with_overdue cache lookup failed: %s", e)
+
+    live.sort(key=lambda x: x.get("due_iso", ""))
+    return live
+
+
 def parse_calendar_events(cal, days_ahead=30):
     events = []
     now_local = datetime.now(TZ)
@@ -1888,6 +2059,71 @@ def _is_big_work_assignment(a):
     return False
 
 
+# ── ntfy push notification helpers ────────────────────────────────────────────
+
+_NTFY_PRIORITY_MAP = {"min": 1, "low": 2, "default": 3, "high": 4, "urgent": 5}
+
+
+def send_ntfy_notification(title, message, priority="default", tags=None):
+    """Send a push notification via ntfy. Returns True on success.
+
+    Uses ntfy's JSON publish endpoint so UTF-8 titles/messages (em-dashes, emoji,
+    accented characters) work without RFC-2047 encoding tricks.
+    """
+    if not NTFY_TOPIC:
+        return False
+    payload = {
+        "topic": NTFY_TOPIC,
+        "title": (title or "")[:255],
+        "message": message or "",
+        "priority": _NTFY_PRIORITY_MAP.get(priority, 3),
+        "tags": [str(t) for t in (tags or []) if t],
+    }
+    headers = {"Content-Type": "application/json"}
+    if NTFY_TOKEN:
+        headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
+    try:
+        resp = requests.post(
+            NTFY_SERVER.rstrip("/"),
+            json=payload,
+            headers=headers,
+            timeout=10,
+        )
+        if not resp.ok:
+            log.warning("ntfy returned %s: %s", resp.status_code, resp.text[:200])
+        return resp.ok
+    except Exception as e:
+        log.error("ntfy notification failed: %s", e)
+        return False
+
+
+def _ntfy_dedup(key, title="", max_age_hours=20):
+    """Return True if this notification has NOT been sent within max_age_hours (and record it).
+    Returns False if a duplicate was found (skip sending)."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cutoff = datetime.now(TZ) - timedelta(hours=max_age_hours)
+        cur.execute(
+            "SELECT sent_at FROM notification_log WHERE notification_key = %s AND sent_at > %s",
+            (key, cutoff),
+        )
+        if cur.fetchone():
+            cur.close(); conn.close()
+            return False
+        cur.execute(
+            "INSERT INTO notification_log (notification_key, title, sent_at) VALUES (%s, %s, NOW()) "
+            "ON CONFLICT (notification_key) DO UPDATE SET sent_at = NOW(), title = EXCLUDED.title",
+            (key[:500], (title or key)[:255]),
+        )
+        conn.commit()
+        cur.close(); conn.close()
+        return True
+    except Exception as e:
+        log.warning("_ntfy_dedup failed: %s", e)
+        return True  # default to allowing send
+
+
 def generate_briefing(force=False):
     with _briefing_lock:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -1911,7 +2147,7 @@ def generate_briefing(force=False):
         assignments = []
         cal = fetch_ical(CANVAS_ICAL_URL)
         if cal:
-            assignments = parse_canvas_assignments(cal)
+            assignments = get_canvas_assignments_with_overdue(cal)
 
         events = []
         cal2 = fetch_ical(PERSONAL_ICAL_URL)
@@ -2102,6 +2338,24 @@ ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content"
         cur.close()
         conn.close()
 
+        # Push a condensed briefing summary via ntfy
+        if NTFY_TOPIC:
+            try:
+                today_key = f"morning_briefing_{datetime.now(TZ).strftime('%Y-%m-%d')}"
+                if _ntfy_dedup(today_key, title="Morning Briefing", max_age_hours=20):
+                    # Pull first 300 chars as a teaser
+                    preview = content[:300].strip()
+                    if len(content) > 300:
+                        preview += "…"
+                    send_ntfy_notification(
+                        title="Good morning — your briefing is ready",
+                        message=preview,
+                        priority="default",
+                        tags=["sun_with_face", "memo"],
+                    )
+            except Exception as _e:
+                log.warning("briefing ntfy push failed: %s", _e)
+
 
 scheduler = BackgroundScheduler(timezone=TZ)
 
@@ -2160,7 +2414,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         cal = fetch_ical(CANVAS_ICAL_URL)
         remaining_asgn = []
         if cal:
-            all_asgn = parse_canvas_assignments(cal)
+            all_asgn = get_canvas_assignments_with_overdue(cal)
             done_titles = {d["assignment_title"] for d in done_today}
             remaining_asgn = [a for a in all_asgn if a["title"] not in done_titles]
 
@@ -2294,7 +2548,7 @@ WHERE status = 'active'""")
         upcoming_assignments = []
         cal = fetch_ical(CANVAS_ICAL_URL)
         if cal:
-            all_asgn = parse_canvas_assignments(cal)
+            all_asgn = get_canvas_assignments_with_overdue(cal)
             for a in all_asgn:
                 d = _assignment_due_date_local(a)
                 if today <= d <= week_ahead:
@@ -2576,6 +2830,389 @@ ON CONFLICT (plan_date) DO UPDATE SET
         log.error("auto_generate_meal_plan error: %s", e)
 
 
+# ── Notification scheduler jobs ───────────────────────────────────────────────
+
+def _notif_canvas_assignments():
+    """Return upcoming Canvas assignments not yet completed, or []."""
+    try:
+        if not CANVAS_ICAL_URL:
+            return []
+        cal = fetch_ical(CANVAS_ICAL_URL)
+        if not cal:
+            return []
+        assignments = get_canvas_assignments_with_overdue(cal)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        done = set(r["assignment_title"] for r in cur.fetchall())
+        cur.close(); conn.close()
+        return [a for a in assignments if a["title"] not in done]
+    except Exception as e:
+        log.warning("_notif_canvas_assignments error: %s", e)
+        return []
+
+
+def check_assignment_due_notifications():
+    """Tier 1 — send ntfy for assignments due in ~24 h and ~2 h."""
+    if not NTFY_TOPIC:
+        return
+    try:
+        assignments = _notif_canvas_assignments()
+        now = datetime.now(TZ)
+        for a in assignments:
+            due_iso = a.get("due_iso", "")
+            if not due_iso:
+                continue
+            try:
+                due_dt = datetime.fromisoformat(due_iso)
+                due_dt = due_dt.astimezone(TZ) if due_dt.tzinfo else due_dt.replace(tzinfo=TZ)
+            except Exception:
+                continue
+            hours_until = (due_dt - now).total_seconds() / 3600
+            course = a.get("class_name", "")
+            due_disp = a.get("due_display", due_dt.strftime("%-I:%M %p"))
+
+            if 22.5 <= hours_until <= 25.5:
+                key = f"asgn_24h_{a['title']}_{due_dt.strftime('%Y-%m-%d')}"
+                if _ntfy_dedup(key, title=a["title"], max_age_hours=20):
+                    send_ntfy_notification(
+                        title="Assignment Due Tomorrow",
+                        message=f"{a['title']} ({course}) — due {due_disp}",
+                        priority="high",
+                        tags=["books", "warning"],
+                    )
+            elif 1.5 <= hours_until <= 2.5:
+                key = f"asgn_2h_{a['title']}_{due_dt.strftime('%Y-%m-%d-%H')}"
+                if _ntfy_dedup(key, title=a["title"], max_age_hours=4):
+                    send_ntfy_notification(
+                        title="Assignment Due in ~2 Hours",
+                        message=f"{a['title']} ({course}) — due {due_disp}",
+                        priority="urgent",
+                        tags=["rotating_light", "books"],
+                    )
+    except Exception as e:
+        log.error("check_assignment_due_notifications error: %s", e)
+
+
+def check_overdue_tasks():
+    """Tier 1 — send ntfy for tasks past their due date that haven't been completed."""
+    if not NTFY_TOPIC:
+        return
+    try:
+        today = datetime.now(TZ).date()
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, title, due_date FROM tasks "
+            "WHERE completed = FALSE AND due_date < %s ORDER BY due_date ASC LIMIT 10",
+            (today,),
+        )
+        overdue = cur.fetchall()
+        cur.close(); conn.close()
+        for task in overdue:
+            key = f"task_overdue_{task['id']}_{today}"
+            if _ntfy_dedup(key, title=task["title"], max_age_hours=20):
+                send_ntfy_notification(
+                    title="Overdue Task",
+                    message=f"{task['title']} — was due {task['due_date']}, still pending",
+                    priority="high",
+                    tags=["alarm_clock", "warning"],
+                )
+    except Exception as e:
+        log.error("check_overdue_tasks error: %s", e)
+
+
+def check_ap_test_countdown():
+    """Tier 2 — warn 2 days before any AP exam found in Canvas."""
+    if not NTFY_TOPIC:
+        return
+    try:
+        assignments = _notif_canvas_assignments()
+        now = datetime.now(TZ)
+        for a in assignments:
+            title_lc = a.get("title", "").lower()
+            if not any(kw in title_lc for kw in ("ap exam", "ap test", " ap ", "ap calc", "ap spanish", "ap bio", "ap chem", "ap history", "ap lang", "ap lit", "ap physics", "ap stats", "ap gov")):
+                continue
+            due_iso = a.get("due_iso", "")
+            if not due_iso:
+                continue
+            try:
+                due_dt = datetime.fromisoformat(due_iso)
+                due_dt = due_dt.astimezone(TZ) if due_dt.tzinfo else due_dt.replace(tzinfo=TZ)
+                days_until = (due_dt.date() - now.date()).days
+            except Exception:
+                continue
+            if days_until in (1, 2, 7):
+                key = f"ap_countdown_{a['title']}_{due_dt.strftime('%Y-%m-%d')}_{days_until}d"
+                if _ntfy_dedup(key, title=a["title"], max_age_hours=20):
+                    send_ntfy_notification(
+                        title=f"AP Exam in {days_until} Day{'s' if days_until != 1 else ''}",
+                        message=f"{a['title']} is in {days_until} day{'s' if days_until != 1 else ''}, sir. You have been warned.",
+                        priority="high",
+                        tags=["mortar_board", "warning"],
+                    )
+    except Exception as e:
+        log.error("check_ap_test_countdown error: %s", e)
+
+
+def check_meeting_reminders():
+    """Tier 2 — send a 30-minute heads-up for upcoming calendar events."""
+    if not NTFY_TOPIC:
+        return
+    try:
+        now = datetime.now(TZ)
+        window_start = now + timedelta(minutes=25)
+        window_end = now + timedelta(minutes=40)
+        for url in filter(None, [PERSONAL_ICAL_URL, SPORTS_ICAL_URL, JOB_SCHEDULE_ICAL_URL]):
+            try:
+                cal = fetch_ical(url)
+                if not cal:
+                    continue
+                events = parse_calendar_events(cal, days_ahead=1)
+                for ev in events:
+                    if ev.get("all_day"):
+                        continue
+                    try:
+                        start_dt = datetime.fromisoformat(ev["start_iso"])
+                        start_dt = start_dt.astimezone(TZ) if start_dt.tzinfo else start_dt.replace(tzinfo=TZ)
+                    except Exception:
+                        continue
+                    if window_start <= start_dt <= window_end:
+                        key = f"meeting_{ev['title']}_{start_dt.strftime('%Y-%m-%d-%H-%M')}"
+                        if _ntfy_dedup(key, title=ev["title"], max_age_hours=20):
+                            send_ntfy_notification(
+                                title="Event Starting Soon",
+                                message=f"{ev['title']} at {ev['start_display']}",
+                                priority="high",
+                                tags=["calendar", "alarm_clock"],
+                            )
+            except Exception as _e:
+                log.warning("check_meeting_reminders url=%s: %s", url[:40], _e)
+    except Exception as e:
+        log.error("check_meeting_reminders error: %s", e)
+
+
+def check_meal_timing_nudges():
+    """Tier 2 — nudge 10 minutes before a meal window defined in today's meal plan."""
+    if not NTFY_TOPIC:
+        return
+    try:
+        import json as _json
+        today = datetime.now(TZ).date()
+        now = datetime.now(TZ)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT structured_data FROM meal_plans WHERE plan_date = %s", (today,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return
+        try:
+            plan = _json.loads(row["structured_data"] or "{}")
+        except Exception:
+            return
+        meals = plan.get("meals", []) if isinstance(plan, dict) else []
+        for meal in meals:
+            meal_time_str = str(meal.get("time", "")).strip()
+            meal_name = str(meal.get("name", "Meal")).strip()
+            if not meal_time_str:
+                continue
+            meal_dt = None
+            for fmt in ("%I:%M %p", "%H:%M", "%-I:%M %p"):
+                try:
+                    t = datetime.strptime(meal_time_str, fmt)
+                    meal_dt = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+                    break
+                except ValueError:
+                    continue
+            if not meal_dt:
+                continue
+            minutes_until = (meal_dt - now).total_seconds() / 60
+            if 5 <= minutes_until <= 15:
+                key = f"meal_{meal_name}_{today}_{meal_time_str}"
+                if _ntfy_dedup(key, title=meal_name, max_age_hours=20):
+                    send_ntfy_notification(
+                        title="Meal Reminder",
+                        message=f"{meal_name} is scheduled for {meal_time_str} — it won't eat itself, sir.",
+                        priority="default",
+                        tags=["fork_and_knife"],
+                    )
+    except Exception as e:
+        log.error("check_meal_timing_nudges error: %s", e)
+
+
+def check_idle_detection():
+    """Tier 3 — nudge if no task/assignment logged in 3+ hours on a school night."""
+    if not NTFY_TOPIC:
+        return
+    try:
+        now = datetime.now(TZ)
+        # Only Sun–Thu, 7 PM–11 PM
+        if now.weekday() >= 4 and now.weekday() != 6:
+            return
+        if not (19 <= now.hour < 23):
+            return
+        conn = get_db()
+        cur = conn.cursor()
+        cutoff = now - timedelta(hours=3)
+        cur.execute(
+            "SELECT MAX(completed_at) AS last FROM completions WHERE completed_at > %s",
+            (cutoff,),
+        )
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if row and row["last"]:
+            return
+        key = f"idle_{now.strftime('%Y-%m-%d-%H')}"
+        if _ntfy_dedup(key, title="Idle check", max_age_hours=1):
+            send_ntfy_notification(
+                title="Still with me, sir?",
+                message="No tasks logged in over 3 hours. Might be worth making a dent in that list.",
+                priority="default",
+                tags=["sleeping"],
+            )
+    except Exception as e:
+        log.error("check_idle_detection error: %s", e)
+
+
+def check_trash_recycling_reminder():
+    """Tier 3 — remind about trash/recycling events from personal calendar at 7 PM."""
+    if not NTFY_TOPIC or not PERSONAL_ICAL_URL:
+        return
+    try:
+        now = datetime.now(TZ)
+        if not (19 <= now.hour < 20):
+            return
+        cal = fetch_ical(PERSONAL_ICAL_URL)
+        if not cal:
+            return
+        events = parse_calendar_events(cal, days_ahead=1)
+        today_str = now.strftime("%Y-%m-%d")
+        for ev in events:
+            title_lc = ev.get("title", "").lower()
+            if ev.get("date") == today_str and any(kw in title_lc for kw in ("trash", "recycling", "recycle", "garbage", "bin")):
+                key = f"trash_{ev['title']}_{today_str}"
+                if _ntfy_dedup(key, title=ev["title"], max_age_hours=20):
+                    send_ntfy_notification(
+                        title="Trash Reminder",
+                        message=f"{ev['title']} tonight — don't forget.",
+                        priority="default",
+                        tags=["wastebasket"],
+                    )
+    except Exception as e:
+        log.error("check_trash_recycling_reminder error: %s", e)
+
+
+def check_weather_warning():
+    """Tier 3 — check NWS alerts for Park City and push severe/extreme warnings."""
+    if not NTFY_TOPIC:
+        return
+    try:
+        resp = requests.get(
+            "https://api.weather.gov/alerts/active?point=40.6461,-111.4980",
+            headers={"User-Agent": "students-assistant/1.0 (contact: admin@localhost)"},
+            timeout=12,
+        )
+        if not resp.ok:
+            return
+        features = resp.json().get("features", [])
+        for f in features[:5]:
+            props = f.get("properties", {})
+            severity = props.get("severity", "")
+            if severity not in ("Extreme", "Severe", "Moderate"):
+                continue
+            event = props.get("event", "Weather Alert")
+            headline = (props.get("headline") or event)[:250]
+            alert_id = props.get("id", event)
+            key = f"weather_{alert_id}"
+            if _ntfy_dedup(key, title=event, max_age_hours=6):
+                send_ntfy_notification(
+                    title=f"Weather Alert: {event}",
+                    message=headline,
+                    priority="high" if severity in ("Extreme", "Severe") else "default",
+                    tags=["cloud_lightning", "warning"],
+                )
+    except Exception as e:
+        log.error("check_weather_warning error: %s", e)
+
+
+def check_stock_alerts():
+    """Tier 2 — alert on ±5% daily moves, target price hits, or stop-loss triggers."""
+    if not NTFY_TOPIC or not FINNHUB_API_KEY:
+        return
+    try:
+        now = datetime.now(TZ)
+        # Only during extended market hours Mon–Fri 8 AM–5 PM MT
+        if now.weekday() >= 5 or not (8 <= now.hour < 17):
+            return
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                st.symbol,
+                SUM(CASE WHEN st.action='buy' THEN st.quantity ELSE -st.quantity END) AS net_shares,
+                sn.target_price,
+                sn.stop_loss
+            FROM stock_transactions st
+            LEFT JOIN stock_notes sn ON sn.symbol = st.symbol
+            GROUP BY st.symbol, sn.target_price, sn.stop_loss
+            HAVING SUM(CASE WHEN st.action='buy' THEN st.quantity ELSE -st.quantity END) > 0
+        """)
+        holdings = cur.fetchall()
+        cur.close(); conn.close()
+        if not holdings:
+            return
+        for h in holdings:
+            symbol = h["symbol"]
+            try:
+                resp = requests.get(
+                    "https://finnhub.io/api/v1/quote",
+                    params={"symbol": symbol, "token": FINNHUB_API_KEY},
+                    timeout=6,
+                )
+                if not resp.ok:
+                    continue
+                q = resp.json()
+                current = float(q.get("c", 0) or 0)
+                prev_close = float(q.get("pc", 0) or 0)
+                if not current or not prev_close:
+                    continue
+                pct_change = (current - prev_close) / prev_close * 100
+
+                alert_reason = None
+                priority = "default"
+                tags_up = ["chart_increasing"]
+                tags_dn = ["chart_decreasing", "warning"]
+
+                if abs(pct_change) >= 5:
+                    direction = "up" if pct_change > 0 else "down"
+                    alert_reason = f"{direction} {abs(pct_change):.1f}% today (${current:.2f})"
+                    priority = "high"
+                    alert_tags = tags_up if pct_change > 0 else tags_dn
+                elif h["target_price"] and current >= float(h["target_price"]):
+                    alert_reason = f"hit target ${float(h['target_price']):.2f} — now ${current:.2f}"
+                    priority = "high"
+                    alert_tags = tags_up
+                elif h["stop_loss"] and current <= float(h["stop_loss"]):
+                    alert_reason = f"hit stop-loss ${float(h['stop_loss']):.2f} — now ${current:.2f}"
+                    priority = "urgent"
+                    alert_tags = tags_dn
+
+                if alert_reason:
+                    key = f"stock_{symbol}_{now.strftime('%Y-%m-%d-%H')}"
+                    if _ntfy_dedup(key, title=symbol, max_age_hours=2):
+                        send_ntfy_notification(
+                            title=f"Stock Alert: {symbol}",
+                            message=f"{symbol} {alert_reason}",
+                            priority=priority,
+                            tags=alert_tags,
+                        )
+            except Exception as ex:
+                log.warning("check_stock_alerts: %s error: %s", symbol, ex)
+    except Exception as e:
+        log.error("check_stock_alerts error: %s", e)
+
+
 def schedule_briefing():
     cfg = get_config()
     t = cfg.get("morning_briefing_time", "07:00")
@@ -2604,6 +3241,36 @@ def schedule_briefing():
     # Auto-generate tomorrow's daily schedule at 10 PM
     scheduler.add_job(auto_generate_plan_job, "cron", hour=22, minute=0,
                       id="auto_daily_plan", replace_existing=True)
+
+    # ── ntfy notification jobs ────────────────────────────────────────────────
+    # Tier 1: assignment due-soon checks (24 h and 2 h windows) every 20 min
+    scheduler.add_job(check_assignment_due_notifications, "interval", minutes=20,
+                      id="notif_assignment_due", replace_existing=True)
+    # Tier 1: overdue tasks — once per hour
+    scheduler.add_job(check_overdue_tasks, "interval", minutes=60,
+                      id="notif_overdue_tasks", replace_existing=True)
+    # Tier 2: AP test countdown — daily at 7:05 AM
+    scheduler.add_job(check_ap_test_countdown, "cron", hour=7, minute=5,
+                      id="notif_ap_countdown", replace_existing=True)
+    # Tier 2: meeting/event reminders — every 10 min
+    scheduler.add_job(check_meeting_reminders, "interval", minutes=10,
+                      id="notif_meetings", replace_existing=True)
+    # Tier 2: meal timing nudges — every 10 min
+    scheduler.add_job(check_meal_timing_nudges, "interval", minutes=10,
+                      id="notif_meal_nudges", replace_existing=True)
+    # Tier 2: stock movement alerts — every 15 min
+    scheduler.add_job(check_stock_alerts, "interval", minutes=15,
+                      id="notif_stock_alerts", replace_existing=True)
+    # Tier 3: idle detection — every 30 min (self-guards with hour+day check)
+    scheduler.add_job(check_idle_detection, "interval", minutes=30,
+                      id="notif_idle", replace_existing=True)
+    # Tier 3: trash/recycling — every 10 min (self-guards to 7–8 PM window)
+    scheduler.add_job(check_trash_recycling_reminder, "interval", minutes=10,
+                      id="notif_trash", replace_existing=True)
+    # Tier 3: weather warnings — every 2 hours
+    scheduler.add_job(check_weather_warning, "interval", minutes=120,
+                      id="notif_weather", replace_existing=True)
+
     log.info("Briefing scheduled for %02d:%02d Mountain", hour, minute)
     log.info("Evening debrief scheduled for 18:30 Mountain")
     log.info("Recurring tasks processor scheduled for 00:00 Mountain")
@@ -2611,6 +3278,7 @@ def schedule_briefing():
     log.info("Cleanup job scheduled for 02:30 Mountain")
     log.info("Auto meal plan scheduled for 21:00 Mountain")
     log.info("Auto daily plan scheduled for 22:00 Mountain")
+    log.info("ntfy notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, meals, stocks, idle, trash, weather)")
 
 
 # ── Security Functions ──────────────────────────────────────────────────────────
@@ -3664,7 +4332,7 @@ def api_assignments():
         conn.close()
         log.info(f"/api/assignments: db query took {time.time()-t2:.2f}s")
         t3 = time.time()
-        assignments = parse_canvas_assignments(cal)
+        assignments = get_canvas_assignments_with_overdue(cal)
         result = []
         for a in assignments:
             if a["title"] in submitted_titles:
@@ -3782,7 +4450,7 @@ def api_calendar():
             else:
                 log.info(f"/api/calendar: canvas took {elapsed:.2f}s")
             if cal:
-                for a in parse_canvas_assignments(cal):
+                for a in get_canvas_assignments_with_overdue(cal):
                     result.append({
                         "title": a["title"],
                         "start_display": a["due_display"],
@@ -4531,6 +5199,16 @@ def api_complete():
     cur.execute("""
 INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed)
 VALUES (%s, %s, 0, %s, FALSE)""", (title, class_name, estimate))
+    # Complete any auto-promoted task for this assignment
+    cur.execute(
+        "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
+        "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
+        (title,),
+    )
+    cur.execute(
+        "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
+        (title,),
+    )
     conn.commit()
     cur.close()
     conn.close()
@@ -4617,6 +5295,16 @@ WHERE id = (
             cur.execute("""
 INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, submitted)
 VALUES (%s, %s, 0, %s, FALSE, TRUE)""", (title, class_name, estimate))
+        # Complete any auto-promoted overdue task for this assignment
+        cur.execute(
+            "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
+            "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
+            (title,),
+        )
+        cur.execute(
+            "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
+            (title,),
+        )
         conn.commit()
         cur.close()
         conn.close()
@@ -5277,7 +5965,7 @@ def api_task_suggestions():
         try:
             cal = fetch_ical(CANVAS_ICAL_URL)
             if cal:
-                assignments = parse_canvas_assignments(cal)
+                assignments = get_canvas_assignments_with_overdue(cal)
         except Exception as e:
             log.warning(f"Could not fetch assignments for suggestions: {e}")
 
@@ -6852,6 +7540,111 @@ JARVIS_TOOLS = [
             "required": [],
         },
     },
+    # ── Push notifications ────────────────────────────────────────────────────
+    {
+        "name": "send_notification",
+        "description": (
+            "Send a push notification to the student's device via ntfy. "
+            "Use proactively when you want to alert the student about something time-sensitive, "
+            "remind them of an urgent task, or surface a critical insight they should act on now. "
+            "Keep the message short and actionable — 1-2 sentences maximum. "
+            "Priority levels: 'min' (background), 'low', 'default', 'high', 'urgent' (breaks DND). "
+            "Only use 'urgent' for genuine emergencies. "
+            "Tags are ntfy emoji names e.g. 'warning', 'books', 'rotating_light', 'calendar'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title":    {"type": "string", "description": "Short notification title (50 chars max)"},
+                "message":  {"type": "string", "description": "Notification body — 1-2 actionable sentences"},
+                "priority": {
+                    "type": "string",
+                    "enum": ["min", "low", "default", "high", "urgent"],
+                    "description": "Notification priority",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional ntfy emoji tag names e.g. ['warning', 'books']",
+                },
+            },
+            "required": ["title", "message"],
+        },
+    },
+    # ── Google Calendar write tools ───────────────────────────────────────────
+    {
+        "name": "create_calendar_event",
+        "description": (
+            "Create a new event in the student's Google Calendar. "
+            "Use when the student asks to add something to their calendar, block time, "
+            "or schedule a study session, appointment, or reminder. "
+            "Returns the created event ID and a link to it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title":       {"type": "string", "description": "Event title/summary"},
+                "start":       {"type": "string", "description": "Start in ISO 8601, e.g. '2026-05-15T14:00:00' or '2026-05-15' for all-day"},
+                "end":         {"type": "string", "description": "End in ISO 8601, e.g. '2026-05-15T15:00:00' or '2026-05-16' for all-day"},
+                "description": {"type": "string", "description": "Event notes or description (optional)"},
+                "location":    {"type": "string", "description": "Event location (optional)"},
+                "all_day":     {"type": "boolean", "description": "True for an all-day event — pass YYYY-MM-DD dates for start/end"},
+                "calendar_id": {"type": "string", "description": "Google Calendar ID; defaults to 'primary'"},
+            },
+            "required": ["title", "start", "end"],
+        },
+    },
+    {
+        "name": "update_calendar_event",
+        "description": (
+            "Update an existing Google Calendar event. "
+            "Pass only the fields you want to change — omitted fields are preserved. "
+            "Use the event_id from list_google_calendar_events or create_calendar_event."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_id":    {"type": "string", "description": "Google Calendar event ID to update"},
+                "title":       {"type": "string", "description": "New title (omit to keep existing)"},
+                "start":       {"type": "string", "description": "New start datetime"},
+                "end":         {"type": "string", "description": "New end datetime"},
+                "description": {"type": "string", "description": "New description"},
+                "location":    {"type": "string", "description": "New location"},
+                "calendar_id": {"type": "string", "description": "Calendar ID, defaults to 'primary'"},
+            },
+            "required": ["event_id"],
+        },
+    },
+    {
+        "name": "delete_calendar_event",
+        "description": "Delete a Google Calendar event by its ID. Irreversible — confirm with the student first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_id":    {"type": "string", "description": "Google Calendar event ID to delete"},
+                "calendar_id": {"type": "string", "description": "Calendar ID, defaults to 'primary'"},
+            },
+            "required": ["event_id"],
+        },
+    },
+    {
+        "name": "list_google_calendar_events",
+        "description": (
+            "List upcoming events from the student's Google Calendar (primary or specified). "
+            "Returns event IDs, titles, start/end times, and descriptions. "
+            "Use this to find event IDs before calling update_calendar_event or delete_calendar_event."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_ahead":  {"type": "integer", "description": "Days ahead to look, default 7, max 60"},
+                "calendar_id": {"type": "string", "description": "Calendar ID, defaults to 'primary'"},
+                "max_results": {"type": "integer", "description": "Max events to return, default 20, max 50"},
+                "query":       {"type": "string", "description": "Optional text search within event titles/descriptions"},
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -6983,7 +7776,7 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
                 cal = fetch_ical(CANVAS_ICAL_URL)
                 if not cal:
                     return {"assignments": [], "error": "Could not fetch Canvas calendar"}
-                asgn_list = parse_canvas_assignments(cal)
+                asgn_list = get_canvas_assignments_with_overdue(cal)
                 conn = get_db()
                 cur = conn.cursor()
                 cur.execute("SELECT DISTINCT assignment_title FROM completions")
@@ -7006,6 +7799,17 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             cur.execute(
                 "INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, submitted) VALUES (%s,%s,%s,0,FALSE,%s)",
                 (title, class_name, duration, submitted),
+            )
+            # Also complete any task that was auto-created from this overdue assignment
+            cur.execute(
+                "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
+                "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
+                (title,),
+            )
+            # Reset the cache flag so it won't re-promote if somehow re-fetched
+            cur.execute(
+                "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
+                (title,),
             )
             conn.commit(); cur.close(); conn.close()
             log.info(f"Jarvis tool: logged completion of '{title}' (submitted={submitted})")
@@ -8191,6 +8995,138 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 "link": data.get("link") or None,
             }
 
+        elif name == "send_notification":
+            if not NTFY_TOPIC:
+                return {"status": "skipped", "reason": "NTFY_TOPIC environment variable not configured"}
+            title = str(inputs.get("title", "Jarvis")).strip()[:100]
+            message = str(inputs.get("message", "")).strip()[:500]
+            if not message:
+                return {"error": "message is required"}
+            priority = str(inputs.get("priority", "default")).strip()
+            if priority not in ("min", "low", "default", "high", "urgent"):
+                priority = "default"
+            tags = inputs.get("tags") or []
+            if not isinstance(tags, list):
+                tags = []
+            tags = [str(t).strip() for t in tags if str(t).strip()]
+            ok = send_ntfy_notification(title, message, priority=priority, tags=tags)
+            log.info("Jarvis tool send_notification: %r ok=%s", title, ok)
+            return {"status": "sent" if ok else "failed", "title": title, "priority": priority}
+
+        elif name in ("create_calendar_event", "update_calendar_event", "delete_calendar_event", "list_google_calendar_events"):
+            creds = _get_google_credentials()
+            if creds is None:
+                if not _google_configured():
+                    return {"error": "Google not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."}
+                return {"error": "Google not authorized. Visit /google-auth/start to connect your Google account."}
+
+            from googleapiclient.discovery import build as _gbuild
+            cal_svc = _gbuild("calendar", "v3", credentials=creds, cache_discovery=False)
+            cal_id = str(inputs.get("calendar_id", "primary")).strip() or "primary"
+
+            if name == "list_google_calendar_events":
+                days_ahead = min(int(inputs.get("days_ahead", 7)), 60)
+                max_res = min(int(inputs.get("max_results", 20)), 50)
+                query = str(inputs.get("query", "")).strip() or None
+                now_utc = datetime.utcnow().isoformat() + "Z"
+                end_utc = (datetime.utcnow() + timedelta(days=days_ahead)).isoformat() + "Z"
+                kw = dict(
+                    calendarId=cal_id,
+                    timeMin=now_utc,
+                    timeMax=end_utc,
+                    maxResults=max_res,
+                    singleEvents=True,
+                    orderBy="startTime",
+                )
+                if query:
+                    kw["q"] = query
+                result = cal_svc.events().list(**kw).execute()
+                items = []
+                for ev in result.get("items", []):
+                    start = ev.get("start", {})
+                    end = ev.get("end", {})
+                    items.append({
+                        "id": ev.get("id"),
+                        "title": ev.get("summary", ""),
+                        "start": start.get("dateTime") or start.get("date"),
+                        "end": end.get("dateTime") or end.get("date"),
+                        "description": (ev.get("description") or "")[:300],
+                        "location": ev.get("location", ""),
+                        "url": ev.get("htmlLink", ""),
+                    })
+                return {"events": items, "count": len(items)}
+
+            elif name == "create_calendar_event":
+                title = str(inputs.get("title", "")).strip()
+                if not title:
+                    return {"error": "title is required"}
+                start_str = str(inputs.get("start", "")).strip()
+                end_str = str(inputs.get("end", "")).strip()
+                if not start_str or not end_str:
+                    return {"error": "start and end are required"}
+                all_day = bool(inputs.get("all_day", False)) or ("T" not in start_str and len(start_str) == 10)
+                if all_day:
+                    start_obj = {"date": start_str[:10]}
+                    end_obj = {"date": end_str[:10]}
+                else:
+                    tz_str = get_tz().key if hasattr(get_tz(), "key") else "America/Denver"
+                    start_obj = {"dateTime": start_str, "timeZone": tz_str}
+                    end_obj   = {"dateTime": end_str,   "timeZone": tz_str}
+                body = {"summary": title, "start": start_obj, "end": end_obj}
+                desc = str(inputs.get("description", "")).strip()
+                loc  = str(inputs.get("location", "")).strip()
+                if desc:
+                    body["description"] = desc
+                if loc:
+                    body["location"] = loc
+                ev = cal_svc.events().insert(calendarId=cal_id, body=body).execute()
+                log.info("Jarvis tool: created calendar event '%s' id=%s", title, ev.get("id"))
+                return {
+                    "status": "created",
+                    "event_id": ev.get("id"),
+                    "title": title,
+                    "start": start_str,
+                    "end": end_str,
+                    "url": ev.get("htmlLink", ""),
+                }
+
+            elif name == "update_calendar_event":
+                event_id = str(inputs.get("event_id", "")).strip()
+                if not event_id:
+                    return {"error": "event_id is required"}
+                existing = cal_svc.events().get(calendarId=cal_id, eventId=event_id).execute()
+                if inputs.get("title"):
+                    existing["summary"] = str(inputs["title"]).strip()
+                if inputs.get("description") is not None:
+                    existing["description"] = str(inputs["description"]).strip()
+                if inputs.get("location") is not None:
+                    existing["location"] = str(inputs["location"]).strip()
+                tz_str = get_tz().key if hasattr(get_tz(), "key") else "America/Denver"
+                if inputs.get("start"):
+                    s = str(inputs["start"]).strip()
+                    all_day = "T" not in s and len(s) == 10
+                    existing["start"] = {"date": s[:10]} if all_day else {"dateTime": s, "timeZone": tz_str}
+                if inputs.get("end"):
+                    e = str(inputs["end"]).strip()
+                    all_day = "T" not in e and len(e) == 10
+                    existing["end"] = {"date": e[:10]} if all_day else {"dateTime": e, "timeZone": tz_str}
+                updated = cal_svc.events().update(calendarId=cal_id, eventId=event_id, body=existing).execute()
+                log.info("Jarvis tool: updated calendar event id=%s", event_id)
+                return {
+                    "status": "updated",
+                    "event_id": event_id,
+                    "title": updated.get("summary", ""),
+                    "url": updated.get("htmlLink", ""),
+                }
+
+            elif name == "delete_calendar_event":
+                event_id = str(inputs.get("event_id", "")).strip()
+                if not event_id:
+                    return {"error": "event_id is required"}
+                cal_svc.events().delete(calendarId=cal_id, eventId=event_id).execute()
+                log.info("Jarvis tool: deleted calendar event id=%s", event_id)
+                return {"status": "deleted", "event_id": event_id}
+
         else:
             return {"error": f"Unknown tool: {name}"}
 
@@ -8441,7 +9377,14 @@ def api_chat():
             "When the student asks 'what do you know about X?' or 'who is X?', call get_person_profile and "
             "present the profile conversationally. Use list_people when asked who Jarvis remembers.\n"
             "- SAVE_MEMORY: Call save_memory for significant personal facts about the student themselves "
-            "(goals, preferences, life events, study habits). This is separate from people profiles."
+            "(goals, preferences, life events, study habits). This is separate from people profiles.\n"
+            "- PUSH NOTIFICATIONS: You have send_notification to push real-time alerts to the student's phone via ntfy. "
+            "Use it proactively when something is genuinely urgent and the student should know *right now* — "
+            "an assignment due in under 2 hours, a stock hitting a threshold they cared about, or an insight they'd want acted on immediately. "
+            "Keep the message ≤2 sentences, actionable, in Jarvis voice. Don't notify for routine chat responses.\n"
+            "- GOOGLE CALENDAR WRITE: You have create_calendar_event, update_calendar_event, delete_calendar_event, and list_google_calendar_events. "
+            "Use these when the student asks to add, change, or remove calendar items. "
+            "Always confirm the event details before deleting. Use list_google_calendar_events to look up event IDs when needed."
         )
 
         system_dynamic = (
@@ -8488,7 +9431,7 @@ def api_chat():
             if _canvas_active and CANVAS_ICAL_URL:
                 cal = fetch_ical(CANVAS_ICAL_URL)
                 if cal:
-                    asgn_list = parse_canvas_assignments(cal)
+                    asgn_list = get_canvas_assignments_with_overdue(cal)
                     try:
                         _conn = get_db()
                         _cur = _conn.cursor()
@@ -9242,7 +10185,7 @@ def _generate_daily_plan_for_date(target_date):
         try:
             cal = fetch_ical(CANVAS_ICAL_URL)
             if cal:
-                all_asgn = parse_canvas_assignments(cal)
+                all_asgn = get_canvas_assignments_with_overdue(cal)
                 class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
                 class_avg_cache = get_class_averages_batch(class_names)
 
@@ -10037,7 +10980,7 @@ def api_daily_outlook():
             cur.close()
             conn.close()
             out = []
-            for a in parse_canvas_assignments(cal):
+            for a in get_canvas_assignments_with_overdue(cal):
                 if a["title"] in done:
                     continue
                 due_iso = a.get("due_iso", "")
