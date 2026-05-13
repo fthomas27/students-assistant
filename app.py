@@ -256,6 +256,11 @@ GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
 NOAA_API_TOKEN   = os.environ.get("NOAA_API_TOKEN", "")
 GUARDIAN_API_KEY = os.environ.get("GUARDIAN_API_KEY", "")
 
+# ── PowerSchool ───────────────────────────────────────────────────────────────
+POWER_USERN = os.environ.get("POWER_USERN", "").strip()
+POWER_PASS  = os.environ.get("POWER_PASS", "").strip()
+PS_BASE_URL = "https://powerschool.pcschools.us"
+
 # ── ntfy push notifications ────────────────────────────────────────────────────
 NTFY_TOPIC  = os.environ.get("NTFY_TOPIC", "").strip()
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").strip()
@@ -1084,6 +1089,299 @@ def canvas_search_assignment(title_query):
         if sub:
             return (cid, sub.get("id"), course["name"])
     return None
+
+
+# ── PowerSchool Scraper ────────────────────────────────────────────────────────
+# Logs into PowerSchool with POWER_USERN / POWER_PASS env vars and scrapes
+# current grades, GPA, and attendance from the student portal.
+
+PS_GRADES_TTL     = 1800   # 30 minutes
+PS_ATTENDANCE_TTL = 3600   # 1 hour
+_ps_session_lock  = threading.Lock()
+_ps_session_cache = {"session": None, "expires": 0}
+
+
+def _ps_configured():
+    return bool(POWER_USERN and POWER_PASS)
+
+
+def _ps_md5_pw(account: str, password: str, pstoken: str) -> str:
+    """Compute PowerSchool's client-side MD5 password hash.
+
+    PowerSchool JS hashes as: hex_md5(account.toLowerCase() + ':' + hex_md5(password) + ':' + pstoken)
+    """
+    import hashlib
+    def md5(s: str) -> str:
+        return hashlib.md5(s.encode("utf-8")).hexdigest()
+    return md5(account.lower() + ":" + md5(password) + ":" + pstoken)
+
+
+def _ps_login() -> "requests.Session | None":
+    """Authenticate to PowerSchool and return a live requests.Session, or None on failure."""
+    if not _ps_configured():
+        return None
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        log.warning("PowerSchool: beautifulsoup4 not installed")
+        return None
+
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    try:
+        r = sess.get(f"{PS_BASE_URL}/public/", timeout=20)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        pstoken = ""
+        tok_el = soup.find("input", {"name": "pstoken"})
+        if tok_el:
+            pstoken = tok_el.get("value", "")
+
+        payload = {
+            "account":      POWER_USERN,
+            "pw":           _ps_md5_pw(POWER_USERN, POWER_PASS, pstoken),
+            "pstoken":      pstoken,
+            "ldappassword": POWER_PASS,
+            "returnTo":     "",
+            "dbpw":         _ps_md5_pw(POWER_USERN, POWER_PASS, pstoken),
+        }
+        r2 = sess.post(f"{PS_BASE_URL}/public/", data=payload, timeout=20, allow_redirects=True)
+        final_url = r2.url.lower()
+        if "home.html" in final_url or "guardian" in final_url or "student" in final_url:
+            log.info("PowerSchool login succeeded (redirected to %s)", r2.url)
+            return sess
+        # Some PS instances redirect to /public/ with an error flag
+        err_soup = BeautifulSoup(r2.text, "html.parser")
+        err_el = err_soup.find(class_=lambda c: c and "error" in c.lower()) if err_soup else None
+        err_msg = err_el.get_text(strip=True)[:200] if err_el else ""
+        log.warning("PowerSchool login may have failed. URL=%s err=%s", r2.url, err_msg)
+        # Return session anyway — some PS setups don't redirect but still set cookies
+        return sess
+    except Exception as e:
+        log.warning("PowerSchool login error: %s", e)
+        return None
+
+
+def _ps_get_session() -> "requests.Session | None":
+    """Return a cached PowerSchool session, refreshing if expired."""
+    now = time.monotonic()
+    with _ps_session_lock:
+        if _ps_session_cache["session"] and now < _ps_session_cache["expires"]:
+            return _ps_session_cache["session"]
+        sess = _ps_login()
+        _ps_session_cache["session"] = sess
+        # Cache the session for 20 minutes (PS sessions typically last ~30 min)
+        _ps_session_cache["expires"] = now + 1200
+        return sess
+
+
+def _ps_invalidate_session():
+    with _ps_session_lock:
+        _ps_session_cache["session"] = None
+        _ps_session_cache["expires"] = 0
+
+
+def ps_grades() -> list:
+    """Scrape current course grades from PowerSchool home page.
+
+    Returns a list of dicts with keys:
+      course, teacher, period, grade_letter, grade_pct, grade_url, absences
+    """
+    cached = _cache_get("ps:grades", PS_GRADES_TTL)
+    if cached is not None:
+        return cached
+
+    if not _ps_configured():
+        return []
+
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
+
+    sess = _ps_get_session()
+    if sess is None:
+        _cache_set("ps:grades", [])
+        return []
+
+    def _scrape(sess):
+        r = sess.get(f"{PS_BASE_URL}/guardian/home.html", timeout=20)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        grades = []
+
+        # PowerSchool renders a grades table. Look for the main content table
+        # Typical structure: table rows where each row is a course.
+        # Class names vary by PS version: "linkDescList", "odd"/"even" rows, etc.
+        main_table = None
+        for tbl in soup.find_all("table"):
+            # The grades table has links to /guardian/scores.html
+            if tbl.find("a", href=lambda h: h and "scores.html" in h):
+                main_table = tbl
+                break
+
+        if not main_table:
+            # Fallback: look for any table with grade-like content (letter grades)
+            grade_pattern = re.compile(r"^\s*([A-F][+-]?|\d{1,3}(\.\d+)?%?)\s*$")
+            for tbl in soup.find_all("table"):
+                cells = tbl.find_all("td")
+                if any(grade_pattern.match(c.get_text()) for c in cells[:50]):
+                    main_table = tbl
+                    break
+
+        if not main_table:
+            log.warning("PowerSchool: could not locate grades table in home.html")
+            return []
+
+        rows = main_table.find_all("tr")
+        for row in rows:
+            cells = row.find_all(["td", "th"])
+            if len(cells) < 3:
+                continue
+            # Skip header rows
+            if cells[0].name == "th":
+                continue
+
+            # Extract course name (usually first cell with a link or text)
+            course_el = cells[0]
+            course_link = course_el.find("a", href=lambda h: h and "scores.html" in h)
+            course_name = (course_link or course_el).get_text(strip=True)
+            if not course_name:
+                continue
+
+            # Teacher name (usually second cell)
+            teacher = cells[1].get_text(strip=True) if len(cells) > 1 else ""
+
+            # Period (sometimes third cell, before grades)
+            # Grades typically appear as letter or percentage in later cells
+            grade_letter = ""
+            grade_pct    = None
+            grade_url    = ""
+            absences     = ""
+
+            letter_re = re.compile(r"^[A-F][+-]?$")
+            pct_re    = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%?$")
+
+            for cell in cells[2:]:
+                cell_text = cell.get_text(strip=True)
+                # Look for grade link (scores.html)
+                a = cell.find("a", href=lambda h: h and "scores.html" in h)
+                if a:
+                    raw = a.get_text(strip=True)
+                    href = a.get("href", "")
+                    grade_url = (PS_BASE_URL + href) if href.startswith("/") else href
+                    # Parse "A (95.2%)" or "95.2%" or "A"
+                    paren_m = re.search(r"\((\d{1,3}(?:\.\d+)?)\s*%?\)", raw)
+                    if paren_m:
+                        grade_pct = float(paren_m.group(1))
+                        raw_letter = raw[:paren_m.start()].strip()
+                    else:
+                        raw_letter = raw
+                    if letter_re.match(raw_letter):
+                        grade_letter = raw_letter
+                    elif pct_re.match(raw_letter):
+                        grade_pct = float(pct_re.match(raw_letter).group(1))
+                    break
+                # Fallback: bare text grade
+                if letter_re.match(cell_text) and not grade_letter:
+                    grade_letter = cell_text
+                elif pct_re.match(cell_text) and grade_pct is None:
+                    grade_pct = float(pct_re.match(cell_text).group(1))
+
+            # Absences often in last column
+            if cells:
+                last_text = cells[-1].get_text(strip=True)
+                if re.match(r"^\d+$", last_text) and last_text != grade_letter:
+                    absences = last_text
+
+            if course_name and (grade_letter or grade_pct is not None):
+                grades.append({
+                    "course":       course_name,
+                    "teacher":      teacher,
+                    "grade_letter": grade_letter,
+                    "grade_pct":    grade_pct,
+                    "grade_url":    grade_url,
+                    "absences":     absences,
+                })
+
+        return grades
+
+    try:
+        grades = _scrape(sess)
+        if not grades:
+            # Session may have expired — retry once with a fresh login
+            _ps_invalidate_session()
+            sess = _ps_get_session()
+            if sess:
+                grades = _scrape(sess)
+        _cache_set("ps:grades", grades)
+        log.info("PowerSchool grades scraped: %d courses", len(grades))
+        return grades
+    except Exception as e:
+        log.warning("PowerSchool grade scrape failed: %s", e)
+        _cache_set("ps:grades", [])
+        return []
+
+
+def ps_attendance() -> dict:
+    """Scrape attendance totals from PowerSchool.
+
+    Returns dict with keys: absences (int), tardies (int), raw (str)
+    """
+    cached = _cache_get("ps:attendance", PS_ATTENDANCE_TTL)
+    if cached is not None:
+        return cached
+
+    if not _ps_configured():
+        return {}
+
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return {}
+
+    sess = _ps_get_session()
+    if sess is None:
+        return {}
+
+    try:
+        r = sess.get(f"{PS_BASE_URL}/guardian/home.html", timeout=20)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        result = {"absences": 0, "tardies": 0, "raw": ""}
+
+        # Look for attendance section — PS often has a summary near the top
+        att_el = soup.find(string=re.compile(r"Absence|Tardy|Attendance", re.I))
+        if att_el:
+            parent = att_el.find_parent(["td", "div", "span"])
+            if parent:
+                result["raw"] = parent.get_text(" ", strip=True)[:300]
+                nums = re.findall(r"\d+", result["raw"])
+                if len(nums) >= 2:
+                    result["absences"] = int(nums[0])
+                    result["tardies"]  = int(nums[1])
+
+        _cache_set("ps:attendance", result)
+        return result
+    except Exception as e:
+        log.warning("PowerSchool attendance scrape failed: %s", e)
+        return {}
+
+
+def ps_refresh_cache():
+    """Force-refresh PowerSchool data by invalidating session + cache."""
+    _ps_invalidate_session()
+    _cache_set("ps:grades", None)
+    _cache_set("ps:attendance", None)
+    with _simple_cache_lock:
+        _simple_cache.pop("ps:grades", None)
+        _simple_cache.pop("ps:attendance", None)
+    return ps_grades()
 
 
 # Park City, UT
@@ -4491,6 +4789,33 @@ def api_calendar():
     events.sort(key=lambda x: x.get("start_iso", ""))
     log.info(f"/api/calendar: total took {time.time()-start:.2f}s with {len(events)} events")
     return jsonify({"events": events})
+
+
+@app.route("/api/powerschool/grades")
+def api_powerschool_grades():
+    """Return cached PowerSchool grades. Scrapes live if cache is cold."""
+    if not _ps_configured():
+        return jsonify({"error": "PowerSchool credentials not configured (POWER_USERN / POWER_PASS)"}), 503
+    grades = ps_grades()
+    return jsonify({"grades": grades, "count": len(grades), "configured": True})
+
+
+@app.route("/api/powerschool/attendance")
+def api_powerschool_attendance():
+    """Return cached PowerSchool attendance summary."""
+    if not _ps_configured():
+        return jsonify({"error": "PowerSchool credentials not configured"}), 503
+    att = ps_attendance()
+    return jsonify({"attendance": att, "configured": True})
+
+
+@app.route("/api/powerschool/refresh", methods=["POST"])
+def api_powerschool_refresh():
+    """Force a fresh scrape of PowerSchool data."""
+    if not _ps_configured():
+        return jsonify({"error": "PowerSchool credentials not configured"}), 503
+    grades = ps_refresh_cache()
+    return jsonify({"grades": grades, "count": len(grades), "refreshed": True})
 
 
 @app.route("/api/diagnostic")
@@ -7997,10 +8322,14 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             return {"briefing": None, "note": "No briefing generated yet for today"}
 
         elif name == "get_grades":
-            if not _canvas_configured():
-                return {"error": "Canvas API not configured (CANVAS_API_TOKEN / CANVAS_BASE_URL missing)."}
-            grades = canvas_grades()
-            return {"grades": grades, "count": len(grades)}
+            result = {}
+            if _canvas_configured():
+                result["canvas_grades"] = canvas_grades()
+            if _ps_configured():
+                result["powerschool_grades"] = ps_grades()
+            if not result:
+                return {"error": "Neither Canvas nor PowerSchool is configured."}
+            return result
 
         elif name == "get_assignment_details":
             if not _canvas_configured():
@@ -9685,6 +10014,21 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                     system_dynamic += "\n\nCURRENT GRADES (Canvas, live): " + "; ".join(shown) + "."
         except Exception:
             log.warning("/api/chat could not load Canvas grades for context")
+
+        # Inject PowerSchool grades
+        try:
+            if _ps_configured():
+                ps_g = ps_grades()
+                if ps_g:
+                    ps_parts = []
+                    for g in ps_g:
+                        letter = g.get("grade_letter") or ""
+                        pct    = g.get("grade_pct")
+                        pct_txt = f" ({pct:.1f}%)" if pct is not None else ""
+                        ps_parts.append(f"{g['course']}: {letter}{pct_txt}".strip())
+                    system_dynamic += "\n\nCURRENT GRADES (PowerSchool): " + "; ".join(ps_parts) + "."
+        except Exception:
+            log.warning("/api/chat could not load PowerSchool grades for context")
 
         # Inject prior-conversation recall + recent messages from current conversation
         try:
