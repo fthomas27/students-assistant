@@ -251,9 +251,10 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
 
 GOOGLE_SCOPES = [
-    "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
-    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/drive",               # full Drive access (create/edit/delete)
+    "https://www.googleapis.com/auth/documents",           # read/write Google Docs
+    "https://www.googleapis.com/auth/spreadsheets",        # read/write Google Sheets
+    "https://www.googleapis.com/auth/calendar",            # read/write Calendar
     "https://www.googleapis.com/auth/classroom.courses.readonly",
     "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
     "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly",
@@ -507,7 +508,8 @@ def init_db():
         ("chat_summaries", "CREATE TABLE IF NOT EXISTS chat_summaries (conversation_id TEXT PRIMARY KEY, summary TEXT NOT NULL DEFAULT '', message_count INT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("bucket_list", "CREATE TABLE IF NOT EXISTS bucket_list (id SERIAL PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("people_profiles", "CREATE TABLE IF NOT EXISTS people_profiles (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, relationship TEXT NOT NULL DEFAULT '', facts TEXT NOT NULL DEFAULT '[]', mem0_synced BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
-        ("gmail_drafts", "CREATE TABLE IF NOT EXISTS gmail_drafts (id SERIAL PRIMARY KEY, to_addr TEXT NOT NULL, cc_addr TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("gmail_drafts", "CREATE TABLE IF NOT EXISTS gmail_drafts (id SERIAL PRIMARY KEY, to_addr TEXT NOT NULL, cc_addr TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', conversation_id TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("gmail_drafts_conv_idx", "CREATE INDEX IF NOT EXISTS idx_gmail_drafts_conv ON gmail_drafts(conversation_id) WHERE conversation_id != ''"),
     ]
 
     for table_name, create_sql in tables:
@@ -6333,9 +6335,12 @@ JARVIS_TOOLS = [
     {
         "name": "create_email_draft",
         "description": (
-            "Compose an email for the student to review. The email will NOT be sent automatically — "
-            "a confirmation card appears in the UI so the student can read it and click Send. "
-            "Use this whenever the student asks to send, reply to, or compose any email."
+            "Compose an email for the student to review and confirm before it is sent. "
+            "IMPORTANT RULES: (1) Only call this when the student EXPLICITLY asks to send, compose, "
+            "or reply to an email in their CURRENT message. (2) Never call this because a previous "
+            "conversation turn had a draft — once staged, the student handles it via the UI. "
+            "(3) Never call this more than once per response. "
+            "The email will NOT be sent automatically — a confirmation card appears in the chat."
         ),
         "input_schema": {
             "type": "object",
@@ -6447,6 +6452,124 @@ JARVIS_TOOLS = [
             "required": ["message_id"],
         },
     },
+    {
+        "name": "create_google_doc",
+        "description": "Create a new Google Doc with the given title and content. Returns the file ID and URL.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Document title"},
+                "content": {"type": "string", "description": "Plain-text content to fill the document with"},
+                "folder_id": {"type": "string", "description": "Optional Drive folder ID to create it in"},
+            },
+            "required": ["title", "content"],
+        },
+    },
+    {
+        "name": "update_google_doc",
+        "description": "Replace the full text content of an existing Google Doc.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "Google Docs document ID"},
+                "content": {"type": "string", "description": "New plain-text content (replaces everything)"},
+            },
+            "required": ["document_id", "content"],
+        },
+    },
+    {
+        "name": "append_google_doc",
+        "description": "Append text to the end of an existing Google Doc without erasing existing content.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "Google Docs document ID"},
+                "content": {"type": "string", "description": "Text to append"},
+            },
+            "required": ["document_id", "content"],
+        },
+    },
+    {
+        "name": "create_google_sheet",
+        "description": "Create a new Google Sheets spreadsheet with optional headers and data rows.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Spreadsheet title"},
+                "rows": {
+                    "type": "array",
+                    "description": "2-D array of cell values, e.g. [['Name','Grade'],['Math','A']]",
+                    "items": {"type": "array", "items": {}},
+                },
+                "folder_id": {"type": "string", "description": "Optional Drive folder ID"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "update_google_sheet",
+        "description": "Write rows of data to a range in an existing Google Sheet (overwrites that range).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "spreadsheet_id": {"type": "string", "description": "Google Sheets file ID"},
+                "range": {"type": "string", "description": "A1-notation range, e.g. 'Sheet1!A1'"},
+                "rows": {
+                    "type": "array",
+                    "description": "2-D array of values to write",
+                    "items": {"type": "array", "items": {}},
+                },
+            },
+            "required": ["spreadsheet_id", "range", "rows"],
+        },
+    },
+    {
+        "name": "create_drive_folder",
+        "description": "Create a new folder in Google Drive. Returns the folder ID and URL.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Folder name"},
+                "parent_folder_id": {"type": "string", "description": "Optional parent folder ID"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "delete_drive_file",
+        "description": "Permanently delete a file or folder from Google Drive by its ID.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "Drive file or folder ID to delete"},
+            },
+            "required": ["file_id"],
+        },
+    },
+    {
+        "name": "move_drive_file",
+        "description": "Move a Drive file to a different folder.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "File ID to move"},
+                "new_folder_id": {"type": "string", "description": "Destination folder ID"},
+            },
+            "required": ["file_id", "new_folder_id"],
+        },
+    },
+    {
+        "name": "rename_drive_file",
+        "description": "Rename a file or folder in Google Drive.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "File or folder ID to rename"},
+                "new_name": {"type": "string", "description": "New name"},
+            },
+            "required": ["file_id", "new_name"],
+        },
+    },
 ]
 
 
@@ -6466,7 +6589,7 @@ JARVIS_WEB_TOOLS = [
 ANTHROPIC_SERVER_TOOL_NAMES = {"web_search", "web_fetch"}
 
 
-def _execute_jarvis_tool(name, inputs):
+def _execute_jarvis_tool(name, inputs, conversation_id=None):
     """Execute a Jarvis tool call and return a JSON-serializable result dict."""
     try:
         if name == "get_tasks":
@@ -6983,8 +7106,8 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO gmail_drafts (to_addr, cc_addr, subject, body) VALUES (%s,%s,%s,%s) RETURNING id",
-                (to_addr, cc_addr, subject, body),
+                "INSERT INTO gmail_drafts (to_addr, cc_addr, subject, body, conversation_id) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                (to_addr, cc_addr, subject, body, conversation_id or ""),
             )
             draft_id = cur.fetchone()["id"]
             conn.commit(); cur.close(); conn.close()
@@ -6998,9 +7121,14 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 "body_preview": body[:300],
             }
 
-        elif name in ("search_google_drive", "read_google_drive_file", "list_google_drive_files",
-                      "read_google_sheet", "list_google_classroom_courses",
-                      "get_google_classroom_assignments", "search_gmail", "read_gmail_message"):
+        elif name in (
+            "search_google_drive", "read_google_drive_file", "list_google_drive_files",
+            "read_google_sheet", "list_google_classroom_courses",
+            "get_google_classroom_assignments", "search_gmail", "read_gmail_message",
+            "create_google_doc", "update_google_doc", "append_google_doc",
+            "create_google_sheet", "update_google_sheet",
+            "create_drive_folder", "delete_drive_file", "move_drive_file", "rename_drive_file",
+        ):
             creds = _get_google_credentials()
             if creds is None:
                 if not _google_configured():
@@ -7154,6 +7282,148 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                         "snippet": md.get("snippet", ""),
                     })
                 return {"messages": details, "count": len(details)}
+
+            elif name == "create_google_doc":
+                title = str(inputs.get("title", "Untitled")).strip()
+                content = str(inputs.get("content", "")).strip()
+                folder_id = str(inputs.get("folder_id", "")).strip()
+                docs_svc = _gbuild("docs", "v1", credentials=creds, cache_discovery=False)
+                drive_svc = _gbuild("drive", "v3", credentials=creds, cache_discovery=False)
+                doc = docs_svc.documents().create(body={"title": title}).execute()
+                doc_id = doc["documentId"]
+                if content:
+                    docs_svc.documents().batchUpdate(
+                        documentId=doc_id,
+                        body={"requests": [{"insertText": {"location": {"index": 1}, "text": content}}]},
+                    ).execute()
+                if folder_id:
+                    meta = drive_svc.files().get(fileId=doc_id, fields="parents").execute()
+                    prev_parents = ",".join(meta.get("parents", []))
+                    drive_svc.files().update(
+                        fileId=doc_id, addParents=folder_id, removeParents=prev_parents, fields="id,parents"
+                    ).execute()
+                link = f"https://docs.google.com/document/d/{doc_id}/edit"
+                log.info(f"Created Google Doc '{title}' id={doc_id}")
+                return {"document_id": doc_id, "title": title, "url": link}
+
+            elif name == "update_google_doc":
+                doc_id = str(inputs.get("document_id", "")).strip()
+                content = str(inputs.get("content", ""))
+                if not doc_id:
+                    return {"error": "document_id is required"}
+                docs_svc = _gbuild("docs", "v1", credentials=creds, cache_discovery=False)
+                doc = docs_svc.documents().get(documentId=doc_id, fields="body").execute()
+                end_idx = doc["body"]["content"][-1]["endIndex"] - 1
+                requests = []
+                if end_idx > 1:
+                    requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_idx}}})
+                if content:
+                    requests.append({"insertText": {"location": {"index": 1}, "text": content}})
+                if requests:
+                    docs_svc.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+                return {"document_id": doc_id, "status": "updated", "url": f"https://docs.google.com/document/d/{doc_id}/edit"}
+
+            elif name == "append_google_doc":
+                doc_id = str(inputs.get("document_id", "")).strip()
+                content = str(inputs.get("content", ""))
+                if not doc_id:
+                    return {"error": "document_id is required"}
+                if not content:
+                    return {"error": "content is required"}
+                docs_svc = _gbuild("docs", "v1", credentials=creds, cache_discovery=False)
+                doc = docs_svc.documents().get(documentId=doc_id, fields="body").execute()
+                end_idx = doc["body"]["content"][-1]["endIndex"] - 1
+                docs_svc.documents().batchUpdate(
+                    documentId=doc_id,
+                    body={"requests": [{"insertText": {"location": {"index": end_idx}, "text": content}}]},
+                ).execute()
+                return {"document_id": doc_id, "status": "appended", "url": f"https://docs.google.com/document/d/{doc_id}/edit"}
+
+            elif name == "create_google_sheet":
+                title = str(inputs.get("title", "Untitled")).strip()
+                rows = inputs.get("rows") or []
+                folder_id = str(inputs.get("folder_id", "")).strip()
+                sheets_svc = _gbuild("sheets", "v4", credentials=creds, cache_discovery=False)
+                drive_svc = _gbuild("drive", "v3", credentials=creds, cache_discovery=False)
+                ss = sheets_svc.spreadsheets().create(body={"properties": {"title": title}}).execute()
+                ss_id = ss["spreadsheetId"]
+                if rows:
+                    sheets_svc.spreadsheets().values().update(
+                        spreadsheetId=ss_id,
+                        range="Sheet1!A1",
+                        valueInputOption="USER_ENTERED",
+                        body={"values": rows},
+                    ).execute()
+                if folder_id:
+                    meta = drive_svc.files().get(fileId=ss_id, fields="parents").execute()
+                    prev_parents = ",".join(meta.get("parents", []))
+                    drive_svc.files().update(
+                        fileId=ss_id, addParents=folder_id, removeParents=prev_parents, fields="id,parents"
+                    ).execute()
+                link = f"https://docs.google.com/spreadsheets/d/{ss_id}/edit"
+                log.info(f"Created Google Sheet '{title}' id={ss_id}")
+                return {"spreadsheet_id": ss_id, "title": title, "url": link}
+
+            elif name == "update_google_sheet":
+                ss_id = str(inputs.get("spreadsheet_id", "")).strip()
+                range_name = str(inputs.get("range", "Sheet1!A1")).strip()
+                rows = inputs.get("rows") or []
+                if not ss_id:
+                    return {"error": "spreadsheet_id is required"}
+                if not rows:
+                    return {"error": "rows is required"}
+                sheets_svc = _gbuild("sheets", "v4", credentials=creds, cache_discovery=False)
+                sheets_svc.spreadsheets().values().update(
+                    spreadsheetId=ss_id,
+                    range=range_name,
+                    valueInputOption="USER_ENTERED",
+                    body={"values": rows},
+                ).execute()
+                return {"spreadsheet_id": ss_id, "range": range_name, "status": "updated", "url": f"https://docs.google.com/spreadsheets/d/{ss_id}/edit"}
+
+            elif name == "create_drive_folder":
+                folder_name = str(inputs.get("name", "New Folder")).strip()
+                parent_id = str(inputs.get("parent_folder_id", "")).strip()
+                svc = _gbuild("drive", "v3", credentials=creds, cache_discovery=False)
+                meta = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}
+                if parent_id:
+                    meta["parents"] = [parent_id]
+                folder = svc.files().create(body=meta, fields="id,name,webViewLink").execute()
+                log.info(f"Created Drive folder '{folder_name}' id={folder['id']}")
+                return {"folder_id": folder["id"], "name": folder["name"], "url": folder.get("webViewLink", "")}
+
+            elif name == "delete_drive_file":
+                file_id = str(inputs.get("file_id", "")).strip()
+                if not file_id:
+                    return {"error": "file_id is required"}
+                svc = _gbuild("drive", "v3", credentials=creds, cache_discovery=False)
+                meta = svc.files().get(fileId=file_id, fields="name").execute()
+                svc.files().delete(fileId=file_id).execute()
+                log.info(f"Deleted Drive file id={file_id} name={meta.get('name')!r}")
+                return {"status": "deleted", "file_id": file_id, "name": meta.get("name", "")}
+
+            elif name == "move_drive_file":
+                file_id = str(inputs.get("file_id", "")).strip()
+                new_folder_id = str(inputs.get("new_folder_id", "")).strip()
+                if not file_id or not new_folder_id:
+                    return {"error": "file_id and new_folder_id are required"}
+                svc = _gbuild("drive", "v3", credentials=creds, cache_discovery=False)
+                meta = svc.files().get(fileId=file_id, fields="name,parents").execute()
+                prev_parents = ",".join(meta.get("parents", []))
+                svc.files().update(
+                    fileId=file_id, addParents=new_folder_id,
+                    removeParents=prev_parents, fields="id,parents",
+                ).execute()
+                return {"status": "moved", "file_id": file_id, "name": meta.get("name", ""), "new_folder_id": new_folder_id}
+
+            elif name == "rename_drive_file":
+                file_id = str(inputs.get("file_id", "")).strip()
+                new_name = str(inputs.get("new_name", "")).strip()
+                if not file_id or not new_name:
+                    return {"error": "file_id and new_name are required"}
+                svc = _gbuild("drive", "v3", credentials=creds, cache_discovery=False)
+                svc.files().update(fileId=file_id, body={"name": new_name}, fields="id,name").execute()
+                return {"status": "renamed", "file_id": file_id, "new_name": new_name}
 
             elif name == "read_gmail_message":
                 import base64 as _b64
@@ -8028,7 +8298,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                                 if tname in ANTHROPIC_SERVER_TOOL_NAMES:
                                     continue
                                 log.info(f"Jarvis tool: {tname} inputs={json.dumps(block.input, default=str)}")
-                                result = _execute_jarvis_tool(tname, block.input)
+                                result = _execute_jarvis_tool(tname, block.input, conversation_id=conversation_id)
                                 actions_taken.append({"tool": tname, "result": result})
                                 tool_results.append({
                                     "type": "tool_result",
@@ -9445,6 +9715,13 @@ def gmail_send_draft(draft_id):
         cur.execute("UPDATE gmail_drafts SET status='sent' WHERE id=%s", (draft_id,))
         conn.commit()
         log.info(f"Gmail draft {draft_id} sent to {row['to_addr']!r}")
+        # Inject a note so Jarvis knows this draft was handled and won't recreate it
+        if row.get("conversation_id"):
+            _chat_persist_message(
+                row["conversation_id"],
+                "user",
+                f"[Notification: Email draft "{row['subject']}" to {row['to_addr']} was sent by the student.]",
+            )
     except Exception as e:
         conn.rollback()
         log.error("gmail_send_draft error: %s", e)
@@ -9461,10 +9738,22 @@ def gmail_discard_draft(draft_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
+        "SELECT subject, to_addr, conversation_id FROM gmail_drafts WHERE id=%s AND status='pending'",
+        (draft_id,),
+    )
+    row = cur.fetchone()
+    cur.execute(
         "UPDATE gmail_drafts SET status='discarded' WHERE id=%s AND status='pending'",
         (draft_id,),
     )
-    conn.commit(); cur.close(); conn.close()
+    conn.commit()
+    if row and row.get("conversation_id"):
+        _chat_persist_message(
+            row["conversation_id"],
+            "user",
+            f"[Notification: Email draft "{row['subject']}" to {row['to_addr']} was discarded by the student.]",
+        )
+    cur.close(); conn.close()
     return jsonify({"status": "discarded"})
 
 
