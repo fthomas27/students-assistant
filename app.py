@@ -253,6 +253,9 @@ WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.goog
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+NOAA_API_TOKEN   = os.environ.get("NOAA_API_TOKEN", "")
+GUARDIAN_API_KEY = os.environ.get("GUARDIAN_API_KEY", "")
+NTFY_TOPIC       = os.environ.get("NTFY_TOPIC", "")
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive",               # full Drive access (create/edit/delete)
@@ -6777,6 +6780,105 @@ JARVIS_TOOLS = [
             "required": ["presentation_id", "slide_id"],
         },
     },
+    {
+        "name": "get_weather",
+        "description": (
+            "Get current weather and forecast for Park City (or any lat/lon). "
+            "Returns temperature (°F), precipitation, snowfall, wind speed, and a 7-day forecast. "
+            "Use this whenever the student asks about weather, conditions for outdoor activities, "
+            "or whether to bring a jacket."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "description": "Forecast days 1-7 (default 1 = today only)"},
+                "latitude": {"type": "number", "description": "Latitude (default: Park City 40.6461)"},
+                "longitude": {"type": "number", "description": "Longitude (default: Park City -111.4980)"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_climate_history",
+        "description": (
+            "Look up historical climate data for Park City from NOAA. Good for questions like "
+            "'how does this ski season compare to last year?' or 'what's the average snowfall in February?'. "
+            "Requires NOAA_API_TOKEN."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "end_date":   {"type": "string", "description": "End date YYYY-MM-DD"},
+                "datatype": {
+                    "type": "string",
+                    "description": "NOAA data type: TMAX (max temp °F), TMIN, TOBS, PRCP (precipitation), SNOW (snowfall), SNWD (snow depth). Default SNOW.",
+                },
+            },
+            "required": ["start_date", "end_date"],
+        },
+    },
+    {
+        "name": "send_phone_notification",
+        "description": (
+            "Send a push notification directly to the student's phone via ntfy.sh. "
+            "Use for urgent reminders, deadline alerts, or any time the student asks Jarvis to remind them of something. "
+            "Requires NTFY_TOPIC to be configured."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title":    {"type": "string", "description": "Notification title (short)"},
+                "message":  {"type": "string", "description": "Notification body"},
+                "priority": {
+                    "type": "string",
+                    "description": "urgent, high, default, low, or min (default: default)",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional emoji tags e.g. ['warning', 'school']",
+                },
+            },
+            "required": ["title", "message"],
+        },
+    },
+    {
+        "name": "get_news",
+        "description": (
+            "Search The Guardian for current news articles. Good for current events, "
+            "debate prep, AP Government/History research, or staying informed. "
+            "Requires GUARDIAN_API_KEY."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query":   {"type": "string", "description": "Search terms (e.g. 'climate change Utah')"},
+                "section": {"type": "string", "description": "Filter by section: world, us-news, politics, science, technology, sport, education, environment"},
+                "count":   {"type": "integer", "description": "Number of results 1-10 (default 5)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_activity_suggestion",
+        "description": (
+            "Suggest something to do when the student is bored or has unexpected free time. "
+            "Returns a random activity with type and cost info."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "description": "Filter by type: education, recreational, social, diy, charity, cooking, relaxation, music, busywork",
+                },
+                "participants": {"type": "integer", "description": "Number of people (1, 2, 3, etc.)"},
+                "free_only":    {"type": "boolean", "description": "If true, only return free activities (price=0)"},
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -7997,6 +8099,144 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                     "date": hdrs.get("Date", ""),
                     "body": body[:12000],
                 }
+
+        elif name == "get_weather":
+            lat = float(inputs.get("latitude", 40.6461))
+            lon = float(inputs.get("longitude", -111.4980))
+            days = min(int(inputs.get("days", 1)), 7)
+            params = {
+                "latitude": lat, "longitude": lon,
+                "current": "temperature_2m,apparent_temperature,precipitation,snowfall,snow_depth,wind_speed_10m,weather_code",
+                "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum,weather_code",
+                "temperature_unit": "fahrenheit",
+                "wind_speed_unit": "mph",
+                "precipitation_unit": "inch",
+                "forecast_days": days,
+                "timezone": "America/Denver",
+            }
+            resp = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            current = data.get("current", {})
+            daily = data.get("daily", {})
+            forecast = []
+            for i, d in enumerate(daily.get("time", [])):
+                forecast.append({
+                    "date": d,
+                    "high_f": daily["temperature_2m_max"][i],
+                    "low_f": daily["temperature_2m_min"][i],
+                    "precip_in": daily["precipitation_sum"][i],
+                    "snow_in": daily["snowfall_sum"][i],
+                })
+            return {
+                "current": {
+                    "temp_f": current.get("temperature_2m"),
+                    "feels_like_f": current.get("apparent_temperature"),
+                    "precip_in": current.get("precipitation"),
+                    "snowfall_in": current.get("snowfall"),
+                    "snow_depth_in": current.get("snow_depth"),
+                    "wind_mph": current.get("wind_speed_10m"),
+                },
+                "forecast": forecast,
+                "location": f"{lat},{lon}",
+            }
+
+        elif name == "get_climate_history":
+            if not NOAA_API_TOKEN:
+                return {"error": "NOAA_API_TOKEN not configured"}
+            datatype = str(inputs.get("datatype", "SNOW")).upper()
+            params = {
+                "datasetid": "GHCND",
+                "stationid": "GHCND:USS0011J57S",
+                "datatypeid": datatype,
+                "startdate": inputs["start_date"],
+                "enddate": inputs["end_date"],
+                "units": "standard",
+                "limit": 1000,
+            }
+            resp = requests.get(
+                "https://www.ncdc.noaa.gov/cdo-web/api/v2/data",
+                headers={"token": NOAA_API_TOKEN},
+                params=params, timeout=15,
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            return {
+                "datatype": datatype,
+                "start_date": inputs["start_date"],
+                "end_date": inputs["end_date"],
+                "record_count": len(results),
+                "data": [{"date": r["date"][:10], "value": r["value"]} for r in results[:100]],
+            }
+
+        elif name == "send_phone_notification":
+            if not NTFY_TOPIC:
+                return {"error": "NTFY_TOPIC not configured. Set it to your ntfy.sh topic name."}
+            ntfy_headers = {
+                "Title": str(inputs.get("title", "Jarvis")),
+                "Priority": str(inputs.get("priority", "default")),
+                "Content-Type": "text/plain",
+            }
+            tags = inputs.get("tags")
+            if tags:
+                ntfy_headers["Tags"] = ",".join(str(t) for t in tags)
+            resp = requests.post(
+                f"https://ntfy.sh/{NTFY_TOPIC}",
+                data=str(inputs.get("message", "")).encode("utf-8"),
+                headers=ntfy_headers,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return {"status": "sent", "topic": NTFY_TOPIC, "title": inputs.get("title")}
+
+        elif name == "get_news":
+            if not GUARDIAN_API_KEY:
+                return {"error": "GUARDIAN_API_KEY not configured"}
+            params = {
+                "q": str(inputs.get("query", "")),
+                "api-key": GUARDIAN_API_KEY,
+                "page-size": min(int(inputs.get("count", 5)), 10),
+                "show-fields": "trailText,byline",
+                "order-by": "newest",
+            }
+            section = inputs.get("section")
+            if section:
+                params["section"] = section
+            resp = requests.get("https://content.guardianapis.com/search", params=params, timeout=10)
+            resp.raise_for_status()
+            results = resp.json().get("response", {}).get("results", [])
+            articles = []
+            for r in results:
+                fields = r.get("fields") or {}
+                articles.append({
+                    "headline": r.get("webTitle", ""),
+                    "section": r.get("sectionName", ""),
+                    "date": r.get("webPublicationDate", "")[:10],
+                    "summary": fields.get("trailText", ""),
+                    "url": r.get("webUrl", ""),
+                })
+            return {"query": inputs.get("query"), "count": len(articles), "articles": articles}
+
+        elif name == "get_activity_suggestion":
+            params = {}
+            if inputs.get("type"):
+                params["type"] = str(inputs["type"]).lower()
+            if inputs.get("participants"):
+                params["participants"] = int(inputs["participants"])
+            if inputs.get("free_only"):
+                params["maxprice"] = 0
+            resp = requests.get("https://www.boredapi.com/api/activity", params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if "error" in data:
+                return {"error": data["error"], "suggestion": None}
+            return {
+                "activity": data.get("activity"),
+                "type": data.get("type"),
+                "participants": data.get("participants"),
+                "free": data.get("price", 1) == 0,
+                "link": data.get("link") or None,
+            }
 
         else:
             return {"error": f"Unknown tool: {name}"}

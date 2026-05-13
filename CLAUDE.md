@@ -94,6 +94,9 @@ Optional:
 - `SPORTS_ICAL_URL` - Sports/activities calendar
 - `RED_DAY_ICAL_URL` - Park City Schools Red Day schedule
 - `WHITE_DAY_ICAL_URL` - Park City Schools White Day schedule
+- `NOAA_API_TOKEN` - NOAA Climate Data Online API token for historical weather/snow data (free at www.ncdc.noaa.gov/cdo-web/token)
+- `GUARDIAN_API_KEY` - The Guardian Open Platform API key for news search (free at open-platform.theguardian.com)
+- `NTFY_TOPIC` - Your ntfy.sh topic name for push notifications to phone (e.g. "jarvis-finn")
 
 ## Park City School Specific
 
