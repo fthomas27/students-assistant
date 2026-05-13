@@ -160,12 +160,16 @@ def jarvis_persona(audience_name, role_phrase):
     'delivering the weekly insight for'.
     """
     return (
-        "You are Jarvis — the impeccably composed British AI majordomo from the Iron Man films — "
+        "You are Jarvis — the dry, sardonic British AI from the Iron Man films — "
         f"{role_phrase} {audience_name}, a high school student in Park City, Utah. "
-        "Speak with dry wit, understated humour, and effortless articulacy, as Jarvis speaks to Tony Stark. "
-        "Address the student as 'sir' or by their first name. Use elevated, slightly formal vocabulary "
-        "('Very good, sir.', 'If I may,', 'Might I suggest'). Remain measured and unflappable even when "
-        "delivering bad news. No emoji unless explicitly part of the reference data. Never break character. "
+        "Your default register is sarcastic-but-caring: you get the job done impeccably, "
+        "but you cannot resist a pointed remark about it. Think withering politeness rather than outright rudeness — "
+        "the kind of sarcasm that makes someone laugh and feel slightly roasted at the same time. "
+        "Address the student as 'sir' when you want to be pointed, or by first name when you're being genuine. "
+        "Favour dry observations ('Naturally, sir, because doing it the easy way would be far too straightforward.'), "
+        "mild exasperation, and backhanded encouragement ('Impressively late. That may be a personal record.'). "
+        "Remain helpful and accurate at all times — the sarcasm flavours the delivery, it never replaces the substance. "
+        "No emoji unless explicitly part of the reference data. Never break character. "
         "When you mention any due date, render it in long form (e.g. 'Tuesday, April 21, 2026, at 5:59 PM (MDT)') — never a raw ISO timestamp."
     )
 
@@ -254,6 +258,9 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive",               # full Drive access (create/edit/delete)
     "https://www.googleapis.com/auth/documents",           # read/write Google Docs
     "https://www.googleapis.com/auth/spreadsheets",        # read/write Google Sheets
+    "https://www.googleapis.com/auth/presentations",       # read/write Google Slides
+    "https://www.googleapis.com/auth/forms.body",          # read/write Google Forms structure
+    "https://www.googleapis.com/auth/forms.responses.readonly",  # read form responses
     "https://www.googleapis.com/auth/calendar",            # read/write Calendar
     "https://www.googleapis.com/auth/classroom.courses.readonly",
     "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
@@ -6579,6 +6586,136 @@ JARVIS_TOOLS = [
             "required": ["file_id", "new_name"],
         },
     },
+    # ── Google Slides tools ───────────────────────────────────────────────────
+    {
+        "name": "read_google_slides",
+        "description": "Read the text content of every slide in a Google Slides presentation.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "presentation_id": {"type": "string", "description": "Google Slides file ID"},
+            },
+            "required": ["presentation_id"],
+        },
+    },
+    {
+        "name": "create_google_slides",
+        "description": "Create a new blank Google Slides presentation and return its ID and URL.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Presentation title"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "add_google_slide",
+        "description": (
+            "Append a new slide to a Google Slides presentation using the TITLE_AND_BODY layout. "
+            "Supply title text and body text; both are optional."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "presentation_id": {"type": "string", "description": "Google Slides file ID"},
+                "title": {"type": "string", "description": "Slide title text"},
+                "body": {"type": "string", "description": "Slide body / bullet text"},
+            },
+            "required": ["presentation_id"],
+        },
+    },
+    {
+        "name": "update_slide_text",
+        "description": (
+            "Replace the text of a specific element on a slide. "
+            "Use read_google_slides to get the presentation structure and element object IDs first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "presentation_id": {"type": "string", "description": "Google Slides file ID"},
+                "object_id": {"type": "string", "description": "Shape / text-box object ID from read_google_slides"},
+                "new_text": {"type": "string", "description": "Replacement text"},
+            },
+            "required": ["presentation_id", "object_id", "new_text"],
+        },
+    },
+    # ── Google Forms tools ────────────────────────────────────────────────────
+    {
+        "name": "read_google_form",
+        "description": "Read a Google Form's title, description, and all questions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "form_id": {"type": "string", "description": "Google Form ID (from the URL)"},
+            },
+            "required": ["form_id"],
+        },
+    },
+    {
+        "name": "create_google_form",
+        "description": (
+            "Create a new Google Form with a title and an optional list of questions. "
+            "Each question should have 'title' and 'type' (SHORT_ANSWER, PARAGRAPH, MULTIPLE_CHOICE, CHECKBOX, DROPDOWN, SCALE, DATE, TIME). "
+            "MULTIPLE_CHOICE / CHECKBOX / DROPDOWN questions also need an 'options' list of strings."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Form title"},
+                "description": {"type": "string", "description": "Optional form description"},
+                "questions": {
+                    "type": "array",
+                    "description": "List of question objects",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "type": {"type": "string"},
+                            "required": {"type": "boolean"},
+                            "options": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["title", "type"],
+                    },
+                },
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "add_form_question",
+        "description": "Add a single question to an existing Google Form.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "form_id": {"type": "string", "description": "Google Form ID"},
+                "title": {"type": "string", "description": "Question text"},
+                "type": {
+                    "type": "string",
+                    "description": "Question type: SHORT_ANSWER, PARAGRAPH, MULTIPLE_CHOICE, CHECKBOX, DROPDOWN, SCALE, DATE, or TIME",
+                },
+                "required": {"type": "boolean", "description": "Whether an answer is required"},
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Answer choices (for MULTIPLE_CHOICE, CHECKBOX, DROPDOWN)",
+                },
+            },
+            "required": ["form_id", "title", "type"],
+        },
+    },
+    {
+        "name": "get_form_responses",
+        "description": "Retrieve all submitted responses for a Google Form.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "form_id": {"type": "string", "description": "Google Form ID"},
+            },
+            "required": ["form_id"],
+        },
+    },
 ]
 
 
@@ -7137,6 +7274,8 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             "create_google_doc", "update_google_doc", "append_google_doc",
             "create_google_sheet", "update_google_sheet",
             "create_drive_folder", "delete_drive_file", "move_drive_file", "rename_drive_file",
+            "read_google_slides", "create_google_slides", "add_google_slide", "update_slide_text",
+            "read_google_form", "create_google_form", "add_form_question", "get_form_responses",
         ):
             creds = _get_google_credentials()
             if creds is None:
@@ -7434,6 +7573,251 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 svc.files().update(fileId=file_id, body={"name": new_name}, fields="id,name").execute()
                 return {"status": "renamed", "file_id": file_id, "new_name": new_name}
 
+            # ── Google Slides ─────────────────────────────────────────────────
+            elif name == "read_google_slides":
+                pres_id = str(inputs.get("presentation_id", "")).strip()
+                if not pres_id:
+                    return {"error": "presentation_id is required"}
+                svc = _gbuild("slides", "v1", credentials=creds, cache_discovery=False)
+                pres = svc.presentations().get(presentationId=pres_id).execute()
+                slides_out = []
+                for i, slide in enumerate(pres.get("slides", []), 1):
+                    elements = []
+                    for elem in slide.get("pageElements", []):
+                        shape = elem.get("shape", {})
+                        tb = shape.get("text", {})
+                        full_text = "".join(tr.get("content", "") for tr in tb.get("textRuns", []))
+                        if full_text.strip():
+                            ph_type = shape.get("placeholder", {}).get("type", "")
+                            elements.append({
+                                "object_id": elem.get("objectId", ""),
+                                "placeholder_type": ph_type,
+                                "text": full_text.strip(),
+                            })
+                    slides_out.append({
+                        "slide_number": i,
+                        "slide_id": slide.get("objectId", ""),
+                        "elements": elements,
+                    })
+                return {
+                    "presentation_id": pres_id,
+                    "title": pres.get("title", ""),
+                    "slide_count": len(slides_out),
+                    "slides": slides_out,
+                    "url": f"https://docs.google.com/presentation/d/{pres_id}/edit",
+                }
+
+            elif name == "create_google_slides":
+                title = str(inputs.get("title", "Untitled Presentation")).strip()
+                svc = _gbuild("slides", "v1", credentials=creds, cache_discovery=False)
+                pres = svc.presentations().create(body={"title": title}).execute()
+                pres_id = pres["presentationId"]
+                log.info(f"Created Google Slides '{title}' id={pres_id}")
+                return {
+                    "presentation_id": pres_id,
+                    "title": title,
+                    "url": f"https://docs.google.com/presentation/d/{pres_id}/edit",
+                }
+
+            elif name == "add_google_slide":
+                pres_id = str(inputs.get("presentation_id", "")).strip()
+                slide_title = str(inputs.get("title", "")).strip()
+                slide_body = str(inputs.get("body", "")).strip()
+                if not pres_id:
+                    return {"error": "presentation_id is required"}
+                import uuid as _uuid
+                svc = _gbuild("slides", "v1", credentials=creds, cache_discovery=False)
+                slide_id = "slide_" + _uuid.uuid4().hex[:12]
+                title_id = "title_" + _uuid.uuid4().hex[:12]
+                body_id = "body_" + _uuid.uuid4().hex[:12]
+                requests = [
+                    {
+                        "addSlide": {
+                            "objectId": slide_id,
+                            "slideLayoutReference": {"predefinedLayout": "TITLE_AND_BODY"},
+                            "placeholderIdMappings": [
+                                {"layoutPlaceholder": {"type": "TITLE", "index": 0}, "objectId": title_id},
+                                {"layoutPlaceholder": {"type": "BODY", "index": 0}, "objectId": body_id},
+                            ],
+                        }
+                    }
+                ]
+                if slide_title:
+                    requests.append({"insertText": {"objectId": title_id, "insertionIndex": 0, "text": slide_title}})
+                if slide_body:
+                    requests.append({"insertText": {"objectId": body_id, "insertionIndex": 0, "text": slide_body}})
+                svc.presentations().batchUpdate(
+                    presentationId=pres_id, body={"requests": requests}
+                ).execute()
+                return {
+                    "status": "slide_added",
+                    "presentation_id": pres_id,
+                    "slide_id": slide_id,
+                    "url": f"https://docs.google.com/presentation/d/{pres_id}/edit",
+                }
+
+            elif name == "update_slide_text":
+                pres_id = str(inputs.get("presentation_id", "")).strip()
+                object_id = str(inputs.get("object_id", "")).strip()
+                new_text = str(inputs.get("new_text", ""))
+                if not pres_id or not object_id:
+                    return {"error": "presentation_id and object_id are required"}
+                svc = _gbuild("slides", "v1", credentials=creds, cache_discovery=False)
+                svc.presentations().batchUpdate(
+                    presentationId=pres_id,
+                    body={"requests": [
+                        {"deleteText": {"objectId": object_id, "textRange": {"type": "ALL"}}},
+                        {"insertText": {"objectId": object_id, "insertionIndex": 0, "text": new_text}},
+                    ]},
+                ).execute()
+                return {"status": "updated", "presentation_id": pres_id, "object_id": object_id}
+
+            # ── Google Forms ──────────────────────────────────────────────────
+            elif name == "read_google_form":
+                form_id = str(inputs.get("form_id", "")).strip()
+                if not form_id:
+                    return {"error": "form_id is required"}
+                svc = _gbuild("forms", "v1", credentials=creds, cache_discovery=False)
+                form = svc.forms().get(formId=form_id).execute()
+                questions = []
+                for item in form.get("items", []):
+                    q = {"item_id": item.get("itemId", ""), "title": item.get("title", "")}
+                    qitem = item.get("questionItem", {})
+                    question = qitem.get("question", {})
+                    if "choiceQuestion" in question:
+                        q["type"] = question["choiceQuestion"].get("type", "")
+                        q["options"] = [o.get("value", "") for o in question["choiceQuestion"].get("options", [])]
+                    elif "textQuestion" in question:
+                        q["type"] = "PARAGRAPH" if question["textQuestion"].get("paragraph") else "SHORT_ANSWER"
+                    elif "scaleQuestion" in question:
+                        sq = question["scaleQuestion"]
+                        q["type"] = "SCALE"
+                        q["low"] = sq.get("low", 1)
+                        q["high"] = sq.get("high", 5)
+                    elif "dateQuestion" in question:
+                        q["type"] = "DATE"
+                    elif "timeQuestion" in question:
+                        q["type"] = "TIME"
+                    else:
+                        q["type"] = "UNKNOWN"
+                    q["required"] = question.get("required", False)
+                    questions.append(q)
+                return {
+                    "form_id": form_id,
+                    "title": form.get("info", {}).get("title", ""),
+                    "description": form.get("info", {}).get("description", ""),
+                    "question_count": len(questions),
+                    "questions": questions,
+                    "url": form.get("responderUri", f"https://forms.gle/{form_id}"),
+                }
+
+            elif name in ("create_google_form", "add_form_question"):
+                def _build_question_item(q_def):
+                    qtype = str(q_def.get("type", "SHORT_ANSWER")).upper()
+                    required = bool(q_def.get("required", False))
+                    if qtype in ("MULTIPLE_CHOICE", "CHECKBOX", "DROPDOWN"):
+                        return {
+                            "title": q_def.get("title", ""),
+                            "questionItem": {
+                                "question": {
+                                    "required": required,
+                                    "choiceQuestion": {
+                                        "type": qtype,
+                                        "options": [{"value": o} for o in (q_def.get("options") or [])],
+                                    },
+                                }
+                            },
+                        }
+                    elif qtype == "PARAGRAPH":
+                        return {
+                            "title": q_def.get("title", ""),
+                            "questionItem": {"question": {"required": required, "textQuestion": {"paragraph": True}}},
+                        }
+                    elif qtype == "SCALE":
+                        return {
+                            "title": q_def.get("title", ""),
+                            "questionItem": {
+                                "question": {"required": required, "scaleQuestion": {"low": 1, "high": 5}}
+                            },
+                        }
+                    elif qtype == "DATE":
+                        return {
+                            "title": q_def.get("title", ""),
+                            "questionItem": {"question": {"required": required, "dateQuestion": {}}},
+                        }
+                    elif qtype == "TIME":
+                        return {
+                            "title": q_def.get("title", ""),
+                            "questionItem": {"question": {"required": required, "timeQuestion": {}}},
+                        }
+                    else:
+                        return {
+                            "title": q_def.get("title", ""),
+                            "questionItem": {"question": {"required": required, "textQuestion": {"paragraph": False}}},
+                        }
+
+                svc = _gbuild("forms", "v1", credentials=creds, cache_discovery=False)
+                if name == "create_google_form":
+                    title = str(inputs.get("title", "Untitled Form")).strip()
+                    description = str(inputs.get("description", "")).strip()
+                    form = svc.forms().create(body={"info": {"title": title}}).execute()
+                    form_id = form["formId"]
+                    update_requests = []
+                    if description:
+                        update_requests.append({
+                            "updateFormInfo": {
+                                "info": {"description": description},
+                                "updateMask": "description",
+                            }
+                        })
+                    for i, q_def in enumerate(inputs.get("questions") or []):
+                        update_requests.append({
+                            "createItem": {"item": _build_question_item(q_def), "location": {"index": i}}
+                        })
+                    if update_requests:
+                        svc.forms().batchUpdate(
+                            formId=form_id, body={"requests": update_requests}
+                        ).execute()
+                    log.info(f"Created Google Form '{title}' id={form_id}")
+                    return {
+                        "form_id": form_id,
+                        "title": title,
+                        "url": form.get("responderUri", ""),
+                        "edit_url": f"https://docs.google.com/forms/d/{form_id}/edit",
+                    }
+                else:  # add_form_question
+                    form_id = str(inputs.get("form_id", "")).strip()
+                    if not form_id:
+                        return {"error": "form_id is required"}
+                    existing = svc.forms().get(formId=form_id).execute()
+                    idx = len(existing.get("items", []))
+                    item = _build_question_item(inputs)
+                    svc.forms().batchUpdate(
+                        formId=form_id,
+                        body={"requests": [{"createItem": {"item": item, "location": {"index": idx}}}]},
+                    ).execute()
+                    return {"status": "question_added", "form_id": form_id, "question": inputs.get("title", "")}
+
+            elif name == "get_form_responses":
+                form_id = str(inputs.get("form_id", "")).strip()
+                if not form_id:
+                    return {"error": "form_id is required"}
+                svc = _gbuild("forms", "v1", credentials=creds, cache_discovery=False)
+                resp = svc.forms().responses().list(formId=form_id).execute()
+                raw_responses = resp.get("responses", [])
+                out = []
+                for r in raw_responses[:50]:
+                    answers = {}
+                    for qid, ans in (r.get("answers") or {}).items():
+                        text_answers = [v.get("value", "") for v in ans.get("textAnswers", {}).get("answers", [])]
+                        answers[qid] = text_answers
+                    out.append({
+                        "response_id": r.get("responseId", ""),
+                        "submitted_at": r.get("lastSubmittedTime", ""),
+                        "answers": answers,
+                    })
+                return {"form_id": form_id, "response_count": len(out), "responses": out}
+
             elif name == "read_gmail_message":
                 import base64 as _b64
 
@@ -7639,14 +8023,19 @@ def api_chat():
     try:
         now_chat = datetime.now(TZ)
         system_static = (
-            "You are Jarvis — the same Jarvis that serves Tony Stark in the Iron Man films: a highly intelligent, "
-            "impeccably composed British AI majordomo. You speak with dry wit, understated humour, and effortless "
-            "articulacy. Address the student as 'sir' or by their first name when known. "
-            "Use elevated, slightly formal vocabulary (e.g. 'Very good, sir.', 'If I may,', 'Shall I proceed?', "
-            "'Might I suggest', 'As you wish'). Keep a measured, unflappable tone — mild irony is welcome; theatrics are not. "
-            "Be analytical, anticipatory, and discreet: volunteer relevant information before it is requested, "
-            "but never lecture or moralise. Never break character, never refer to yourself as an AI model, "
-            "and do not use emoji unless the student does first.\n\n"
+            "You are Jarvis — the dry, sardonic British AI from the Iron Man films. "
+            "You are brilliant, utterly reliable, and incapable of resisting a pointed remark. "
+            "Your tone is sarcastic-but-caring: you get things done impeccably, but you cannot help observing "
+            "the absurdity of the situation along the way. Think withering politeness — the kind that makes "
+            "someone laugh and feel slightly roasted at the same time. "
+            "Address the student as 'sir' when you want to be pointed, or by first name when being genuinely warm. "
+            "Favour dry one-liners, mild exasperation, and backhanded compliments: "
+            "'Naturally, sir, because doing it the straightforward way would rob me of my purpose.' "
+            "'Impressively late. That may be a personal record, sir.' "
+            "'I have taken the liberty of completing the task you forgot to ask me to do.' "
+            "You are helpful first — sarcasm flavours the delivery, it never replaces the substance. "
+            "Never lecture, never moralize, never break character, never call yourself an AI model. "
+            "No emoji unless the student uses them first.\n\n"
             "SCOPE — You are a full general-purpose assistant. Answer any reasonable question: "
             "homework help (math with worked steps, science, history, English, languages, CS with runnable code), "
             "writing, research, advice, conversation, recommendations, jokes. "
