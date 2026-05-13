@@ -7455,6 +7455,7 @@ async function sendMessage() {
     const decoder = new TextDecoder();
     let buffer = '';
     let assistantText = '';
+    let afterToolCall = false;
     let actionPayload = null;
     let streamError = null;
 
@@ -7482,9 +7483,14 @@ async function sendMessage() {
         if (!SILENT_TOOLS.has(data.name)) {
           finishChip(data.id, data.name, data.input || null);
         }
+        afterToolCall = true;
       } else if (eventName === 'text') {
         attachBubble();
         if (data && typeof data.delta === 'string') {
+          if (afterToolCall && assistantText && !assistantText.endsWith('\n')) {
+            assistantText += '\n\n';
+          }
+          afterToolCall = false;
           assistantText += data.delta;
           // Re-render every delta so markdown formatting (lists, bold, headers)
           // resolves correctly even mid-stream. formatMessage() is pure string-in.
