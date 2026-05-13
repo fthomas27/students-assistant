@@ -255,7 +255,6 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
 NOAA_API_TOKEN   = os.environ.get("NOAA_API_TOKEN", "")
 GUARDIAN_API_KEY = os.environ.get("GUARDIAN_API_KEY", "")
-NTFY_TOPIC       = os.environ.get("NTFY_TOPIC", "")
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive",               # full Drive access (create/edit/delete)
@@ -6819,31 +6818,6 @@ JARVIS_TOOLS = [
         },
     },
     {
-        "name": "send_phone_notification",
-        "description": (
-            "Send a push notification directly to the student's phone via ntfy.sh. "
-            "Use for urgent reminders, deadline alerts, or any time the student asks Jarvis to remind them of something. "
-            "Requires NTFY_TOPIC to be configured."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title":    {"type": "string", "description": "Notification title (short)"},
-                "message":  {"type": "string", "description": "Notification body"},
-                "priority": {
-                    "type": "string",
-                    "description": "urgent, high, default, low, or min (default: default)",
-                },
-                "tags": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional emoji tags e.g. ['warning', 'school']",
-                },
-            },
-            "required": ["title", "message"],
-        },
-    },
-    {
         "name": "get_news",
         "description": (
             "Search The Guardian for current news articles. Good for current events, "
@@ -8168,26 +8142,6 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 "record_count": len(results),
                 "data": [{"date": r["date"][:10], "value": r["value"]} for r in results[:100]],
             }
-
-        elif name == "send_phone_notification":
-            if not NTFY_TOPIC:
-                return {"error": "NTFY_TOPIC not configured. Set it to your ntfy.sh topic name."}
-            ntfy_headers = {
-                "Title": str(inputs.get("title", "Jarvis")),
-                "Priority": str(inputs.get("priority", "default")),
-                "Content-Type": "text/plain",
-            }
-            tags = inputs.get("tags")
-            if tags:
-                ntfy_headers["Tags"] = ",".join(str(t) for t in tags)
-            resp = requests.post(
-                f"https://ntfy.sh/{NTFY_TOPIC}",
-                data=str(inputs.get("message", "")).encode("utf-8"),
-                headers=ntfy_headers,
-                timeout=10,
-            )
-            resp.raise_for_status()
-            return {"status": "sent", "topic": NTFY_TOPIC, "title": inputs.get("title")}
 
         elif name == "get_news":
             if not GUARDIAN_API_KEY:
