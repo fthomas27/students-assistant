@@ -526,7 +526,7 @@ def init_db():
         ("gmail_drafts_conv_idx", "CREATE INDEX IF NOT EXISTS idx_gmail_drafts_conv ON gmail_drafts(conversation_id) WHERE conversation_id != ''"),
         ("notification_log", "CREATE TABLE IF NOT EXISTS notification_log (id SERIAL PRIMARY KEY, notification_key TEXT UNIQUE NOT NULL, title TEXT NOT NULL DEFAULT '', sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("notification_log_idx", "CREATE INDEX IF NOT EXISTS idx_notification_log_key_sent ON notification_log(notification_key, sent_at DESC)"),
-        ("canvas_assignments_cache", "CREATE TABLE IF NOT EXISTS canvas_assignments_cache (uid TEXT PRIMARY KEY, title TEXT NOT NULL, class_name TEXT NOT NULL DEFAULT '', due_iso TEXT NOT NULL, due_display TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("canvas_assignments_cache", "CREATE TABLE IF NOT EXISTS canvas_assignments_cache (uid TEXT PRIMARY KEY, title TEXT NOT NULL, class_name TEXT NOT NULL DEFAULT '', due_iso TEXT NOT NULL, due_display TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', promoted_to_task BOOLEAN NOT NULL DEFAULT FALSE, first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("canvas_assignments_cache_due_idx", "CREATE INDEX IF NOT EXISTS idx_canvas_cache_due ON canvas_assignments_cache(due_iso)"),
     ]
 
@@ -642,6 +642,15 @@ ON CONFLICT (ip_address) DO NOTHING""")
     # Add conversation_id to gmail_drafts for existing deployments
     try:
         cur.execute("ALTER TABLE gmail_drafts ADD COLUMN IF NOT EXISTS conversation_id TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    # Add promoted_to_task flag to canvas_assignments_cache for existing deployments
+    try:
+        cur.execute("ALTER TABLE canvas_assignments_cache ADD COLUMN IF NOT EXISTS promoted_to_task BOOLEAN NOT NULL DEFAULT FALSE")
         conn.commit()
     except psycopg2.Error:
         conn.rollback()
@@ -1787,6 +1796,72 @@ ON CONFLICT (uid) DO UPDATE SET
         log.warning("_cache_canvas_assignments failed: %s", e)
 
 
+def _promote_overdue_to_tasks():
+    """Auto-create a task for each overdue Canvas assignment not yet in the task list.
+
+    Runs inside get_canvas_assignments_with_overdue() every time assignments are
+    fetched. Uses promoted_to_task flag to ensure each assignment is only promoted once.
+    Already-completed assignments are skipped.
+    """
+    try:
+        now_iso = datetime.now(TZ).isoformat()
+        lookback_iso = (datetime.now(TZ) - timedelta(days=90)).isoformat()
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Assignments that are overdue, not yet promoted, and not completed
+        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        done_titles = set(r["assignment_title"] for r in cur.fetchall())
+
+        cur.execute("""
+            SELECT uid, title, class_name, due_iso, due_display
+            FROM canvas_assignments_cache
+            WHERE due_iso < %s
+              AND due_iso > %s
+              AND promoted_to_task = FALSE
+            ORDER BY due_iso ASC""",
+            (now_iso, lookback_iso))
+        candidates = cur.fetchall()
+
+        promoted = 0
+        for row in candidates:
+            if row["title"] in done_titles:
+                # Already completed — mark promoted so we don't revisit
+                cur.execute(
+                    "UPDATE canvas_assignments_cache SET promoted_to_task = TRUE WHERE uid = %s",
+                    (row["uid"],))
+                continue
+
+            # Parse the due date for the task due_date column
+            try:
+                due_date = datetime.fromisoformat(row["due_iso"]).date()
+            except Exception:
+                due_date = None
+
+            notes = f"Overdue Canvas assignment — {row['class_name']}" if row["class_name"] else "Overdue Canvas assignment"
+
+            # Insert task only if no task with the same title already exists
+            cur.execute(
+                "SELECT id FROM tasks WHERE title = %s AND completed = FALSE LIMIT 1",
+                (row["title"],))
+            if not cur.fetchone():
+                cur.execute(
+                    "INSERT INTO tasks (title, urgency, due_date, notes) VALUES (%s, 'high', %s, %s)",
+                    (row["title"], due_date, notes))
+                promoted += 1
+                log.info("Promoted overdue Canvas assignment to task: %r", row["title"])
+
+            cur.execute(
+                "UPDATE canvas_assignments_cache SET promoted_to_task = TRUE WHERE uid = %s",
+                (row["uid"],))
+
+        if promoted or candidates:
+            conn.commit()
+        cur.close(); conn.close()
+    except Exception as e:
+        log.warning("_promote_overdue_to_tasks failed: %s", e)
+
+
 def get_canvas_assignments_with_overdue(cal):
     """Return upcoming Canvas assignments PLUS any overdue ones not yet completed.
 
@@ -1800,7 +1875,10 @@ def get_canvas_assignments_with_overdue(cal):
     # 2. Persist them so we don't lose them after Canvas prunes the feed
     _cache_canvas_assignments(live)
 
-    # 3. Merge in overdue assignments from cache that are not yet completed
+    # 3. Promote any newly overdue assignments to the task list
+    _promote_overdue_to_tasks()
+
+    # 4. Merge in overdue assignments from cache that are not yet completed
     try:
         now_iso = datetime.now(TZ).isoformat()
         lookback_iso = (datetime.now(TZ) - timedelta(days=90)).isoformat()
@@ -5110,6 +5188,16 @@ def api_complete():
     cur.execute("""
 INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed)
 VALUES (%s, %s, 0, %s, FALSE)""", (title, class_name, estimate))
+    # Complete any auto-promoted task for this assignment
+    cur.execute(
+        "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
+        "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
+        (title,),
+    )
+    cur.execute(
+        "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
+        (title,),
+    )
     conn.commit()
     cur.close()
     conn.close()
@@ -5196,6 +5284,16 @@ WHERE id = (
             cur.execute("""
 INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, submitted)
 VALUES (%s, %s, 0, %s, FALSE, TRUE)""", (title, class_name, estimate))
+        # Complete any auto-promoted overdue task for this assignment
+        cur.execute(
+            "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
+            "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
+            (title,),
+        )
+        cur.execute(
+            "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
+            (title,),
+        )
         conn.commit()
         cur.close()
         conn.close()
@@ -7690,6 +7788,17 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             cur.execute(
                 "INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, submitted) VALUES (%s,%s,%s,0,FALSE,%s)",
                 (title, class_name, duration, submitted),
+            )
+            # Also complete any task that was auto-created from this overdue assignment
+            cur.execute(
+                "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
+                "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
+                (title,),
+            )
+            # Reset the cache flag so it won't re-promote if somehow re-fetched
+            cur.execute(
+                "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
+                (title,),
             )
             conn.commit(); cur.close(); conn.close()
             log.info(f"Jarvis tool: logged completion of '{title}' (submitted={submitted})")
