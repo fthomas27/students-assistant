@@ -7979,8 +7979,8 @@ JARVIS_WEB_TOOLS = [
     {
         "type": "web_fetch_20250910",
         "name": "web_fetch",
-        "max_uses": 5,
-        "max_content_tokens": 20000,
+        "max_uses": 3,
+        "max_content_tokens": 6000,
     },
 ]
 
@@ -9617,6 +9617,42 @@ def _sse_pack(event, data):
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+# Tool names that require Google OAuth to be connected.
+_GOOGLE_TOOL_NAMES = frozenset({
+    "create_email_draft", "search_google_drive", "read_google_drive_file",
+    "list_google_drive_files", "read_google_sheet", "list_google_classroom_courses",
+    "get_google_classroom_assignments", "search_gmail", "read_gmail_message",
+    "create_google_doc", "update_google_doc", "append_google_doc",
+    "create_google_sheet", "update_google_sheet", "create_drive_folder",
+    "delete_drive_file", "move_drive_file", "rename_drive_file",
+    "read_google_slides", "create_google_slides", "add_google_slide",
+    "update_slide_text", "read_google_form", "create_google_form",
+    "add_form_question", "get_form_responses", "update_form_info",
+    "update_form_question", "delete_form_question", "delete_slide",
+    "create_calendar_event", "update_calendar_event", "delete_calendar_event",
+    "list_google_calendar_events",
+})
+
+
+def _build_active_tools() -> list:
+    """Return the trimmed tool list for this request based on what's configured."""
+    tools = []
+    google_on = _google_configured()
+    for t in JARVIS_TOOLS:
+        name = t.get("name", "")
+        if name in _GOOGLE_TOOL_NAMES and not google_on:
+            continue
+        if name == "send_notification" and not NTFY_TOPIC:
+            continue
+        if name == "get_climate_history" and not NOAA_API_TOKEN:
+            continue
+        if name == "get_news" and not GUARDIAN_API_KEY:
+            continue
+        tools.append(t)
+    tools.extend(JARVIS_WEB_TOOLS)
+    return tools
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     data = request.get_json(force=True) or {}
@@ -10151,6 +10187,23 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
         except Exception:
             log.warning("/api/chat could not prepend fridge photo to messages")
 
+        # Cap conversation history at 12 messages (6 turns) to bound input tokens.
+        # The fridge-photo prefix (if any) is kept outside the cap.
+        _MAX_HISTORY_MSGS = 12
+        _fridge_prefix: list = []
+        _conv_tail = messages_loop
+        if (messages_loop and messages_loop[0].get("role") == "user"
+                and isinstance(messages_loop[0].get("content"), list)
+                and any(b.get("type") == "image" for b in messages_loop[0].get("content", []))):
+            _fridge_prefix = messages_loop[:2]
+            _conv_tail = messages_loop[2:]
+        if len(_conv_tail) > _MAX_HISTORY_MSGS:
+            _conv_tail = _conv_tail[-_MAX_HISTORY_MSGS:]
+        messages_loop = _fridge_prefix + _conv_tail
+
+        # Build tool list: prune tools for unconfigured integrations
+        _active_tools = _build_active_tools()
+
         # Fetch today's morning briefing to use as a stable cached system block.
         # The briefing is generated once at 7 AM and doesn't change, so marking it
         # ephemeral lets Anthropic cache it — saving input tokens on every chat turn.
@@ -10193,9 +10246,9 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                     final_message = None
                     with client.beta.messages.stream(
                         model="claude-sonnet-4-6",
-                        max_tokens=16000,
-                        thinking={"type": "enabled", "budget_tokens": 10000},
-                        tools=JARVIS_TOOLS + JARVIS_WEB_TOOLS,
+                        max_tokens=5500,
+                        thinking={"type": "enabled", "budget_tokens": 3500},
+                        tools=_active_tools,
                         system=system_blocks,
                         messages=messages_loop,
                         betas=["interleaved-thinking-2025-05-14", "web-fetch-2025-09-10"],
