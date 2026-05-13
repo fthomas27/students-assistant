@@ -9657,7 +9657,7 @@ def gmail_send_draft(draft_id):
             _chat_persist_message(
                 row["conversation_id"],
                 "user",
-                f"[Notification: Email draft "{row['subject']}" to {row['to_addr']} was sent by the student.]",
+                f"[Notification: Email draft '{row['subject']}' to {row['to_addr']} was sent by the student.]",
             )
     except Exception as e:
         conn.rollback()
@@ -9688,7 +9688,7 @@ def gmail_discard_draft(draft_id):
         _chat_persist_message(
             row["conversation_id"],
             "user",
-            f"[Notification: Email draft "{row['subject']}" to {row['to_addr']} was discarded by the student.]",
+            f"[Notification: Email draft '{row['subject']}' to {row['to_addr']} was discarded by the student.]",
         )
     cur.close(); conn.close()
     return jsonify({"status": "discarded"})
