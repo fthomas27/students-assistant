@@ -1091,24 +1091,127 @@ def canvas_search_assignment(title_query):
     return None
 
 
-# ── PowerSchool Scraper ────────────────────────────────────────────────────────
-# Logs into PowerSchool with POWER_USERN / POWER_PASS env vars and scrapes
-# current grades, GPA, and attendance from the student portal.
+# ── PowerSchool Scraper (Playwright + Claude Vision) ──────────────────────────
+# Uses a headless Chromium browser to log in as a real user, screenshots the
+# grades page, then sends the image to Claude vision for extraction.
+# No HTML parsing — works regardless of PowerSchool's JS rendering.
 
-PS_GRADES_TTL     = 1800   # 30 minutes
+PS_GRADES_TTL     = 1800   # 30 minutes — screenshot + vision result lifetime
 PS_ATTENDANCE_TTL = 3600   # 1 hour
-_ps_session_lock  = threading.Lock()
-# Stores {"session": requests.Session, "home_url": str, "expires": float}
-_ps_session_cache: dict = {"session": None, "home_url": "", "expires": 0}
 
 
 def _ps_configured():
     return bool(POWER_USERN and POWER_PASS)
 
 
-def _ps_md5(s: str) -> str:
-    import hashlib
-    return hashlib.md5(s.encode("utf-8")).hexdigest()
+def _ps_screenshot_and_extract() -> dict:
+    """
+    Login to PowerSchool with a real headless browser, screenshot the grades
+    page, send the image to Claude vision, and return structured data.
+
+    Returns {"grades": [...], "attendance": {...}} or {"error": "..."}.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return {"error": "ANTHROPIC_API_KEY not set"}
+
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    except ImportError:
+        log.warning("PowerSchool: playwright not installed — run: pip install playwright && playwright install chromium --with-deps")
+        return {"error": "playwright not installed"}
+
+    import base64
+
+    screenshot_b64 = None
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            ctx  = browser.new_context(viewport={"width": 1280, "height": 900})
+            page = ctx.new_page()
+
+            log.info("PowerSchool: navigating to login page")
+            page.goto(f"{PS_BASE_URL}/public/", timeout=30000)
+            page.wait_for_load_state("domcontentloaded")
+
+            # Fill credentials — let the page's own JS handle any hashing
+            account_sel  = 'input[name="account"], input[id="fieldAccount"]'
+            password_sel = 'input[name="ldappassword"], input[id="fieldPassword"], input[type="password"]'
+            page.fill(account_sel,  POWER_USERN, timeout=10000)
+            page.fill(password_sel, POWER_PASS,  timeout=10000)
+
+            log.info("PowerSchool: submitting login form")
+            page.click('input[type="submit"], button[type="submit"]', timeout=10000)
+            page.wait_for_load_state("networkidle", timeout=30000)
+
+            final_url = page.url
+            log.info("PowerSchool: post-login URL = %s", final_url)
+
+            # If still on login page, credentials are wrong
+            if "/public/" in final_url and "home" not in final_url.lower():
+                err = page.locator("#LoginErrorMessages, .feedback-alert").first
+                err_txt = err.inner_text() if err.count() else "(no error message on page)"
+                log.warning("PowerSchool: login failed — %s", err_txt)
+                browser.close()
+                return {"error": f"Login failed: {err_txt}"}
+
+            # Screenshot the full grades page
+            screenshot_bytes = page.screenshot(full_page=True)
+            screenshot_b64   = base64.b64encode(screenshot_bytes).decode()
+            log.info("PowerSchool: screenshot taken (%d bytes)", len(screenshot_bytes))
+            browser.close()
+
+    except PWTimeout as e:
+        log.warning("PowerSchool: browser timeout — %s", e)
+        return {"error": f"Browser timeout: {e}"}
+    except Exception as e:
+        log.warning("PowerSchool: browser error — %s", e)
+        return {"error": str(e)}
+
+    # ── Send screenshot to Claude vision ──────────────────────────────────
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1500,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "This is a PowerSchool student portal page showing grades and attendance. "
+                            "Extract every course visible. "
+                            "Return ONLY valid JSON — no markdown, no explanation:\n"
+                            '{"grades":[{"course":"...","teacher":"...","grade_letter":"A","grade_pct":95.2,"absences":"0"}],'
+                            '"attendance":{"absences":0,"tardies":0}}'
+                        ),
+                    },
+                ],
+            }],
+        )
+        raw = resp.content[0].text.strip()
+        log.info("PowerSchool vision response: %s", raw[:300])
+
+        # Extract JSON object from the response (strip any accidental prose)
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        if not m:
+            log.warning("PowerSchool: vision response contained no JSON: %s", raw[:500])
+            return {"error": "Vision response had no JSON", "raw": raw[:500]}
+
+        data = json.loads(m.group())
+        return {
+            "grades":     data.get("grades", []),
+            "attendance": data.get("attendance", {}),
+        }
+
+    except Exception as e:
+        log.warning("PowerSchool: vision API error — %s", e)
+        return {"error": str(e)}
 
 
 def _ps_is_login_page(html: str) -> bool:
@@ -1346,105 +1449,31 @@ def _ps_parse_grades(html: str, source_url: str) -> list:
     return grades
 
 
-def ps_grades() -> list:
-    """Scrape and cache current PowerSchool grades. Returns [] when not configured."""
-    cached = _cache_get("ps:grades", PS_GRADES_TTL)
+def _ps_fetch_data() -> dict:
+    """Run screenshot + vision extraction, caching the combined result for 30 min."""
+    cached = _cache_get("ps:data", PS_GRADES_TTL)
     if cached is not None:
         return cached
-
     if not _ps_configured():
-        return []
+        return {}
+    result = _ps_screenshot_and_extract()
+    if "error" not in result:
+        _cache_set("ps:data", result)
+    return result
 
-    try:
-        from bs4 import BeautifulSoup  # noqa: F401 — verify installed
-    except ImportError:
-        log.warning("PowerSchool: beautifulsoup4 not installed")
-        return []
 
-    def _fetch_grades(sess, home_url):
-        # Prefer the URL we landed on after login; fall back to guardian/home.html
-        urls_to_try = list(dict.fromkeys(filter(None, [
-            home_url,
-            f"{PS_BASE_URL}/guardian/home.html",
-        ])))
-        for url in urls_to_try:
-            try:
-                r = sess.get(url, timeout=20)
-                r.raise_for_status()
-                grades = _ps_parse_grades(r.text, url)
-                if grades:
-                    return grades
-            except Exception as e:
-                log.warning("PowerSchool: GET %s failed: %s", url, e)
-        return []
-
-    sess, home_url = _ps_get_session()
-    if sess is None:
-        _cache_set("ps:grades", [])
-        return []
-
-    grades = _fetch_grades(sess, home_url)
-    if not grades:
-        # Session may have silently expired — retry once with a fresh login
-        log.info("PowerSchool: no grades on first try, re-authenticating…")
-        _ps_invalidate_session()
-        sess, home_url = _ps_get_session()
-        if sess:
-            grades = _fetch_grades(sess, home_url)
-
-    _cache_set("ps:grades", grades)
-    log.info("PowerSchool grades scraped: %d courses", len(grades))
-    return grades
+def ps_grades() -> list:
+    return _ps_fetch_data().get("grades", [])
 
 
 def ps_attendance() -> dict:
-    """Scrape attendance totals from the same home page. Returns {} on failure."""
-    cached = _cache_get("ps:attendance", PS_ATTENDANCE_TTL)
-    if cached is not None:
-        return cached
-
-    if not _ps_configured():
-        return {}
-
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError:
-        return {}
-
-    sess, home_url = _ps_get_session()
-    if sess is None:
-        return {}
-
-    try:
-        url = home_url or f"{PS_BASE_URL}/guardian/home.html"
-        r = sess.get(url, timeout=20)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        result: dict = {"absences": 0, "tardies": 0, "raw": ""}
-
-        att_el = soup.find(string=re.compile(r"Absence|Tardy|Attendance", re.I))
-        if att_el:
-            parent = att_el.find_parent(["td", "div", "span"])
-            if parent:
-                result["raw"] = parent.get_text(" ", strip=True)[:300]
-                nums = re.findall(r"\d+", result["raw"])
-                if len(nums) >= 2:
-                    result["absences"] = int(nums[0])
-                    result["tardies"]  = int(nums[1])
-
-        _cache_set("ps:attendance", result)
-        return result
-    except Exception as e:
-        log.warning("PowerSchool attendance scrape failed: %s", e)
-        return {}
+    return _ps_fetch_data().get("attendance", {})
 
 
 def ps_refresh_cache():
-    """Force a fresh scrape by clearing session + data cache."""
-    _ps_invalidate_session()
+    """Bust the cache and re-run the screenshot + vision extraction."""
     with _simple_cache_lock:
-        _simple_cache.pop("ps:grades", None)
-        _simple_cache.pop("ps:attendance", None)
+        _simple_cache.pop("ps:data", None)
     return ps_grades()
 
 
@@ -4880,6 +4909,17 @@ def api_powerschool_refresh():
         return jsonify({"error": "PowerSchool credentials not configured"}), 503
     grades = ps_refresh_cache()
     return jsonify({"grades": grades, "count": len(grades), "refreshed": True})
+
+
+@app.route("/api/powerschool/debug")
+def api_powerschool_debug():
+    """Run a fresh screenshot+vision extraction and return the raw result."""
+    if not _ps_configured():
+        return jsonify({"error": "PowerSchool credentials not configured"}), 503
+    with _simple_cache_lock:
+        _simple_cache.pop("ps:data", None)
+    result = _ps_screenshot_and_extract()
+    return jsonify(result)
 
 
 @app.route("/api/diagnostic")

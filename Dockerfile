@@ -4,6 +4,8 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
+# Install Chromium and its OS dependencies for Playwright
+RUN playwright install chromium --with-deps
 
 COPY . .
 
