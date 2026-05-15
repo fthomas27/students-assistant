@@ -4882,6 +4882,44 @@ def api_powerschool_refresh():
     return jsonify({"grades": grades, "count": len(grades), "refreshed": True})
 
 
+@app.route("/api/powerschool/debug")
+def api_powerschool_debug():
+    """Diagnostic: returns raw HTML from the post-login page so grade parsing can be debugged."""
+    if not _ps_configured():
+        return jsonify({"error": "PowerSchool credentials not configured"}), 503
+    _ps_invalidate_session()
+    sess, home_url = _ps_login()
+    if sess is None:
+        return jsonify({"error": "Login failed — check POWER_USERN / POWER_PASS and Railway logs"}), 401
+    try:
+        r = sess.get(home_url or f"{PS_BASE_URL}/guardian/home.html", timeout=20)
+        html = r.text
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        tables_info = []
+        for i, tbl in enumerate(soup.find_all("table")):
+            score_links = tbl.find_all("a", href=lambda h: h and "scores.html" in (h or ""))
+            tables_info.append({
+                "index": i,
+                "id": tbl.get("id", ""),
+                "class": tbl.get("class", []),
+                "rows": len(tbl.find_all("tr")),
+                "score_links": len(score_links),
+                "preview": tbl.get_text(" | ", strip=True)[:400],
+            })
+        return jsonify({
+            "login_home_url": home_url,
+            "page_url": r.url,
+            "status_code": r.status_code,
+            "body_length": len(html),
+            "is_login_page": _ps_is_login_page(html),
+            "tables": tables_info,
+            "body_preview": html[:3000],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/diagnostic")
 def api_diagnostic():
     """Diagnostic endpoint to check if debrief can be generated."""
