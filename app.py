@@ -1104,114 +1104,204 @@ def _ps_configured():
     return bool(POWER_USERN and POWER_PASS)
 
 
-def _ps_screenshot_and_extract() -> dict:
-    """
-    Login to PowerSchool with a real headless browser, screenshot the grades
-    page, send the image to Claude vision, and return structured data.
-
-    Returns {"grades": [...], "attendance": {...}} or {"error": "..."}.
-    """
+def _ps_ask_claude(content: list) -> dict:
+    """Send content blocks to Claude Haiku and parse the JSON grade/attendance result."""
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         return {"error": "ANTHROPIC_API_KEY not set"}
-
-    try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
-    except ImportError:
-        log.warning("PowerSchool: playwright not installed — run: pip install playwright && playwright install chromium --with-deps")
-        return {"error": "playwright not installed"}
-
-    import base64
-
-    screenshot_b64 = None
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            ctx  = browser.new_context(viewport={"width": 1280, "height": 900})
-            page = ctx.new_page()
-
-            log.info("PowerSchool: navigating to login page")
-            page.goto(f"{PS_BASE_URL}/public/", timeout=30000)
-            page.wait_for_load_state("domcontentloaded")
-
-            # Fill credentials — let the page's own JS handle any hashing
-            account_sel  = 'input[name="account"], input[id="fieldAccount"]'
-            password_sel = 'input[name="ldappassword"], input[id="fieldPassword"], input[type="password"]'
-            page.fill(account_sel,  POWER_USERN, timeout=10000)
-            page.fill(password_sel, POWER_PASS,  timeout=10000)
-
-            log.info("PowerSchool: submitting login form")
-            page.click('input[type="submit"], button[type="submit"]', timeout=10000)
-            page.wait_for_load_state("networkidle", timeout=30000)
-
-            final_url = page.url
-            log.info("PowerSchool: post-login URL = %s", final_url)
-
-            # If still on login page, credentials are wrong
-            if "/public/" in final_url and "home" not in final_url.lower():
-                err = page.locator("#LoginErrorMessages, .feedback-alert").first
-                err_txt = err.inner_text() if err.count() else "(no error message on page)"
-                log.warning("PowerSchool: login failed — %s", err_txt)
-                browser.close()
-                return {"error": f"Login failed: {err_txt}"}
-
-            # Screenshot the full grades page
-            screenshot_bytes = page.screenshot(full_page=True)
-            screenshot_b64   = base64.b64encode(screenshot_bytes).decode()
-            log.info("PowerSchool: screenshot taken (%d bytes)", len(screenshot_bytes))
-            browser.close()
-
-    except PWTimeout as e:
-        log.warning("PowerSchool: browser timeout — %s", e)
-        return {"error": f"Browser timeout: {e}"}
-    except Exception as e:
-        log.warning("PowerSchool: browser error — %s", e)
-        return {"error": str(e)}
-
-    # ── Send screenshot to Claude vision ──────────────────────────────────
     try:
         client = anthropic.Anthropic(api_key=api_key)
         resp = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1500,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64},
-                    },
-                    {
-                        "type": "text",
-                        "text": (
-                            "This is a PowerSchool student portal page showing grades and attendance. "
-                            "Extract every course visible. "
-                            "Return ONLY valid JSON — no markdown, no explanation:\n"
-                            '{"grades":[{"course":"...","teacher":"...","grade_letter":"A","grade_pct":95.2,"absences":"0"}],'
-                            '"attendance":{"absences":0,"tardies":0}}'
-                        ),
-                    },
-                ],
-            }],
+            messages=[{"role": "user", "content": content}],
         )
         raw = resp.content[0].text.strip()
-        log.info("PowerSchool vision response: %s", raw[:300])
-
-        # Extract JSON object from the response (strip any accidental prose)
+        log.info("PowerSchool Claude response: %s", raw[:300])
         m = re.search(r'\{.*\}', raw, re.DOTALL)
         if not m:
-            log.warning("PowerSchool: vision response contained no JSON: %s", raw[:500])
-            return {"error": "Vision response had no JSON", "raw": raw[:500]}
-
+            return {"error": "No JSON in response", "raw": raw[:500]}
         data = json.loads(m.group())
-        return {
-            "grades":     data.get("grades", []),
-            "attendance": data.get("attendance", {}),
-        }
+        return {"grades": data.get("grades", []), "attendance": data.get("attendance", {})}
+    except Exception as e:
+        log.warning("PowerSchool: Claude API error — %s", e)
+        return {"error": str(e)}
+
+
+_PS_EXTRACT_PROMPT = (
+    "This is a PowerSchool student portal page showing grades and attendance. "
+    "Extract every course visible. "
+    "Return ONLY valid JSON — no markdown, no explanation:\n"
+    '{"grades":[{"course":"...","teacher":"...","grade_letter":"A","grade_pct":95.2,"absences":"0"}],'
+    '"attendance":{"absences":0,"tardies":0}}'
+)
+
+
+def _ps_extract_via_playwright() -> dict:
+    """Login with headless Chromium, screenshot the page, send to Claude vision."""
+    import base64
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    except ImportError:
+        return {"error": "playwright_not_installed"}
+
+    screenshot_b64 = None
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
+            page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+
+            log.info("PowerSchool (playwright): navigating to login page")
+            page.goto(f"{PS_BASE_URL}/public/", timeout=30000)
+            page.wait_for_load_state("domcontentloaded")
+
+            page.fill('input[name="account"], input[id="fieldAccount"]', POWER_USERN, timeout=10000)
+            page.fill('input[name="ldappassword"], input[id="fieldPassword"], input[type="password"]',
+                      POWER_PASS, timeout=10000)
+            page.click('input[type="submit"], button[type="submit"]', timeout=10000)
+            page.wait_for_load_state("networkidle", timeout=30000)
+
+            final_url = page.url
+            log.info("PowerSchool (playwright): post-login URL = %s", final_url)
+
+            if "/public/" in final_url and "home" not in final_url.lower():
+                err_el = page.locator("#LoginErrorMessages, .feedback-alert").first
+                err_txt = err_el.inner_text() if err_el.count() else "(no error element)"
+                log.warning("PowerSchool (playwright): login failed — %s", err_txt)
+                browser.close()
+                return {"error": f"Login failed: {err_txt}"}
+
+            screenshot_b64 = base64.b64encode(page.screenshot(full_page=True)).decode()
+            log.info("PowerSchool (playwright): screenshot taken")
+            browser.close()
 
     except Exception as e:
-        log.warning("PowerSchool: vision API error — %s", e)
+        log.warning("PowerSchool (playwright): browser error — %s", e)
         return {"error": str(e)}
+
+    return _ps_ask_claude([
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64}},
+        {"type": "text", "text": _PS_EXTRACT_PROMPT},
+    ])
+
+
+def _ps_extract_via_requests() -> dict:
+    """
+    Fallback when Playwright isn't available: login with requests, send the raw
+    HTML to Claude as text. Claude reads HTML structure just as well as a screenshot.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return {"error": "beautifulsoup4 not installed"}
+
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+
+    # GET login page and collect all hidden form fields
+    try:
+        r1 = sess.get(f"{PS_BASE_URL}/public/", timeout=20)
+        r1.raise_for_status()
+    except Exception as e:
+        return {"error": f"Could not reach PowerSchool: {e}"}
+
+    soup = BeautifulSoup(r1.text, "html.parser")
+    form = soup.find("form", id="LoginForm") or soup.find("form")
+    if not form:
+        return {"error": "No login form found on /public/"}
+
+    action = (form.get("action") or "/public/").strip()
+    if not action.startswith("http"):
+        action = PS_BASE_URL + ("" if action.startswith("/") else "/") + action
+
+    # Echo all hidden inputs back, then overlay credentials
+    payload: dict = {
+        inp.get("name"): inp.get("value") or ""
+        for inp in form.find_all("input")
+        if inp.get("name")
+    }
+    pstoken = payload.get("pstoken", "")
+    import hashlib
+    def _md5(s): return hashlib.md5(s.encode()).hexdigest()
+    pw_hash = _md5(POWER_USERN.lower() + ":" + _md5(POWER_PASS) + ":" + pstoken)
+    payload.update({
+        "account": POWER_USERN,
+        "ldappassword": POWER_PASS,
+        "pw": pw_hash,
+        "dbpw": pw_hash,
+    })
+
+    log.info("PowerSchool (requests): POSTing login to %s", action)
+    try:
+        r2 = sess.post(action, data=payload, timeout=20, allow_redirects=True)
+        r2.raise_for_status()
+    except Exception as e:
+        return {"error": f"Login POST failed: {e}"}
+
+    home_url = r2.url
+    log.info("PowerSchool (requests): post-login URL = %s", home_url)
+
+    # Check we're not still on the login page
+    lower = r2.text.lower()
+    still_login = 'name="account"' in lower or 'id="fieldaccount"' in lower
+    if still_login:
+        return {"error": "Login failed — still on login page after POST. Check POWER_USERN / POWER_PASS."}
+
+    # Try the landing URL, then guardian/home.html as fallback
+    html = r2.text
+    if len(html) < 2000 or "grades" not in html.lower():
+        try:
+            r3 = sess.get(f"{PS_BASE_URL}/guardian/home.html", timeout=20)
+            if len(r3.text) > len(html):
+                html = r3.text
+                home_url = r3.url
+        except Exception:
+            pass
+
+    log.info("PowerSchool (requests): sending %d chars of HTML to Claude", len(html))
+
+    # Strip scripts/styles to reduce token count, keep the visible structure
+    for tag in BeautifulSoup(html, "html.parser").find_all(["script", "style", "noscript"]):
+        tag.decompose()
+    clean_html = str(BeautifulSoup(html, "html.parser"))[:18000]
+
+    return _ps_ask_claude([{
+        "type": "text",
+        "text": (
+            "Here is the HTML source of a PowerSchool student portal page. "
+            "Extract every course grade and attendance data visible. "
+            "Return ONLY valid JSON — no markdown, no explanation:\n"
+            '{"grades":[{"course":"...","teacher":"...","grade_letter":"A","grade_pct":95.2,"absences":"0"}],'
+            '"attendance":{"absences":0,"tardies":0}}\n\n'
+            "HTML:\n" + clean_html
+        ),
+    }])
+
+
+def _ps_screenshot_and_extract() -> dict:
+    """
+    Extract grades and attendance from PowerSchool.
+    Tries Playwright (screenshot → vision) first; falls back to requests (HTML → text).
+    Returns {"grades": [...], "attendance": {...}} or {"error": "..."}.
+    """
+    if not _ps_configured():
+        return {"error": "POWER_USERN / POWER_PASS not configured"}
+
+    result = _ps_extract_via_playwright()
+    if result.get("error") == "playwright_not_installed":
+        log.info("PowerSchool: playwright not available, falling back to requests+HTML")
+        result = _ps_extract_via_requests()
+
+    return result
 
 
 def _ps_is_login_page(html: str) -> bool:
