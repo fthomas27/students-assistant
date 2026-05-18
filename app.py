@@ -323,17 +323,65 @@ SPORTS_ICAL_URL = os.environ.get("SPORTS_ICAL_URL", "")
 JOB_SCHEDULE_ICAL_URL = os.environ.get("JOB_SCHEDULE_ICAL_URL", "")
 
 
+_default_uid_cache = None
+_default_uid_cache_lock = threading.Lock()
+
+
+def _default_student_uid():
+    """Return the user_id used to resolve calendar settings outside of a request
+    (scheduler jobs, worker threads). Prefers AVERAGE_USER, otherwise the
+    earliest active student. Cached for the process lifetime."""
+    global _default_uid_cache
+    with _default_uid_cache_lock:
+        if _default_uid_cache is not None:
+            return _default_uid_cache or None
+        uid = None
+        try:
+            avg = os.environ.get("AVERAGE_USER", "").strip()
+            conn = get_db()
+            cur = conn.cursor()
+            try:
+                if avg:
+                    cur.execute("SELECT id FROM users WHERE username = %s AND active = TRUE LIMIT 1", (avg,))
+                    row = cur.fetchone()
+                    if row:
+                        uid = str(row["id"])
+                if not uid:
+                    cur.execute("SELECT id FROM users WHERE active = TRUE ORDER BY created_at ASC LIMIT 1")
+                    row = cur.fetchone()
+                    if row:
+                        uid = str(row["id"])
+            finally:
+                cur.close()
+                conn.close()
+        except Exception as e:
+            log.debug("_default_student_uid lookup failed: %s", e)
+        _default_uid_cache = uid or ""
+        return uid
+
+
 def _resolve_user_url(config_key, env_fallback):
     """Return current student's URL setting from user_config, falling back to env var.
-    Works in both request context (uses session) and scheduler context (env var only).
+
+    In request context: uses session.user_id.
+    In scheduler/worker context (no session): falls back to the default student
+    user's user_config so saved settings still apply to background jobs.
+    Env var is the last resort.
     """
+    uid = None
     try:
-        if session.get("user_id"):
-            v = get_user_config(session["user_id"]).get(config_key, "").strip()
+        uid = session.get("user_id")
+    except (RuntimeError, KeyError):
+        uid = None
+    if not uid:
+        uid = _default_student_uid()
+    if uid:
+        try:
+            v = get_user_config(uid).get(config_key, "").strip()
             if v:
                 return v
-    except (RuntimeError, KeyError):
-        pass
+        except Exception as e:
+            log.debug("_resolve_user_url(%s) lookup failed: %s", config_key, e)
     return env_fallback
 
 
@@ -1901,53 +1949,130 @@ _WEATHER_CODES = {
 }
 
 
+_NWS_HEADERS = {
+    "User-Agent": "students-assistant/1.0 (contact: admin@localhost)",
+    "Accept": "application/geo+json",
+}
+
+
+def _nws_parse_wind(s):
+    """NWS returns wind as a string like '10 mph' or '5 to 15 mph'. Pull the high number."""
+    if not s:
+        return 0
+    try:
+        parts = [int(t) for t in str(s).split() if t.isdigit()]
+        return max(parts) if parts else 0
+    except Exception:
+        return 0
+
+
 def fetch_weather():
-    """Park City weather via Open-Meteo. Returns a small dict or None."""
+    """Park City weather via NOAA / National Weather Service (api.weather.gov).
+    No API token required. Returns the same shape as before so the morning
+    outlook UI keeps working."""
     cached = _cache_get("weather:park_city", 1800)  # 30 min
     if cached is not None:
         return cached
     try:
-        url = (
-            "https://api.open-meteo.com/v1/forecast"
-            "?latitude=%s&longitude=%s"
-            "&current=temperature_2m,weather_code,wind_speed_10m,apparent_temperature"
-            "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
-            "&forecast_days=7"
-            "&temperature_unit=fahrenheit&wind_speed_unit=mph"
-            "&timezone=America/Denver"
-        ) % (PARK_CITY_LAT, PARK_CITY_LON)
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        j = resp.json()
-        cur = j.get("current", {}) or {}
-        daily = j.get("daily", {}) or {}
-        code = int(cur.get("weather_code", 0) or 0)
-        out = {
-            "current_f": round(float(cur.get("temperature_2m", 0) or 0)),
-            "feels_like_f": round(float(cur.get("apparent_temperature", 0) or 0)),
-            "wind_mph": round(float(cur.get("wind_speed_10m", 0) or 0)),
-            "code": code,
-            "description": _WEATHER_CODES.get(code, "—"),
-            "daily": [],
-        }
-        days = daily.get("time", []) or []
-        for i, d in enumerate(days[:7]):
+        # 1. Resolve the NWS gridpoint for our coords (cache this longer — it never changes)
+        grid_cache_key = "weather:nws_grid"
+        grid = _cache_get(grid_cache_key, 86400)  # 24 h
+        if not grid:
+            pts = requests.get(
+                "https://api.weather.gov/points/%s,%s" % (PARK_CITY_LAT, PARK_CITY_LON),
+                headers=_NWS_HEADERS, timeout=10,
+            )
+            pts.raise_for_status()
+            props = (pts.json().get("properties") or {})
+            grid = {
+                "forecast": props.get("forecast"),
+                "forecastHourly": props.get("forecastHourly"),
+            }
+            if grid["forecast"]:
+                _cache_set(grid_cache_key, grid)
+
+        if not grid.get("forecast"):
+            log.warning("NWS: no forecast URL for %s,%s", PARK_CITY_LAT, PARK_CITY_LON)
+            return None
+
+        # 2. Hourly forecast → current conditions (first period is "now")
+        cur_temp = None
+        cur_wind = None
+        cur_desc = None
+        if grid.get("forecastHourly"):
             try:
-                dcode = int((daily.get("weather_code") or [0])[i])
-            except Exception:
-                dcode = 0
-            out["daily"].append({
-                "date": d,
-                "hi_f": round(float((daily.get("temperature_2m_max") or [0])[i])),
-                "lo_f": round(float((daily.get("temperature_2m_min") or [0])[i])),
-                "code": dcode,
-                "description": _WEATHER_CODES.get(dcode, "—"),
-                "precip_pct": int((daily.get("precipitation_probability_max") or [0])[i] or 0),
-            })
+                h = requests.get(grid["forecastHourly"], headers=_NWS_HEADERS, timeout=10)
+                if h.ok:
+                    h_periods = ((h.json().get("properties") or {}).get("periods") or [])
+                    if h_periods:
+                        p0 = h_periods[0]
+                        cur_temp = p0.get("temperature")
+                        cur_wind = p0.get("windSpeed")
+                        cur_desc = p0.get("shortForecast")
+            except Exception as e:
+                log.warning("NWS hourly fetch failed: %s", e)
+
+        # 3. Daily forecast — periods alternate day/night; pair them up
+        f = requests.get(grid["forecast"], headers=_NWS_HEADERS, timeout=10)
+        f.raise_for_status()
+        periods = ((f.json().get("properties") or {}).get("periods") or [])
+
+        daily = []
+        i = 0
+        while i < len(periods) and len(daily) < 7:
+            p = periods[i]
+            is_day = p.get("isDaytime", True)
+            date_str = (p.get("startTime") or "")[:10]
+            precip = ((p.get("probabilityOfPrecipitation") or {}).get("value")) or 0
+            if is_day:
+                hi = p.get("temperature")
+                desc = p.get("shortForecast") or "—"
+                lo = None
+                # Next period is usually that day's night
+                if i + 1 < len(periods) and not periods[i + 1].get("isDaytime", True):
+                    lo = periods[i + 1].get("temperature")
+                    i += 1
+                daily.append({
+                    "date": date_str,
+                    "hi_f": int(hi) if hi is not None else 0,
+                    "lo_f": int(lo) if lo is not None else 0,
+                    "code": 0,
+                    "description": desc,
+                    "precip_pct": int(precip),
+                })
+            else:
+                # Forecast starts with "Tonight" — record just the low
+                daily.append({
+                    "date": date_str,
+                    "hi_f": int(p.get("temperature") or 0),
+                    "lo_f": int(p.get("temperature") or 0),
+                    "code": 0,
+                    "description": p.get("shortForecast") or "—",
+                    "precip_pct": int(precip),
+                })
+            i += 1
+
+        # Fall back to first forecast period if hourly didn't give us a current temp
+        if cur_temp is None and periods:
+            cur_temp = periods[0].get("temperature")
+            cur_wind = cur_wind or periods[0].get("windSpeed")
+            cur_desc = cur_desc or periods[0].get("shortForecast")
+
+        if cur_temp is None:
+            return None
+
+        out = {
+            "current_f": int(cur_temp),
+            "feels_like_f": int(cur_temp),  # NWS doesn't expose feels-like directly
+            "wind_mph": _nws_parse_wind(cur_wind),
+            "code": 0,
+            "description": cur_desc or "—",
+            "daily": daily,
+        }
         _cache_set("weather:park_city", out)
         return out
     except Exception as e:
-        log.warning("Open-Meteo fetch failed: %s", e)
+        log.warning("NOAA/NWS fetch failed: %s", e)
         return None
 
 

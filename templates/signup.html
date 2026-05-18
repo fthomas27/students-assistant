@@ -32,11 +32,11 @@ background: var(--bg);
 color: var(--text);
 min-height: 100dvh;
 display: flex;
-align-items: center;
 justify-content: center;
 padding: 24px;
 position: relative;
-overflow: hidden;
+overflow-x: hidden;
+overflow-y: auto;
 }
 
 body::before {
@@ -65,6 +65,7 @@ border: 1px solid var(--border2);
 border-radius: 24px;
 padding: 40px 32px 36px;
 position: relative;
+margin: auto;
 animation: fadeUp 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
 }
 
