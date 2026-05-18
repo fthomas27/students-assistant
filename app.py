@@ -681,6 +681,18 @@ def init_db():
             calendar_data TEXT NOT NULL DEFAULT '{}',
             created_at TIMESTAMPTZ DEFAULT NOW()
         )"""),
+        ("access_requests", """CREATE TABLE IF NOT EXISTS access_requests (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            message TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            token TEXT UNIQUE,
+            token_used BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            reviewed_at TIMESTAMPTZ,
+            reviewed_by TEXT DEFAULT 'admin'
+        )"""),
     ]
 
     for table_name, create_sql in tables:
@@ -795,6 +807,15 @@ ON CONFLICT (ip_address) DO NOTHING""")
     # Add conversation_id to gmail_drafts for existing deployments
     try:
         cur.execute("ALTER TABLE gmail_drafts ADD COLUMN IF NOT EXISTS conversation_id TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    # Migration guard: access_requests.token_used for existing deployments
+    try:
+        cur.execute("ALTER TABLE access_requests ADD COLUMN IF NOT EXISTS token_used BOOLEAN NOT NULL DEFAULT FALSE")
         conn.commit()
     except psycopg2.Error:
         conn.rollback()
@@ -2871,6 +2892,39 @@ def send_ntfy_notification(title, message, priority="default", tags=None):
         return resp.ok
     except Exception as e:
         log.error("ntfy notification failed: %s", e)
+        return False
+
+
+def send_email(to_addr, subject, body_html):
+    """Send an email via SMTP. Returns True on success, False on failure/not configured."""
+    mail_server = os.environ.get("MAIL_SERVER", "").strip()
+    mail_user = os.environ.get("MAIL_USERNAME", "").strip()
+    mail_pass = os.environ.get("MAIL_PASSWORD", "").strip()
+    if not all([mail_server, mail_user, mail_pass]):
+        log.warning("SMTP not configured; skipping email to %s", to_addr)
+        return False
+    mail_port = int(os.environ.get("MAIL_PORT", "587"))
+    mail_from = os.environ.get("MAIL_FROM", mail_user)
+    use_tls = os.environ.get("MAIL_USE_TLS", "true").lower() != "false"
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = mail_from
+    msg["To"] = to_addr
+    msg.attach(MIMEText(body_html, "html"))
+    try:
+        if use_tls:
+            with smtplib.SMTP(mail_server, mail_port, timeout=10) as s:
+                s.ehlo(); s.starttls(); s.login(mail_user, mail_pass); s.send_message(msg)
+        else:
+            with smtplib.SMTP_SSL(mail_server, mail_port, timeout=10) as s:
+                s.login(mail_user, mail_pass); s.send_message(msg)
+        log.info("Email sent to %s: %s", to_addr, subject)
+        return True
+    except Exception as e:
+        log.error("Email send failed to %s: %s", to_addr, e)
         return False
 
 
@@ -12227,6 +12281,387 @@ def api_admin_subscriber_revoke(user_id):
 
 
 # ── End of SaaS routes ────────────────────────────────────────────────────────
+
+
+# ── Waitlist / Approval signup flow ───────────────────────────────────────────
+
+def _basic_email_ok(email):
+    return bool(email) and "@" in email and "." in email.split("@")[-1]
+
+
+@app.route("/api/signup/request-access", methods=["POST"])
+def api_signup_request_access():
+    data = request.get_json(force=True, silent=True) or {}
+    name = str(data.get("name", "")).strip()
+    email = str(data.get("email", "")).strip().lower()
+    message = str(data.get("message", "")).strip()[:2000]
+    if not name or not email:
+        return jsonify({"error": "Name and email are required"}), 400
+    if not _basic_email_ok(email):
+        return jsonify({"error": "Invalid email"}), 400
+
+    conn = get_db(); cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+        if cur.fetchone():
+            cur.close(); conn.close()
+            return jsonify({"error": "An account with this email already exists"}), 409
+
+        cur.execute(
+            "SELECT id FROM access_requests WHERE email = %s AND status = 'pending'",
+            (email,),
+        )
+        if cur.fetchone():
+            cur.close(); conn.close()
+            return jsonify({"status": "ok", "message": "Request already pending"})
+
+        cur.execute(
+            "INSERT INTO access_requests (name, email, message, status) "
+            "VALUES (%s, %s, %s, 'pending')",
+            (name, email, message),
+        )
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
+
+    try:
+        send_ntfy_notification(
+            "New access request",
+            f"{name} <{email}> requested access",
+            priority="default",
+            tags=["mailbox"],
+        )
+    except Exception as _e:
+        log.debug("ntfy on access request failed: %s", _e)
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/admin/access-requests", methods=["GET"])
+def api_admin_access_requests_list():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Unauthorized"}), 401
+    status = (request.args.get("status") or "all").strip().lower()
+    conn = get_db(); cur = conn.cursor()
+    try:
+        if status in ("pending", "approved", "denied"):
+            cur.execute(
+                "SELECT id, name, email, message, status, token, token_used, "
+                "created_at, reviewed_at, reviewed_by "
+                "FROM access_requests WHERE status = %s ORDER BY created_at DESC",
+                (status,),
+            )
+        else:
+            cur.execute(
+                "SELECT id, name, email, message, status, token, token_used, "
+                "created_at, reviewed_at, reviewed_by "
+                "FROM access_requests ORDER BY created_at DESC"
+            )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close(); conn.close()
+
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"],
+            "name": r["name"],
+            "email": r["email"],
+            "message": r.get("message") or "",
+            "status": r["status"],
+            "token": r.get("token") or "",
+            "token_used": bool(r.get("token_used")),
+            "created_at": r["created_at"].isoformat() if r.get("created_at") else "",
+            "reviewed_at": r["reviewed_at"].isoformat() if r.get("reviewed_at") else "",
+            "reviewed_by": r.get("reviewed_by") or "",
+        })
+    return jsonify({"requests": out})
+
+
+@app.route("/api/admin/access-requests/<int:req_id>/approve", methods=["POST"])
+def api_admin_access_request_approve(req_id):
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Unauthorized"}), 401
+    token = secrets.token_urlsafe(32)
+    conn = get_db(); cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE access_requests SET status='approved', token=%s, token_used=FALSE, "
+            "reviewed_at=NOW(), reviewed_by='admin' WHERE id = %s "
+            "RETURNING email, name",
+            (token, req_id),
+        )
+        row = cur.fetchone()
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
+
+    if not row:
+        return jsonify({"error": "Request not found"}), 404
+
+    approval_url = f"{request.host_url.rstrip('/')}/signup/complete?token={token}"
+    body = f"""
+    <p>Hi {row['name']},</p>
+    <p>Your request for access to Jarvis Student AI has been approved.</p>
+    <p>Click the link below to complete your signup:</p>
+    <p><a href=\"{approval_url}\">{approval_url}</a></p>
+    <p>This link is single-use. If you didn't request access, you can ignore this email.</p>
+    """
+    try:
+        send_email(row["email"], "You've been approved! — Jarvis Student AI", body)
+    except Exception as _e:
+        log.warning("approval email failed: %s", _e)
+
+    return jsonify({"status": "ok", "token": token})
+
+
+@app.route("/api/admin/access-requests/<int:req_id>/deny", methods=["POST"])
+def api_admin_access_request_deny(req_id):
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = get_db(); cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE access_requests SET status='denied', reviewed_at=NOW(), "
+            "reviewed_by='admin' WHERE id = %s RETURNING email, name",
+            (req_id,),
+        )
+        row = cur.fetchone()
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
+
+    if not row:
+        return jsonify({"error": "Request not found"}), 404
+
+    try:
+        send_email(
+            row["email"],
+            "Access request update — Jarvis Student AI",
+            f"<p>Hi {row['name']},</p><p>Thanks for your interest in Jarvis Student AI. "
+            f"At this time we're unable to grant access. You're welcome to reach out later.</p>",
+        )
+    except Exception as _e:
+        log.debug("denial email failed: %s", _e)
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/signup/complete", methods=["GET"])
+def signup_complete_page():
+    token = (request.args.get("token") or "").strip()
+    if not token:
+        return render_template("signup.html", approval_error="Missing token.")
+
+    conn = get_db(); cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id, name, email, status, token_used FROM access_requests "
+            "WHERE token = %s",
+            (token,),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close(); conn.close()
+
+    if not row or row["status"] != "approved" or row["token_used"]:
+        return render_template(
+            "signup.html",
+            approval_error="This signup link is invalid or has already been used.",
+        )
+
+    return render_template(
+        "signup.html",
+        approval_token=token,
+        approval_email=row["email"],
+        approval_name=row["name"],
+    )
+
+
+@app.route("/api/signup/complete-approved", methods=["POST"])
+def api_signup_complete_approved():
+    data = request.get_json(force=True, silent=True) or {}
+    token = str(data.get("token", "")).strip()
+    email = str(data.get("email", "")).strip().lower()
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", "")).strip()
+
+    if not all([token, email, username, password]):
+        return jsonify({"error": "All fields are required"}), 400
+    if len(username) < 3 or len(password) < 6:
+        return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
+
+    conn = get_db(); cur = conn.cursor()
+    cur.execute(
+        "SELECT id, email, status, token_used FROM access_requests WHERE token = %s",
+        (token,),
+    )
+    ar = cur.fetchone()
+    if not ar or ar["status"] != "approved" or ar["token_used"]:
+        cur.close(); conn.close()
+        return jsonify({"error": "Invalid or already-used approval token"}), 400
+    if (ar["email"] or "").lower() != email:
+        cur.close(); conn.close()
+        return jsonify({"error": "Email does not match the approved request"}), 400
+
+    cur.execute("SELECT id FROM users WHERE username = %s OR email = %s", (username, email))
+    if cur.fetchone():
+        cur.close(); conn.close()
+        return jsonify({"error": "Username or email already taken"}), 409
+    cur.close(); conn.close()
+
+    # If Stripe is configured, route through checkout. Otherwise create directly.
+    if stripe and STRIPE_SECRET_KEY:
+        pc = get_db(); pcur = pc.cursor()
+        pcur.execute("SELECT stripe_price_id FROM pricing_config WHERE id = 1")
+        pc_row = pcur.fetchone()
+        pcur.close(); pc.close()
+        price_id = pc_row["stripe_price_id"] if pc_row else ""
+        if not price_id:
+            return jsonify({"error": "Pricing not configured. Contact admin."}), 503
+
+        # Stash calendar URLs under the token (reuses pending_signups keyed by access_code)
+        cals_json = json.dumps({k: str(data.get(k, "")).strip() for k in _CAL_KEYS})
+        sconn = get_db(); scur = sconn.cursor()
+        try:
+            scur.execute("""
+INSERT INTO pending_signups (access_code, calendar_data, created_at)
+VALUES (%s, %s, NOW())
+ON CONFLICT (access_code) DO UPDATE SET calendar_data = EXCLUDED.calendar_data, created_at = NOW()""",
+                         (f"TOKEN:{token}", cals_json))
+            sconn.commit()
+        except Exception as _pe:
+            log.warning("pending_signups insert (token) failed: %s", _pe)
+            sconn.rollback()
+        finally:
+            scur.close(); sconn.close()
+
+        host = request.host_url.rstrip("/")
+        try:
+            checkout = stripe.checkout.Session.create(
+                mode="subscription",
+                payment_method_types=["card"],
+                line_items=[{"price": price_id, "quantity": 1}],
+                customer_email=email,
+                success_url=f"{host}/signup/complete-success?session_id={{CHECKOUT_SESSION_ID}}&token={token}&username={username}",
+                cancel_url=f"{host}/signup/cancelled",
+                metadata={
+                    "approval_token": token,
+                    "username": username,
+                    "password_hash": generate_password_hash(password),
+                },
+            )
+        except Exception as e:
+            log.error("Stripe checkout (approval) error: %s", e)
+            return jsonify({"error": "Payment setup failed. Try again."}), 500
+        return jsonify({"url": checkout.url})
+
+    # No Stripe: create the user directly and burn the token.
+    user_id = str(uuid.uuid4())
+    conn = get_db(); cur = conn.cursor()
+    try:
+        cur.execute("""
+INSERT INTO users (id, email, username, password_hash, display_name, is_comped, active)
+VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
+            (user_id, email, username, generate_password_hash(password), username.title()))
+        cur.execute(
+            "UPDATE access_requests SET token_used = TRUE WHERE token = %s",
+            (token,),
+        )
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
+
+    _init_user_defaults(user_id)
+    _save_calendar_urls(user_id, data)
+    log.info("Approved signup (no Stripe): %s (%s)", username, email)
+    return jsonify({"status": "ok", "redirect": "/login"})
+
+
+@app.route("/signup/complete-success", methods=["GET"])
+def signup_complete_success():
+    session_id = request.args.get("session_id", "")
+    token = (request.args.get("token", "") or "").strip()
+    username = request.args.get("username", "")
+
+    if not stripe or not session_id or not token:
+        return redirect("/login")
+
+    try:
+        checkout = stripe.checkout.Session.retrieve(session_id)
+    except Exception as e:
+        log.error("Stripe session retrieve (approval): %s", e)
+        return redirect("/login")
+
+    if checkout.payment_status not in ("paid", "no_payment_required"):
+        return redirect("/signup/cancelled")
+
+    conn = get_db(); cur = conn.cursor()
+    cur.execute(
+        "SELECT id, email, status, token_used FROM access_requests WHERE token = %s",
+        (token,),
+    )
+    ar = cur.fetchone()
+    if not ar or ar["status"] != "approved" or ar["token_used"]:
+        cur.close(); conn.close()
+        return render_template("signup_success.html", already_exists=True)
+
+    email = (checkout.customer_details.email if checkout.customer_details else checkout.customer_email) or ar["email"] or ""
+    pw_hash = checkout.metadata.get("password_hash", generate_password_hash(secrets.token_urlsafe(16)))
+    un = checkout.metadata.get("username") or username
+
+    user_id = str(uuid.uuid4())
+    cur.execute("""
+INSERT INTO users (id, email, username, password_hash, display_name, is_comped, active)
+VALUES (%s, %s, %s, %s, %s, FALSE, TRUE)
+ON CONFLICT (email) DO UPDATE SET last_login_at = NOW() RETURNING id""",
+        (user_id, email, un, pw_hash, un.title()))
+    result = cur.fetchone()
+    if result:
+        user_id = str(result["id"])
+
+    stripe_sub_id = None
+    stripe_price_id = ""
+    period_end = None
+    if checkout.subscription:
+        try:
+            sub = stripe.Subscription.retrieve(checkout.subscription)
+            stripe_sub_id = sub.id
+            if sub.items.data:
+                stripe_price_id = sub.items.data[0].price.id
+            period_end = datetime.fromtimestamp(sub.current_period_end, tz=TZ)
+        except Exception as _e:
+            log.warning("Subscription retrieve (approval): %s", _e)
+
+    cur.execute("""
+INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id, stripe_price_id, status, current_period_end)
+VALUES (%s, %s, %s, %s, 'active', %s)
+ON CONFLICT (stripe_customer_id) DO UPDATE SET status='active', updated_at=NOW()""",
+        (user_id, checkout.customer or "", stripe_sub_id, stripe_price_id, period_end))
+
+    cur.execute("UPDATE access_requests SET token_used = TRUE WHERE token = %s", (token,))
+
+    cal_data = {}
+    try:
+        cur.execute("SELECT calendar_data FROM pending_signups WHERE access_code = %s", (f"TOKEN:{token}",))
+        prow = cur.fetchone()
+        if prow and prow["calendar_data"]:
+            cal_data = json.loads(prow["calendar_data"])
+        cur.execute("DELETE FROM pending_signups WHERE access_code = %s", (f"TOKEN:{token}",))
+    except Exception as _ce:
+        log.warning("pending_signups retrieve (token): %s", _ce)
+
+    conn.commit()
+    cur.close(); conn.close()
+
+    _init_user_defaults(user_id)
+    if cal_data:
+        _save_calendar_urls(user_id, cal_data)
+    log.info("Approved+paid signup success: %s (%s)", un, email)
+    return render_template("signup_success.html", username=un, email=email)
+
+
+# ── End of waitlist routes ────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":

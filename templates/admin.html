@@ -549,6 +549,34 @@ transition: background 0.15s, color 0.15s;
     </div>
   </div>
 
+  <!-- ── Waitlist: Access Requests ──────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-title">📨 Access Requests</div>
+
+    <div style="display:flex; gap:8px; margin-bottom:16px;">
+      <button class="btn" id="ar-tab-pending" onclick="switchAccessRequestsTab('pending')" style="padding:8px 14px; background:var(--accent); color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">Pending</button>
+      <button class="btn" id="ar-tab-approved" onclick="switchAccessRequestsTab('approved')" style="padding:8px 14px; background:var(--surface2); color:var(--text); border:1px solid var(--border2); border-radius:6px; cursor:pointer;">Approved</button>
+      <button class="btn" id="ar-tab-denied" onclick="switchAccessRequestsTab('denied')" style="padding:8px 14px; background:var(--surface2); color:var(--text); border:1px solid var(--border2); border-radius:6px; cursor:pointer;">Denied</button>
+    </div>
+
+    <div class="table-container">
+      <table id="access-requests-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Message</th>
+            <th>Requested</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="access-requests-tbody">
+          <tr><td colspan="5" class="loading">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="section">
     <div class="section-title">🚫 Blocked IP Addresses</div>
     <div style="display: flex; gap: 12px; margin-bottom: 20px;">
@@ -1152,6 +1180,92 @@ function loadSubscribers() {
       document.getElementById('subs-tbody').innerHTML = '<tr><td colspan="6" class="empty-state">Error loading</td></tr>';
     });
 }
+
+// ── Access Requests ──────────────────────────────────────────────────────────
+var _arCurrentStatus = 'pending';
+
+function switchAccessRequestsTab(status) {
+  _arCurrentStatus = status;
+  ['pending', 'approved', 'denied'].forEach(function(s) {
+    var btn = document.getElementById('ar-tab-' + s);
+    if (!btn) return;
+    if (s === status) {
+      btn.style.background = 'var(--accent)';
+      btn.style.color = 'white';
+      btn.style.border = 'none';
+    } else {
+      btn.style.background = 'var(--surface2)';
+      btn.style.color = 'var(--text)';
+      btn.style.border = '1px solid var(--border2)';
+    }
+  });
+  loadAccessRequests();
+}
+
+function loadAccessRequests() {
+  var tbody = document.getElementById('access-requests-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="5" class="loading">Loading...</td></tr>';
+  fetch('/api/admin/access-requests?status=' + encodeURIComponent(_arCurrentStatus), {credentials: 'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var rows = (d && d.requests) || [];
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No ' + _arCurrentStatus + ' requests</td></tr>';
+        return;
+      }
+      tbody.innerHTML = '';
+      rows.forEach(function(r) {
+        var actionHtml;
+        if (r.status === 'pending') {
+          actionHtml =
+            '<button class="btn" style="padding:5px 10px; font-size:12px; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer; margin-right:6px;" onclick="approveAccessRequest(' + r.id + ')">Approve</button>' +
+            '<button class="btn" style="padding:5px 10px; font-size:12px; background:var(--red); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="denyAccessRequest(' + r.id + ')">Deny</button>';
+        } else if (r.status === 'approved') {
+          actionHtml = '<span class="badge badge-green">Approved ' + (r.reviewed_at ? formatDate(r.reviewed_at) : '') + '</span>' +
+            (r.token_used ? ' <span class="badge badge-gray">Used</span>' : '');
+        } else {
+          actionHtml = '<span class="badge badge-red">Denied ' + (r.reviewed_at ? formatDate(r.reviewed_at) : '') + '</span>';
+        }
+        var msg = (r.message || '').replace(/</g, '&lt;');
+        if (msg.length > 80) msg = msg.slice(0, 80) + '…';
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td style="font-weight:600;">' + (r.name || '') + '</td>' +
+          '<td style="color:var(--text2); font-size:13px;">' + (r.email || '') + '</td>' +
+          '<td style="color:var(--text2); font-size:13px;">' + msg + '</td>' +
+          '<td class="timestamp">' + (r.created_at ? formatDate(r.created_at) : '—') + '</td>' +
+          '<td>' + actionHtml + '</td>';
+        tbody.appendChild(tr);
+      });
+    })
+    .catch(function() {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Error loading</td></tr>';
+    });
+}
+
+function approveAccessRequest(id) {
+  if (!confirm('Approve this access request? An email with a signup link will be sent.')) return;
+  fetch('/api/admin/access-requests/' + id + '/approve', {method: 'POST', credentials: 'same-origin'})
+    .then(function(r) { return r.json().then(function(d) { return {s: r.status, d: d}; }); })
+    .then(function(res) {
+      if (res.s === 200) { loadAccessRequests(); }
+      else { alert((res.d && res.d.error) || 'Failed to approve.'); }
+    });
+}
+
+function denyAccessRequest(id) {
+  if (!confirm('Deny this access request?')) return;
+  fetch('/api/admin/access-requests/' + id + '/deny', {method: 'POST', credentials: 'same-origin'})
+    .then(function(r) { return r.json().then(function(d) { return {s: r.status, d: d}; }); })
+    .then(function(res) {
+      if (res.s === 200) { loadAccessRequests(); }
+      else { alert((res.d && res.d.error) || 'Failed to deny.'); }
+    });
+}
+
+loadAccessRequests();
+setInterval(loadAccessRequests, 60000);
 </script>
 
 </body>
