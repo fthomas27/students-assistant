@@ -376,7 +376,7 @@ margin-bottom: 20px;
   <!-- Request Access (waitlist) -->
   <div id="request-access-section" style="margin-top:28px; padding-top:24px; border-top:1px solid var(--border);">
     <div style="font-family:'DM Serif Display',serif; font-size:18px; text-align:center; margin-bottom:6px;">No code? Request access</div>
-    <div style="font-size:12px; color:var(--text3); text-align:center; margin-bottom:18px;">We review every request and email approved users a signup link.</div>
+    <div style="font-size:12px; color:var(--text3); text-align:center; margin-bottom:18px;">We review every request. Please check back in about a week.</div>
     <div class="field-wrap">
       <div class="field-label">Name</div>
       <input class="field-input" id="req-name" type="text" placeholder="Your name" autocomplete="name">
@@ -431,7 +431,7 @@ function submitRequestAccess() {
   .then(function(res) {
     if (res.s === 200) {
       msgEl.style.color = 'var(--green)';
-      msgEl.textContent = "Thanks! We'll review your request and email you.";
+      msgEl.textContent = "Thanks! Please check back in a week.";
       btn.textContent = 'Request Sent';
     } else {
       msgEl.style.color = 'var(--red)';
