@@ -323,17 +323,65 @@ SPORTS_ICAL_URL = os.environ.get("SPORTS_ICAL_URL", "")
 JOB_SCHEDULE_ICAL_URL = os.environ.get("JOB_SCHEDULE_ICAL_URL", "")
 
 
+_default_uid_cache = None
+_default_uid_cache_lock = threading.Lock()
+
+
+def _default_student_uid():
+    """Return the user_id used to resolve calendar settings outside of a request
+    (scheduler jobs, worker threads). Prefers AVERAGE_USER, otherwise the
+    earliest active student. Cached for the process lifetime."""
+    global _default_uid_cache
+    with _default_uid_cache_lock:
+        if _default_uid_cache is not None:
+            return _default_uid_cache or None
+        uid = None
+        try:
+            avg = os.environ.get("AVERAGE_USER", "").strip()
+            conn = get_db()
+            cur = conn.cursor()
+            try:
+                if avg:
+                    cur.execute("SELECT id FROM users WHERE username = %s AND active = TRUE LIMIT 1", (avg,))
+                    row = cur.fetchone()
+                    if row:
+                        uid = str(row["id"])
+                if not uid:
+                    cur.execute("SELECT id FROM users WHERE active = TRUE ORDER BY created_at ASC LIMIT 1")
+                    row = cur.fetchone()
+                    if row:
+                        uid = str(row["id"])
+            finally:
+                cur.close()
+                conn.close()
+        except Exception as e:
+            log.debug("_default_student_uid lookup failed: %s", e)
+        _default_uid_cache = uid or ""
+        return uid
+
+
 def _resolve_user_url(config_key, env_fallback):
     """Return current student's URL setting from user_config, falling back to env var.
-    Works in both request context (uses session) and scheduler context (env var only).
+
+    In request context: uses session.user_id.
+    In scheduler/worker context (no session): falls back to the default student
+    user's user_config so saved settings still apply to background jobs.
+    Env var is the last resort.
     """
+    uid = None
     try:
-        if session.get("user_id"):
-            v = get_user_config(session["user_id"]).get(config_key, "").strip()
+        uid = session.get("user_id")
+    except (RuntimeError, KeyError):
+        uid = None
+    if not uid:
+        uid = _default_student_uid()
+    if uid:
+        try:
+            v = get_user_config(uid).get(config_key, "").strip()
             if v:
                 return v
-    except (RuntimeError, KeyError):
-        pass
+        except Exception as e:
+            log.debug("_resolve_user_url(%s) lookup failed: %s", config_key, e)
     return env_fallback
 
 
