@@ -292,6 +292,75 @@ def test_no_password_or_security_code_hash_logging(client):
         assert needle not in src, f"Sensitive hash log marker still present: {needle}"
 
 
+def test_calendar_urls_resolved_outside_worker_threads(client):
+    """Per-user calendar URLs must be resolved in the request thread before
+    being passed into ThreadPoolExecutor workers. Flask's `session` is bound to
+    the request thread, so calling u_*_ical() inside a worker silently falls
+    back to (usually empty) env vars and the user's saved settings are ignored.
+    """
+    _, flask_app = client
+    src = open(flask_app.__file__).read()
+
+    # /api/calendar — the worker closures should reference the pre-resolved
+    # variables (personal_url, sports_url, job_url, canvas_url), NOT call
+    # u_*_ical() directly inside the closure body.
+    idx = src.find("def api_calendar(")
+    assert idx > 0
+    end = src.find("\n@app.route", idx)
+    body = src[idx:end if end > 0 else len(src)]
+    assert "personal_url = u_personal_ical()" in body
+    assert "canvas_url   = u_canvas_ical()" in body or "canvas_url = u_canvas_ical()" in body
+    # The worker functions must not call u_*_ical() directly.
+    for marker in ("def get_personal():", "def get_sports():", "def get_job():", "def get_canvas():"):
+        m_idx = body.find(marker)
+        assert m_idx > 0, f"missing {marker}"
+        # Look at the next ~6 lines for direct u_*_ical() calls
+        snippet = body[m_idx:m_idx + 400]
+        assert "u_personal_ical()" not in snippet
+        assert "u_sports_ical()" not in snippet
+        assert "u_job_schedule_ical()" not in snippet
+        assert "u_canvas_ical()" not in snippet
+
+    # /api/daily-outlook — same pattern.
+    idx = src.find("def api_daily_outlook(")
+    assert idx > 0
+    end = src.find("\n@app.route", idx)
+    body = src[idx:end if end > 0 else len(src)]
+    assert "canvas_url" in body and "personal_url" in body
+    for marker in ("def _get_assignments():", "def _get_events():"):
+        m_idx = body.find(marker)
+        assert m_idx > 0, f"missing {marker}"
+        snippet = body[m_idx:m_idx + 600]
+        assert "u_canvas_ical()" not in snippet
+        assert "u_personal_ical()" not in snippet
+
+
+def test_uid_safe_outside_request_context(client):
+    """_uid() must return None instead of raising when called from a worker
+    thread (no Flask request context). Defensive against silently breaking
+    per-user features that touch session in background work."""
+    import threading
+    _, flask_app = client
+
+    captured = {}
+
+    def worker():
+        try:
+            captured["value"] = flask_app._uid()
+            captured["raised"] = False
+        except Exception as e:
+            captured["raised"] = True
+            captured["error"] = repr(e)
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join(timeout=2.0)
+    assert captured.get("raised") is False, (
+        f"_uid() should not raise outside request context, got: {captured.get('error')}"
+    )
+    assert captured.get("value") is None
+
+
 def test_reduced_motion_styles_present(client):
     """Primary templates should respect the prefers-reduced-motion media query."""
     c, _ = client
