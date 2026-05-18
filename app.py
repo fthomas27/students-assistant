@@ -57,6 +57,19 @@ _GZIP_TYPES = ('text/html', 'text/css', 'text/javascript', 'application/javascri
 
 
 @app.after_request
+def no_cache_html(response):
+    """Force the browser to revalidate HTML pages — the embedded CSRF
+    interceptor JS would otherwise get stuck on a stale page after a deploy."""
+    try:
+        if (response.mimetype or '').lower() == 'text/html':
+            response.headers['Cache-Control'] = 'no-store, must-revalidate'
+            response.headers.pop('ETag', None)
+    except Exception:
+        pass
+    return response
+
+
+@app.after_request
 def gzip_response(response):
     """Gzip-compress text responses larger than 500 bytes when the client supports it."""
     try:
@@ -230,7 +243,11 @@ def require_csrf():
     expected = session.get('csrf_token')
     provided = request.headers.get('X-CSRF-Token', '')
     if not expected or not provided or not secrets.compare_digest(str(expected), str(provided)):
-        log.warning("CSRF check failed for %s %s", request.method, path)
+        reason = ("no-session-token" if not expected
+                  else "no-header" if not provided
+                  else "mismatch")
+        log.warning("CSRF check failed for %s %s (%s; session_keys=%s)",
+                    request.method, path, reason, sorted(session.keys()))
         return jsonify({"error": "CSRF token missing or invalid"}), 403
     return None
 
@@ -4950,6 +4967,8 @@ def api_csrf_token():
     import secrets
     if 'csrf_token' not in session:
         session['csrf_token'] = secrets.token_hex(32)
+        session.permanent = True
+        session.modified = True
     return jsonify({"csrf_token": session.get('csrf_token')})
 
 
