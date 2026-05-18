@@ -223,6 +223,10 @@ def require_csrf():
         return None
     if path.startswith('/api/admin/login') or path.startswith('/api/parent/login'):
         return None
+    # Public signup + Stripe webhook endpoints: the caller has no authenticated
+    # session yet (or is Stripe), so CSRF protection adds no value.
+    if path.startswith('/api/signup/') or path.startswith('/api/webhooks/'):
+        return None
     expected = session.get('csrf_token')
     provided = request.headers.get('X-CSRF-Token', '')
     if not expected or not provided or not secrets.compare_digest(str(expected), str(provided)):
@@ -238,7 +242,7 @@ def require_auth():
         return None
     if path.startswith('/signup'):
         return None
-    if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
+    if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password', '/api/csrf-token'):
         return None
     if path.startswith('/api/signup/') or path.startswith('/api/webhooks/'):
         return None
