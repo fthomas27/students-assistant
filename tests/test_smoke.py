@@ -361,6 +361,121 @@ def test_uid_safe_outside_request_context(client):
     assert captured.get("value") is None
 
 
+def test_request_access_missing_fields(client):
+    """POST /api/signup/request-access with missing name/email should 400."""
+    c, _ = client
+    with c.session_transaction() as s:
+        s["csrf_token"] = "tt"
+    resp = c.post(
+        "/api/signup/request-access",
+        json={"name": "", "email": ""},
+        headers={"X-CSRF-Token": "tt"},
+    )
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data and "error" in data
+
+
+def test_request_access_success(client, monkeypatch):
+    """Valid POST should return 200 and insert a row."""
+    c, flask_app = client
+    inserts = []
+
+    class StubCursor(FakeCursor):
+        def execute(self, sql, params=None, *_a, **_kw):
+            sql_l = (sql or "").lower()
+            self._row = None
+            if "from users where email" in sql_l:
+                self._row = None  # no existing user
+            elif "from access_requests where email" in sql_l:
+                self._row = None  # no pending dup
+            elif "insert into access_requests" in sql_l:
+                inserts.append(params)
+
+        def fetchone(self):
+            return self._row
+
+    class StubConn(FakeConn):
+        def cursor(self):
+            return StubCursor()
+
+    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
+    with c.session_transaction() as s:
+        s["csrf_token"] = "tt"
+    resp = c.post(
+        "/api/signup/request-access",
+        json={"name": "Ada", "email": "ada@example.com", "message": "hi"},
+        headers={"X-CSRF-Token": "tt"},
+    )
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    data = resp.get_json()
+    assert data and data.get("status") == "ok"
+    assert len(inserts) == 1
+    assert inserts[0][0] == "Ada"
+    assert inserts[0][1] == "ada@example.com"
+
+
+def test_admin_access_requests_requires_auth(client):
+    """GET /api/admin/access-requests with no admin session should 401."""
+    c, _ = client
+    resp = c.get("/api/admin/access-requests")
+    assert resp.status_code == 401
+
+
+def test_admin_approve_deny(client, monkeypatch):
+    """With admin session, approve sets a token; deny sets status=denied."""
+    c, flask_app = client
+
+    class StubCursor(FakeCursor):
+        def __init__(self):
+            super().__init__()
+            self._row = None
+
+        def execute(self, sql, params=None, *_a, **_kw):
+            sql_l = (sql or "").lower()
+            if "update access_requests set status='approved'" in sql_l:
+                self._row = {"email": "ada@example.com", "name": "Ada"}
+            elif "update access_requests set status='denied'" in sql_l:
+                self._row = {"email": "ada@example.com", "name": "Ada"}
+            else:
+                self._row = None
+
+        def fetchone(self):
+            return self._row
+
+    class StubConn(FakeConn):
+        def cursor(self):
+            return StubCursor()
+
+    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
+
+    with c.session_transaction() as s:
+        s["admin_authenticated"] = True
+        s["csrf_token"] = "test-csrf-token"
+
+    hdrs = {"X-CSRF-Token": "test-csrf-token"}
+
+    # Approve
+    resp = c.post("/api/admin/access-requests/1/approve", headers=hdrs)
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    data = resp.get_json()
+    assert data and data.get("status") == "ok"
+    assert data.get("token") and len(data["token"]) > 16
+
+    # Deny
+    resp = c.post("/api/admin/access-requests/2/deny", headers=hdrs)
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert resp.get_json().get("status") == "ok"
+
+
+def test_complete_signup_invalid_token(client):
+    """GET /signup/complete?token=bad should not crash; should render the page."""
+    c, _ = client
+    resp = c.get("/signup/complete?token=definitely-not-a-real-token")
+    # Should render the signup page with an error banner — must not 500.
+    assert resp.status_code in (200, 302)
+
+
 def test_reduced_motion_styles_present(client):
     """Primary templates should respect the prefers-reduced-motion media query."""
     c, _ = client

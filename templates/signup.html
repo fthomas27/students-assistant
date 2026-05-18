@@ -265,6 +265,34 @@ margin-bottom: 20px;
   <div class="cancelled-banner">Payment cancelled. Your code is still valid — try again below.</div>
   {% endif %}
 
+  {% if approval_error %}
+  <div class="cancelled-banner">{{ approval_error }}</div>
+  {% endif %}
+
+  {% if approval_token %}
+  <!-- Approved signup completion form -->
+  <div id="approval-section" style="margin-bottom:20px;">
+    <p style="font-size:13px; color:var(--text2); text-align:center; margin-bottom:18px; line-height:1.5;">
+      ✓ Your access request was approved. Complete your signup below.
+    </p>
+    <div class="field-wrap">
+      <div class="field-label">Email</div>
+      <input class="field-input" id="approval-email" type="email" value="{{ approval_email }}" readonly>
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Username</div>
+      <input class="field-input" id="approval-username" type="text" placeholder="yourname" autocomplete="username">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Password</div>
+      <input class="field-input" id="approval-password" type="password" placeholder="6+ characters" autocomplete="new-password">
+    </div>
+    <input type="hidden" id="approval-token" value="{{ approval_token }}">
+    <button class="submit-btn" id="approval-submit-btn" onclick="submitApprovedSignup()">Complete Signup</button>
+    <div class="error-msg" id="approval-error"></div>
+  </div>
+  {% else %}
+
   <div class="step-indicator">
     <div class="step-dot active" id="dot-0"></div>
     <div class="step-dot" id="dot-1"></div>
@@ -344,6 +372,27 @@ margin-bottom: 20px;
     </div>
   </div>
 
+  <!-- Request Access (waitlist) -->
+  <div id="request-access-section" style="margin-top:28px; padding-top:24px; border-top:1px solid var(--border);">
+    <div style="font-family:'DM Serif Display',serif; font-size:18px; text-align:center; margin-bottom:6px;">No code? Request access</div>
+    <div style="font-size:12px; color:var(--text3); text-align:center; margin-bottom:18px;">We review every request and email approved users a signup link.</div>
+    <div class="field-wrap">
+      <div class="field-label">Name</div>
+      <input class="field-input" id="req-name" type="text" placeholder="Your name" autocomplete="name">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Email</div>
+      <input class="field-input" id="req-email" type="email" placeholder="you@example.com" autocomplete="email">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Why do you want access? (optional)</div>
+      <textarea class="field-input" id="req-message" rows="3" style="resize:vertical; font-family:inherit;" placeholder="A few words about how you'd use Jarvis"></textarea>
+    </div>
+    <button class="submit-btn" id="req-submit-btn" onclick="submitRequestAccess()" style="background:var(--surface2); color:var(--text); border:1px solid var(--border2);">Request Access</button>
+    <div class="error-msg" id="req-msg" style="color:var(--text2);"></div>
+  </div>
+  {% endif %}
+
   <div class="login-link">Already have an account? <a href="/login">Sign in</a></div>
 </div>
 
@@ -353,9 +402,90 @@ var bypassPayment = false;
 var monthlyDisplay = '';
 
 var codeInput = document.getElementById('code-input');
-codeInput.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') validateCode();
-});
+if (codeInput) {
+  codeInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') validateCode();
+  });
+}
+
+function submitRequestAccess() {
+  var name = (document.getElementById('req-name') || {}).value;
+  var email = (document.getElementById('req-email') || {}).value;
+  var message = (document.getElementById('req-message') || {}).value;
+  var msgEl = document.getElementById('req-msg');
+  var btn = document.getElementById('req-submit-btn');
+  if (!msgEl || !btn) return;
+  msgEl.textContent = '';
+  msgEl.style.color = 'var(--text2)';
+  name = (name || '').trim();
+  email = (email || '').trim();
+  if (!name || !email) { msgEl.style.color = 'var(--red)'; msgEl.textContent = 'Name and email required'; return; }
+  btn.disabled = true;
+  btn.textContent = 'Sending...';
+  fetch('/api/signup/request-access', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name, email: email, message: (message || '').trim()})
+  }).then(function(r) { return r.json().then(function(d) { return {s: r.status, d: d}; }); })
+  .then(function(res) {
+    if (res.s === 200) {
+      msgEl.style.color = 'var(--green)';
+      msgEl.textContent = "Thanks! We'll review your request and email you.";
+      btn.textContent = 'Request Sent';
+    } else {
+      msgEl.style.color = 'var(--red)';
+      msgEl.textContent = (res.d && res.d.error) || 'Could not submit request.';
+      btn.disabled = false;
+      btn.textContent = 'Request Access';
+    }
+  }).catch(function() {
+    msgEl.style.color = 'var(--red)';
+    msgEl.textContent = 'Connection error.';
+    btn.disabled = false;
+    btn.textContent = 'Request Access';
+  });
+}
+
+function submitApprovedSignup() {
+  var tokenEl = document.getElementById('approval-token');
+  var emailEl = document.getElementById('approval-email');
+  var unEl = document.getElementById('approval-username');
+  var pwEl = document.getElementById('approval-password');
+  var errEl = document.getElementById('approval-error');
+  var btn = document.getElementById('approval-submit-btn');
+  if (!tokenEl || !emailEl || !unEl || !pwEl || !errEl || !btn) return;
+  errEl.textContent = '';
+  var token = tokenEl.value;
+  var email = (emailEl.value || '').trim().toLowerCase();
+  var username = (unEl.value || '').trim();
+  var password = pwEl.value || '';
+  if (!email || !username || !password) { errEl.textContent = 'All fields required'; return; }
+  if (username.length < 3) { errEl.textContent = 'Username must be at least 3 characters'; return; }
+  if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters'; return; }
+  btn.disabled = true;
+  btn.textContent = 'Creating account...';
+  fetch('/api/signup/complete-approved', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({token: token, email: email, username: username, password: password})
+  }).then(function(r) { return r.json().then(function(d) { return {s: r.status, d: d}; }); })
+  .then(function(res) {
+    if (res.s === 200 || res.s === 201) {
+      if (res.d.url) { window.location.href = res.d.url; return; }
+      btn.textContent = '✓ Account created';
+      errEl.style.color = 'var(--green)';
+      errEl.innerHTML = 'Account created. <a href="/login" style="color:var(--accent)">Sign in</a>';
+    } else {
+      errEl.textContent = (res.d && res.d.error) || 'Something went wrong.';
+      btn.disabled = false;
+      btn.textContent = 'Complete Signup';
+    }
+  }).catch(function() {
+    errEl.textContent = 'Connection error.';
+    btn.disabled = false;
+    btn.textContent = 'Complete Signup';
+  });
+}
 
 function setStep(n) {
   document.querySelectorAll('.step-section').forEach(function(s, i) {
@@ -470,14 +600,16 @@ function submitSignup(skipCalendars) {
 }
 
 // Update button text when step 2 (calendars) becomes active
-var observer = new MutationObserver(function() {
-  var s2 = document.getElementById('step-2');
-  if (s2 && s2.classList.contains('active')) {
-    var btn = document.getElementById('submit-btn');
-    if (btn) btn.textContent = bypassPayment ? 'Create Account' : ('Subscribe ' + monthlyDisplay + '/mo');
-  }
-});
-observer.observe(document.getElementById('step-2'), {attributes: true});
+var _step2El = document.getElementById('step-2');
+if (_step2El) {
+  var observer = new MutationObserver(function() {
+    if (_step2El.classList.contains('active')) {
+      var btn = document.getElementById('submit-btn');
+      if (btn) btn.textContent = bypassPayment ? 'Create Account' : ('Subscribe ' + monthlyDisplay + '/mo');
+    }
+  });
+  observer.observe(_step2El, {attributes: true});
+}
 </script>
 
 </body>
