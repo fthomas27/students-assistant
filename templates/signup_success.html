@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jarvis — Account Created</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+--bg: #0a0a0f; --surface: #111118; --surface2: #18181f;
+--border2: rgba(255,255,255,0.12); --text: #f0f0f5; --text2: #8888a0; --text3: #555568;
+--accent: #FF7F50; --green: #4caf82;
+}
+body {
+font-family: 'DM Sans', sans-serif;
+background: var(--bg); color: var(--text);
+min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+body::before {
+content: ''; position: fixed; inset: -20%;
+background: radial-gradient(ellipse 50% 40% at 35% 40%, rgba(76,175,130,0.08) 0%, transparent 65%),
+            radial-gradient(ellipse 45% 35% at 70% 65%, rgba(255,127,80,0.06) 0%, transparent 65%);
+pointer-events: none; filter: blur(20px);
+}
+.card {
+width: 100%; max-width: 380px;
+background: var(--surface); border: 1px solid var(--border2); border-radius: 24px;
+padding: 48px 32px 40px; text-align: center;
+animation: fadeUp 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+@keyframes fadeUp {
+from { opacity: 0; transform: translateY(20px); }
+to   { opacity: 1; transform: translateY(0); }
+}
+.check-ring {
+width: 64px; height: 64px; border-radius: 50%;
+background: linear-gradient(135deg, rgba(76,175,130,0.2), rgba(76,175,130,0.06));
+border: 1px solid rgba(76,175,130,0.4);
+display: flex; align-items: center; justify-content: center;
+font-size: 28px; margin: 0 auto 24px;
+}
+.title {
+font-family: 'DM Serif Display', serif; font-size: 28px; margin-bottom: 10px;
+}
+.subtitle { font-size: 14px; color: var(--text2); margin-bottom: 28px; line-height: 1.5; }
+.info-box {
+background: var(--surface2); border: 1px solid var(--border2); border-radius: 12px;
+padding: 16px 20px; margin-bottom: 24px; text-align: left;
+}
+.info-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px; }
+.info-row:last-child { margin-bottom: 0; }
+.info-key { color: var(--text3); }
+.info-val { color: var(--text); font-weight: 600; font-family: monospace; }
+.login-btn {
+display: block; width: 100%; background: var(--accent); color: #fff;
+border: none; border-radius: 12px; padding: 15px;
+font-size: 16px; font-weight: 600; font-family: 'DM Sans', sans-serif;
+cursor: pointer; text-decoration: none;
+transition: opacity 0.2s, transform 0.2s;
+}
+.login-btn:hover { transform: translateY(-2px); }
+.note { font-size: 12px; color: var(--text3); margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="card">
+  {% if already_exists %}
+    <div class="check-ring">✓</div>
+    <div class="title">Already Active</div>
+    <div class="subtitle">This account is already set up. Sign in with your credentials.</div>
+  {% else %}
+    <div class="check-ring">✓</div>
+    <div class="title">You're all set!</div>
+    <div class="subtitle">Your Jarvis account has been created. Sign in with the credentials below.</div>
+
+    {% if username or email %}
+    <div class="info-box">
+      {% if username %}
+      <div class="info-row">
+        <span class="info-key">Username</span>
+        <span class="info-val">{{ username }}</span>
+      </div>
+      {% endif %}
+      {% if email %}
+      <div class="info-row">
+        <span class="info-key">Email</span>
+        <span class="info-val">{{ email }}</span>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+  {% endif %}
+
+  <a href="/login" class="login-btn">Sign In</a>
+  <div class="note">Jarvis is ready when you are.</div>
+</div>
+</body>
+</html>
