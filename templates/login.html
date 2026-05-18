@@ -293,6 +293,7 @@ text-align: center;
   <div class="error-msg" id="error-msg"></div>
   <div class="security-info" id="security-info" style="display:none;"></div>
   <div class="session-note">Secure session • 30 days</div>
+  <div class="session-note" style="margin-top:10px;">New user? <a href="/signup" style="color:var(--accent); text-decoration:none;">Sign up with access code</a></div>
 </div>
 
 <script>
@@ -409,6 +410,12 @@ function submitLogin() {
       var minutesRemaining = response.data.minutes_remaining || 15;
       startLockoutCountdown(minutesRemaining);
       errMsg.textContent = response.data.error || 'Account locked. Too many attempts.';
+    } else if (response.status === 403 && response.data.billing) {
+      input.value = '';
+      input.classList.add('error');
+      errMsg.innerHTML = (response.data.error || 'Subscription inactive.') + ' <a href="/billing" style="color:var(--accent);">Manage billing →</a>';
+      btn.disabled = false;
+      btn.textContent = 'Unlock';
     } else {
       input.value = '';
       input.classList.add('error');

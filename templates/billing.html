@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jarvis — Billing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+--bg: #0a0a0f; --surface: #111118; --surface2: #18181f;
+--border: rgba(255,255,255,0.07); --border2: rgba(255,255,255,0.12);
+--text: #f0f0f5; --text2: #8888a0; --text3: #555568;
+--accent: #FF7F50; --red: #f05c5c; --green: #4caf82; --yellow: #ffc107; --purple: #7c6af7;
+}
+body {
+font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text);
+min-height: 100dvh; padding: 32px 20px;
+}
+body::before {
+content: ''; position: fixed; inset: -20%;
+background: radial-gradient(ellipse 50% 40% at 25% 30%, rgba(255,127,80,0.08) 0%, transparent 65%);
+pointer-events: none; filter: blur(20px);
+}
+.container { max-width: 560px; margin: 0 auto; position: relative; z-index: 1; }
+.back-link {
+display: inline-flex; align-items: center; gap: 6px;
+color: var(--text3); font-size: 13px; text-decoration: none; margin-bottom: 28px;
+transition: color 0.2s;
+}
+.back-link:hover { color: var(--text2); }
+h1 {
+font-family: 'DM Serif Display', serif; font-size: 32px; margin-bottom: 6px;
+}
+.page-sub { font-size: 14px; color: var(--text3); margin-bottom: 32px; }
+.card {
+background: var(--surface); border: 1px solid var(--border2); border-radius: 20px;
+padding: 28px; margin-bottom: 16px;
+}
+.card-title {
+font-size: 13px; font-weight: 600; color: var(--text3);
+text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 18px;
+}
+.status-row {
+display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;
+}
+.status-badge {
+display: inline-flex; align-items: center; gap: 5px;
+padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+}
+.badge-active   { background: rgba(76,175,130,0.12); color: var(--green); border: 1px solid rgba(76,175,130,0.3); }
+.badge-past-due { background: rgba(255,193,7,0.12);  color: var(--yellow); border: 1px solid rgba(255,193,7,0.3); }
+.badge-canceled { background: rgba(240,92,92,0.12);  color: var(--red);    border: 1px solid rgba(240,92,92,0.3); }
+.badge-comped   { background: rgba(124,106,247,0.12); color: var(--purple); border: 1px solid rgba(124,106,247,0.3); }
+.badge-none     { background: rgba(255,255,255,0.06); color: var(--text3);  border: 1px solid var(--border2); }
+
+.info-row {
+display: flex; justify-content: space-between; padding: 10px 0;
+border-bottom: 1px solid var(--border); font-size: 14px;
+}
+.info-row:last-child { border-bottom: none; padding-bottom: 0; }
+.info-key { color: var(--text3); }
+.info-val { color: var(--text); font-weight: 500; }
+
+.manage-btn {
+width: 100%; background: var(--accent); color: #fff; border: none;
+border-radius: 12px; padding: 15px; font-size: 15px; font-weight: 600;
+font-family: 'DM Sans', sans-serif; cursor: pointer;
+transition: opacity 0.2s, transform 0.2s, box-shadow 0.2s;
+margin-top: 20px;
+}
+.manage-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(255,127,80,0.3); }
+.manage-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
+
+.note { font-size: 12px; color: var(--text3); margin-top: 10px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="container">
+  <a href="/" class="back-link">← Back to app</a>
+  <h1>Billing</h1>
+  <p class="page-sub">Manage your Jarvis subscription.</p>
+
+  <div class="card">
+    <div class="card-title">Subscription Status</div>
+
+    {% if sub %}
+      {% if sub.is_comped %}
+        <div class="status-row">
+          <span style="font-size:15px; font-weight:600;">Jarvis Student AI</span>
+          <span class="status-badge badge-comped">Complimentary</span>
+        </div>
+        <div class="info-row">
+          <span class="info-key">Account type</span>
+          <span class="info-val">Free access</span>
+        </div>
+        <div class="info-row">
+          <span class="info-key">Username</span>
+          <span class="info-val">{{ sub.username }}</span>
+        </div>
+        <p class="note" style="margin-top:16px;">Your access has been granted by the admin. No billing required.</p>
+      {% elif sub.sub_status == 'active' %}
+        <div class="status-row">
+          <span style="font-size:15px; font-weight:600;">Jarvis Student AI</span>
+          <span class="status-badge badge-active">● Active</span>
+        </div>
+        {% if sub.current_period_end %}
+        <div class="info-row">
+          <span class="info-key">Renews</span>
+          <span class="info-val" id="renews-date">{{ sub.current_period_end }}</span>
+        </div>
+        {% endif %}
+        {% if sub.cancel_at_period_end %}
+        <div class="info-row">
+          <span class="info-key">Cancellation</span>
+          <span class="info-val" style="color:var(--yellow)">Cancels at period end</span>
+        </div>
+        {% endif %}
+        <button class="manage-btn" onclick="openPortal()">Manage Subscription →</button>
+        <p class="note">Opens Stripe's secure billing portal to update card, cancel, or view invoices.</p>
+      {% elif sub.sub_status == 'past_due' %}
+        <div class="status-row">
+          <span style="font-size:15px; font-weight:600;">Jarvis Student AI</span>
+          <span class="status-badge badge-past-due">⚠ Past Due</span>
+        </div>
+        <p style="font-size:13px; color:var(--text2); margin: 12px 0;">Your last payment failed. Please update your payment method to keep access.</p>
+        <button class="manage-btn" onclick="openPortal()">Update Payment →</button>
+      {% elif sub.sub_status == 'canceled' %}
+        <div class="status-row">
+          <span style="font-size:15px; font-weight:600;">Jarvis Student AI</span>
+          <span class="status-badge badge-canceled">Canceled</span>
+        </div>
+        <p style="font-size:13px; color:var(--text2); margin:12px 0;">Your subscription has been canceled. To reactivate, contact the admin for a new access code.</p>
+      {% else %}
+        <div class="status-row">
+          <span style="font-size:15px; font-weight:600;">Jarvis Student AI</span>
+          <span class="status-badge badge-none">No subscription</span>
+        </div>
+        <p style="font-size:13px; color:var(--text2); margin:12px 0;">No active subscription found. Contact the admin for an access code.</p>
+      {% endif %}
+    {% else %}
+      <p style="font-size:14px; color:var(--text2);">No subscription information found. Contact the admin.</p>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+// Format dates nicely
+document.querySelectorAll('#renews-date').forEach(function(el) {
+  var iso = el.textContent.trim();
+  if (iso) {
+    try {
+      var d = new Date(iso);
+      el.textContent = d.toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'});
+    } catch(e) {}
+  }
+});
+
+function openPortal() {
+  var btn = document.querySelector('.manage-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Opening...'; }
+  fetch('/api/billing/portal', {method:'POST', credentials:'same-origin'})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.url) { window.location.href = d.url; }
+      else {
+        alert(d.error || 'Could not open billing portal');
+        if (btn) { btn.disabled = false; btn.textContent = 'Manage Subscription →'; }
+      }
+    }).catch(function() {
+      alert('Connection error. Try again.');
+      if (btn) { btn.disabled = false; btn.textContent = 'Manage Subscription →'; }
+    });
+}
+</script>
+</body>
+</html>

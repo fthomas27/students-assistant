@@ -33,6 +33,12 @@ try:
 except ImportError:
     feedparser = None
 
+try:
+    import stripe as _stripe_module
+    stripe = _stripe_module
+except ImportError:
+    stripe = None
+
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 _SECRET_KEY = os.environ.get("SECRET_KEY")
@@ -87,6 +93,13 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "admin").strip()
 PARENT_USER = os.environ.get("PARENT_USER", "PARENT_USER").strip()
 PARENT_PASSWORD = os.environ.get("PARENT_PASSWORD", "PARENT_PASSWORD").strip()
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
+
+STRIPE_SECRET_KEY      = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET  = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+STRIPE_PRODUCT_ID      = os.environ.get("STRIPE_PRODUCT_ID", "").strip()
+if stripe and STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -223,7 +236,11 @@ def require_auth():
     path = request.path.rstrip('/')
     if path in ('/login', '/logout', '/admin', '/parent', '/manifest.json', '/sw.js'):
         return None
+    if path.startswith('/signup'):
+        return None
     if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password'):
+        return None
+    if path.startswith('/api/signup/') or path.startswith('/api/webhooks/'):
         return None
     if path.startswith('/api/admin/'):
         return None
@@ -238,6 +255,57 @@ def require_auth():
 
 _plan_lock = threading.Lock()
 
+
+def _uid():
+    """Returns current student's user_id UUID string, or None for admin/scheduler sessions."""
+    return session.get("user_id")
+
+
+def _init_user_singleton(user_id, table, extra_cols=""):
+    """Ensure a singleton row exists for user_id in singleton tables (timer_state, caches)."""
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        if table == "timer_state":
+            cur.execute("""INSERT INTO timer_state (assignment_uid, assignment_title, class_name, estimate_minutes, accumulated_seconds, active, user_id)
+VALUES ('', '', '', 30, 0, FALSE, %s) ON CONFLICT (user_id) DO NOTHING WHERE user_id IS NOT NULL""", (user_id,))
+        elif table in ("briefing_cache", "debrief_cache", "insight_cache"):
+            cur.execute(f"INSERT INTO {table} (content, user_id) VALUES ('', %s) ON CONFLICT (user_id) DO NOTHING WHERE user_id IS NOT NULL", (user_id,))
+        conn.commit()
+    except Exception as e:
+        log.debug("_init_user_singleton %s %s: %s", table, user_id, e)
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def _init_user_defaults(user_id):
+    """Insert default user_config entries for a new student."""
+    defaults = {
+        "name": "Student",
+        "morning_briefing_time": "07:00",
+        "timer_cutoff_multiplier": "2.0",
+        "anthropic_api_key": "",
+        "app_mode": "school",
+        "is_summer_school": "false",
+        "has_summer_job": "false",
+    }
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        for k, v in defaults.items():
+            cur.execute("""INSERT INTO user_config (user_id, key, value) VALUES (%s, %s, %s)
+ON CONFLICT (user_id, key) DO NOTHING""", (user_id, k, v))
+        conn.commit()
+    except Exception as e:
+        log.warning("_init_user_defaults: %s", e)
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+
 # ── Calendar URLs from environment variables ──────────────────────────────────
 PERSONAL_ICAL_URL = os.environ.get("PERSONAL_ICAL_URL", "")
 CANVAS_ICAL_URL = os.environ.get("CANVAS_ICAL_URL", "")
@@ -245,6 +313,28 @@ CANVAS_API_TOKEN = os.environ.get("CANVAS_API_TOKEN", "")
 CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/")
 SPORTS_ICAL_URL = os.environ.get("SPORTS_ICAL_URL", "")
 JOB_SCHEDULE_ICAL_URL = os.environ.get("JOB_SCHEDULE_ICAL_URL", "")
+
+
+def _resolve_user_url(config_key, env_fallback):
+    """Return current student's URL setting from user_config, falling back to env var.
+    Works in both request context (uses session) and scheduler context (env var only).
+    """
+    try:
+        if session.get("user_id"):
+            v = get_user_config(session["user_id"]).get(config_key, "").strip()
+            if v:
+                return v
+    except (RuntimeError, KeyError):
+        pass
+    return env_fallback
+
+
+def u_personal_ical():    return _resolve_user_url("personal_ical_url",     PERSONAL_ICAL_URL)
+def u_canvas_ical():      return _resolve_user_url("canvas_ical_url",       CANVAS_ICAL_URL)
+def u_canvas_api_token(): return _resolve_user_url("canvas_api_token",      CANVAS_API_TOKEN)
+def u_canvas_base_url():  return _resolve_user_url("canvas_base_url",       CANVAS_BASE_URL).rstrip("/")
+def u_sports_ical():      return _resolve_user_url("sports_ical_url",       SPORTS_ICAL_URL)
+def u_job_schedule_ical():return _resolve_user_url("job_schedule_ical_url", JOB_SCHEDULE_ICAL_URL)
 MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "").strip()
 RED_DAY_ICAL_URL = os.environ.get("RED_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_7ufb5f1vj8aks1shds5ou4fhe8%40group.calendar.google.com/public/basic.ics")
 WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_64ohm1bccvi50iti8fe455stkg%40group.calendar.google.com/public/basic.ics")
@@ -529,6 +619,60 @@ def init_db():
         ("notification_log_idx", "CREATE INDEX IF NOT EXISTS idx_notification_log_key_sent ON notification_log(notification_key, sent_at DESC)"),
         ("canvas_assignments_cache", "CREATE TABLE IF NOT EXISTS canvas_assignments_cache (uid TEXT PRIMARY KEY, title TEXT NOT NULL, class_name TEXT NOT NULL DEFAULT '', due_iso TEXT NOT NULL, due_display TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', urgency TEXT NOT NULL DEFAULT 'low', promoted_to_task BOOLEAN NOT NULL DEFAULT FALSE, first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("canvas_assignments_cache_due_idx", "CREATE INDEX IF NOT EXISTS idx_canvas_cache_due ON canvas_assignments_cache(due_iso)"),
+        # ── SaaS multi-tenant tables ───────────────────────────────────────────────
+        ("users", """CREATE TABLE IF NOT EXISTS users (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            email TEXT UNIQUE NOT NULL,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            last_login_at TIMESTAMPTZ,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            is_comped BOOLEAN NOT NULL DEFAULT FALSE
+        )"""),
+        ("subscriptions", """CREATE TABLE IF NOT EXISTS subscriptions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            stripe_customer_id TEXT UNIQUE NOT NULL,
+            stripe_subscription_id TEXT UNIQUE,
+            stripe_price_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'incomplete',
+            current_period_end TIMESTAMPTZ,
+            cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            canceled_at TIMESTAMPTZ
+        )"""),
+        ("access_codes", """CREATE TABLE IF NOT EXISTS access_codes (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            code TEXT UNIQUE NOT NULL,
+            bypass_payment BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            expires_at TIMESTAMPTZ,
+            redeemed_by UUID REFERENCES users(id),
+            redeemed_at TIMESTAMPTZ,
+            notes TEXT NOT NULL DEFAULT ''
+        )"""),
+        ("billing_events", """CREATE TABLE IF NOT EXISTS billing_events (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            stripe_event_id TEXT UNIQUE NOT NULL,
+            event_type TEXT NOT NULL,
+            user_id UUID REFERENCES users(id),
+            processed_at TIMESTAMPTZ DEFAULT NOW(),
+            payload TEXT NOT NULL
+        )"""),
+        ("pricing_config", """CREATE TABLE IF NOT EXISTS pricing_config (
+            id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+            stripe_price_id TEXT NOT NULL DEFAULT '',
+            monthly_cents INT NOT NULL DEFAULT 999,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )"""),
+        ("pending_signups", """CREATE TABLE IF NOT EXISTS pending_signups (
+            access_code TEXT PRIMARY KEY,
+            calendar_data TEXT NOT NULL DEFAULT '{}',
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )"""),
     ]
 
     for table_name, create_sql in tables:
@@ -658,6 +802,109 @@ ON CONFLICT (ip_address) DO NOTHING""")
         conn = get_db()
         cur = conn.cursor()
 
+    # ── SaaS: add user_id column to all per-user data tables ──────────────────────
+    _user_id_tables = [
+        "tasks", "recurring_tasks", "completions", "assignment_estimates",
+        "projects", "project_tasks", "project_notes",
+        "daily_plans", "daily_plan_items",
+        "timer_state", "briefing_cache", "debrief_cache", "insight_cache",
+        "chat_messages", "chat_summaries",
+        "stock_transactions", "stock_notes",
+        "bucket_list", "people_profiles", "gmail_drafts",
+        "notification_log", "canvas_assignments_cache",
+    ]
+    for _tbl in _user_id_tables:
+        try:
+            cur.execute(f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS user_id UUID")
+            conn.commit()
+        except psycopg2.Error:
+            conn.rollback()
+            conn = get_db()
+            cur = conn.cursor()
+
+    # Per-user config table (keeps global config table unchanged)
+    try:
+        cur.execute("""CREATE TABLE IF NOT EXISTS user_config (
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (user_id, key)
+        )""")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    # Create unique indexes for singleton-style tables keyed by user_id
+    for _idx_sql in [
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_timer_state_user ON timer_state(user_id) WHERE user_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_briefing_cache_user ON briefing_cache(user_id) WHERE user_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_debrief_cache_user ON debrief_cache(user_id) WHERE user_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_insight_cache_user ON insight_cache(user_id) WHERE user_id IS NOT NULL",
+    ]:
+        try:
+            cur.execute(_idx_sql)
+            conn.commit()
+        except psycopg2.Error:
+            conn.rollback()
+            conn = get_db()
+            cur = conn.cursor()
+
+    # Initialize pricing_config singleton
+    try:
+        cur.execute("INSERT INTO pricing_config (id, stripe_price_id, monthly_cents) VALUES (1, '', 999) ON CONFLICT (id) DO NOTHING")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    # Migrate AVERAGE_USER to the users table and assign their UUID to existing rows
+    _avg_user = os.environ.get("AVERAGE_USER", "user").strip()
+    _app_pw   = os.environ.get("APP_PASSWORD", "").strip()
+    if _avg_user and _app_pw:
+        try:
+            cur.execute("SELECT id FROM users WHERE username = %s", (_avg_user,))
+            _existing = cur.fetchone()
+            if not _existing:
+                _uid = str(uuid.uuid4())
+                cur.execute("""
+INSERT INTO users (id, email, username, password_hash, display_name, is_comped, active)
+VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)
+ON CONFLICT (username) DO NOTHING""",
+                    (_uid, f"{_avg_user}@local.jarvis", _avg_user,
+                     generate_password_hash(_app_pw), _avg_user.title()))
+                conn.commit()
+            cur.execute("SELECT id FROM users WHERE username = %s", (_avg_user,))
+            _row = cur.fetchone()
+            if _row:
+                _avg_uuid = str(_row["id"])
+                for _tbl in _user_id_tables:
+                    try:
+                        cur.execute(f"UPDATE {_tbl} SET user_id = %s WHERE user_id IS NULL", (_avg_uuid,))
+                    except Exception:
+                        conn.rollback()
+                        conn = get_db()
+                        cur = conn.cursor()
+                        continue
+                # Migrate global config to user_config for AVERAGE_USER
+                try:
+                    cur.execute("""
+INSERT INTO user_config (user_id, key, value)
+SELECT %s, key, value FROM config
+ON CONFLICT (user_id, key) DO NOTHING""", (_avg_uuid,))
+                except Exception:
+                    conn.rollback()
+                    conn = get_db()
+                    cur = conn.cursor()
+                conn.commit()
+        except Exception as _e:
+            log.warning("SaaS user migration: %s", _e)
+            conn.rollback()
+            conn = get_db()
+            cur = conn.cursor()
+
     # Insert default config values
     defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas", "app_mode": "school", "is_summer_school": "false", "has_summer_job": "false"}
     for k, v in defaults.items():
@@ -701,6 +948,7 @@ CONFIG_CACHE_TTL = 30  # seconds
 
 
 def get_config():
+    """Returns global config (used by scheduler and admin context)."""
     global _config_cache, _config_cache_ts
     with _config_cache_lock:
         if _config_cache is not None and (time.monotonic() - _config_cache_ts) < CONFIG_CACHE_TTL:
@@ -718,6 +966,25 @@ def get_config():
     return result
 
 
+def get_user_config(user_id=None):
+    """Returns config for a specific student, falling back to global config for missing keys."""
+    if not user_id:
+        uid = session.get("user_id") if session else None
+    else:
+        uid = user_id
+    if not uid:
+        return get_config()
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT key, value FROM user_config WHERE user_id = %s", (uid,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    result = dict(get_config())  # start with global defaults
+    result.update({r["key"]: r["value"] for r in rows})  # overlay user-specific values
+    return result
+
+
 def set_config(updates):
     global _config_cache
     conn = get_db()
@@ -731,6 +998,25 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""", (k, str(v)))
     conn.close()
     with _config_cache_lock:
         _config_cache = None  # invalidate
+
+
+def set_user_config(updates, user_id=None):
+    """Write config for a specific student."""
+    if not user_id:
+        uid = session.get("user_id") if session else None
+    else:
+        uid = user_id
+    if not uid:
+        return set_config(updates)
+    conn = get_db()
+    cur = conn.cursor()
+    for k, v in updates.items():
+        cur.execute("""
+INSERT INTO user_config (user_id, key, value) VALUES (%s, %s, %s)
+ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value""", (uid, k, str(v)))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 
 # ── Mem0 long-term memory ──────────────────────────────────────────────────────
@@ -940,7 +1226,7 @@ def _cache_set(key, value):
 
 # ── Canvas REST API helpers ──────────────────────────────────────────────────
 # Augment the iCal feed with course names, grades, and full assignment details.
-# Silently no-ops when CANVAS_API_TOKEN / CANVAS_BASE_URL are not configured.
+# Silently no-ops when the user's Canvas API token or base URL is not configured.
 
 CANVAS_COURSES_TTL = 3600          # 1 hour
 CANVAS_GRADES_TTL = 600            # 10 minutes
@@ -948,14 +1234,14 @@ CANVAS_ASSIGNMENT_TTL = 1800       # 30 minutes
 
 
 def _canvas_configured():
-    return bool(CANVAS_API_TOKEN and CANVAS_BASE_URL)
+    return bool(u_canvas_api_token() and u_canvas_base_url())
 
 
 def _canvas_get(path, params=None, timeout=12):
     if not _canvas_configured():
         return None
-    url = CANVAS_BASE_URL + (path if path.startswith("/") else "/" + path)
-    headers = {"Authorization": "Bearer " + CANVAS_API_TOKEN, "Accept": "application/json"}
+    url = u_canvas_base_url() + (path if path.startswith("/") else "/" + path)
+    headers = {"Authorization": "Bearer " + u_canvas_api_token(), "Accept": "application/json"}
     try:
         resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
         resp.raise_for_status()
@@ -2622,17 +2908,17 @@ def generate_briefing(force=False):
                     return
 
         assignments = []
-        cal = fetch_ical(CANVAS_ICAL_URL)
+        cal = fetch_ical(u_canvas_ical())
         if cal:
             assignments = get_canvas_assignments_with_overdue(cal)
 
         events = []
-        cal2 = fetch_ical(PERSONAL_ICAL_URL)
+        cal2 = fetch_ical(u_personal_ical())
         if cal2:
             events = list(parse_calendar_events(cal2, days_ahead=1))
-        if JOB_SCHEDULE_ICAL_URL:
+        if u_job_schedule_ical():
             try:
-                cal_job = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+                cal_job = fetch_ical(u_job_schedule_ical())
                 if cal_job:
                     events.extend(parse_calendar_events(cal_job, days_ahead=1))
             except Exception as _e:
@@ -2888,7 +3174,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         # Metrics section
         metrics_text = "Items completed: %d | Total time: %.1f hours" % (item_count, total_hours)
 
-        cal = fetch_ical(CANVAS_ICAL_URL)
+        cal = fetch_ical(u_canvas_ical())
         remaining_asgn = []
         if cal:
             all_asgn = get_canvas_assignments_with_overdue(cal)
@@ -3023,7 +3309,7 @@ WHERE status = 'active'""")
 
         # Upcoming 7 days: assignments + events
         upcoming_assignments = []
-        cal = fetch_ical(CANVAS_ICAL_URL)
+        cal = fetch_ical(u_canvas_ical())
         if cal:
             all_asgn = get_canvas_assignments_with_overdue(cal)
             for a in all_asgn:
@@ -3139,9 +3425,9 @@ def cleanup_old_data():
 def _notif_canvas_assignments():
     """Return upcoming Canvas assignments not yet completed, or []."""
     try:
-        if not CANVAS_ICAL_URL:
+        if not u_canvas_ical():
             return []
-        cal = fetch_ical(CANVAS_ICAL_URL)
+        cal = fetch_ical(u_canvas_ical())
         if not cal:
             return []
         assignments = get_canvas_assignments_with_overdue(cal)
@@ -3267,7 +3553,7 @@ def check_meeting_reminders():
         now = datetime.now(TZ)
         window_start = now + timedelta(minutes=25)
         window_end = now + timedelta(minutes=40)
-        for url in filter(None, [PERSONAL_ICAL_URL, SPORTS_ICAL_URL, JOB_SCHEDULE_ICAL_URL]):
+        for url in filter(None, [u_personal_ical(), u_sports_ical(), u_job_schedule_ical()]):
             try:
                 cal = fetch_ical(url)
                 if not cal:
@@ -3332,13 +3618,13 @@ def check_idle_detection():
 
 def check_trash_recycling_reminder():
     """Tier 3 — remind about trash/recycling events from personal calendar at 7 PM."""
-    if not NTFY_TOPIC or not PERSONAL_ICAL_URL:
+    if not NTFY_TOPIC or not u_personal_ical():
         return
     try:
         now = datetime.now(TZ)
         if not (19 <= now.hour < 20):
             return
-        cal = fetch_ical(PERSONAL_ICAL_URL)
+        cal = fetch_ical(u_personal_ical())
         if not cal:
             return
         events = parse_calendar_events(cal, days_ahead=1)
@@ -3874,14 +4160,70 @@ def login():
     if password and not security_code:
         is_admin = username == ADMIN_USER
         is_parent = username == PARENT_USER
+        is_env_student = (username == AVERAGE_USER)
 
         if is_admin:
             expected_password = ADMIN_PASSWORD
         elif is_parent:
             expected_password = PARENT_PASSWORD
-        else:
+        elif is_env_student:
             expected_password = APP_PASSWORD
+        else:
+            expected_password = None
 
+        # Try DB-backed student auth for non-admin, non-parent users
+        if not is_admin and not is_parent:
+            try:
+                _conn = get_db()
+                _cur = _conn.cursor()
+                _cur.execute("SELECT id, password_hash, active, is_comped, display_name FROM users WHERE username = %s OR email = %s", (username, username))
+                _db_user = _cur.fetchone()
+                _cur.close()
+                _conn.close()
+            except Exception as _e:
+                log.warning("DB user lookup failed: %s", _e)
+                _db_user = None
+
+            if _db_user and _db_user["active"] and check_password_hash(_db_user["password_hash"], password.strip()):
+                # Check subscription
+                _sub_active = _db_user["is_comped"]
+                if not _sub_active:
+                    try:
+                        _sc = get_db(); _scur = _sc.cursor()
+                        _scur.execute("SELECT status FROM subscriptions WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (_db_user["id"],))
+                        _sub = _scur.fetchone()
+                        _scur.close(); _sc.close()
+                        _sub_active = _sub and _sub["status"] in ("active", "past_due")
+                    except Exception:
+                        _sub_active = False
+
+                if not _sub_active:
+                    return jsonify({"error": "Your subscription is inactive. Please manage your billing.", "billing": True}), 403
+
+                if is_locked_down:
+                    return jsonify({"is_locked_down": True, "message": "System in lockdown. Please provide security code."}), 202
+
+                record_login_attempt(ip_addr, True, username)
+                session.permanent = True
+                session["authenticated"] = True
+                session["user_id"] = str(_db_user["id"])
+                session["username"] = username
+                session["display_name"] = _db_user["display_name"] or username
+                session["subscription_active"] = bool(_sub_active)
+                session["is_admin"] = False
+                session.modified = True
+
+                # Update last_login_at
+                try:
+                    _lc = get_db(); _lcur = _lc.cursor()
+                    _lcur.execute("UPDATE users SET last_login_at = NOW() WHERE id = %s", (_db_user["id"],))
+                    _lc.commit(); _lcur.close(); _lc.close()
+                except Exception:
+                    pass
+
+                return jsonify({"status": "ok", "redirect": "/"})
+
+        # Env-var login path (admin, parent, or legacy AVERAGE_USER)
         if expected_password and secrets.compare_digest(password.strip(), expected_password):
             if is_locked_down:
                 return jsonify({
@@ -3893,10 +4235,23 @@ def login():
             session.permanent = True
             if is_admin:
                 session["admin_authenticated"] = True
+                session["is_admin"] = True
             elif is_parent:
                 session["parent_authenticated"] = True
             else:
                 session["authenticated"] = True
+                # Try to fetch user_id from DB for the env-var student
+                try:
+                    _ec = get_db(); _ecur = _ec.cursor()
+                    _ecur.execute("SELECT id FROM users WHERE username = %s", (username,))
+                    _erow = _ecur.fetchone()
+                    _ecur.close(); _ec.close()
+                    if _erow:
+                        session["user_id"] = str(_erow["id"])
+                except Exception:
+                    pass
+                session["username"] = username
+                session["is_admin"] = False
             session.modified = True
 
             if is_admin:
@@ -4405,10 +4760,10 @@ def api_csrf_token():
 def api_sync_status():
     """Report which calendar feeds last failed to fetch and when."""
     label_for = {
-        CANVAS_ICAL_URL: "Canvas",
-        PERSONAL_ICAL_URL: "Personal",
-        SPORTS_ICAL_URL: "Sports",
-        JOB_SCHEDULE_ICAL_URL: "Job",
+        u_canvas_ical(): "Canvas",
+        u_personal_ical(): "Personal",
+        u_sports_ical(): "Sports",
+        u_job_schedule_ical(): "Job",
         RED_DAY_ICAL_URL: "Red Day",
         WHITE_DAY_ICAL_URL: "White Day",
     }
@@ -4563,7 +4918,7 @@ def api_assignments():
     start = time.time()
     try:
         t1 = time.time()
-        cal = fetch_ical(CANVAS_ICAL_URL)
+        cal = fetch_ical(u_canvas_ical())
         log.info(f"/api/assignments: fetch_ical took {time.time()-t1:.2f}s")
         if cal is None:
             return jsonify({"assignments": [], "error": "Failed to fetch Canvas calendar."})
@@ -4674,24 +5029,24 @@ def api_calendar():
             return []
 
     def get_personal():
-        return fetch_source("personal", PERSONAL_ICAL_URL,
+        return fetch_source("personal", u_personal_ical(),
                             lambda cal, d: [dict(e, source="personal") for e in parse_calendar_events(cal, days_ahead=d)])
 
     def get_sports():
-        return fetch_source("sports", SPORTS_ICAL_URL,
+        return fetch_source("sports", u_sports_ical(),
                             lambda cal, d: [dict(e, source="sports") for e in parse_calendar_events(cal, days_ahead=d)])
 
     def get_job():
-        return fetch_source("job", JOB_SCHEDULE_ICAL_URL,
+        return fetch_source("job", u_job_schedule_ical(),
                             lambda cal, d: [dict(e, source="job") for e in parse_calendar_events(cal, days_ahead=d)])
 
     def get_canvas():
         result = []
-        if not CANVAS_ICAL_URL:
+        if not u_canvas_ical():
             return result
         try:
             t = time.time()
-            cal = fetch_ical(CANVAS_ICAL_URL)
+            cal = fetch_ical(u_canvas_ical())
             elapsed = time.time() - t
             if elapsed > 8:
                 log.warning(f"/api/calendar: canvas fetch took {elapsed:.2f}s (slow)")
@@ -4993,6 +5348,7 @@ def api_people_delete(person_id):
 
 @app.route("/api/complete", methods=["POST"])
 def api_complete():
+    uid = _uid()
     data = request.get_json(force=True) or {}
     title = str(data.get("title", ""))[:300]
     class_name = str(data.get("class_name", ""))[:100]
@@ -5002,18 +5358,29 @@ def api_complete():
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed)
-VALUES (%s, %s, 0, %s, FALSE)""", (title, class_name, estimate))
+INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, user_id)
+VALUES (%s, %s, 0, %s, FALSE, %s)""", (title, class_name, estimate, uid))
     # Complete any auto-promoted task for this assignment
-    cur.execute(
-        "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
-        "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
-        (title,),
-    )
-    cur.execute(
-        "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
-        (title,),
-    )
+    if uid:
+        cur.execute(
+            "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
+            "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%' AND user_id=%s",
+            (title, uid),
+        )
+        cur.execute(
+            "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s AND (user_id=%s OR user_id IS NULL)",
+            (title, uid),
+        )
+    else:
+        cur.execute(
+            "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
+            "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
+            (title,),
+        )
+        cur.execute(
+            "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
+            (title,),
+        )
     conn.commit()
     cur.close()
     conn.close()
@@ -5022,10 +5389,16 @@ VALUES (%s, %s, 0, %s, FALSE)""", (title, class_name, estimate))
 
 @app.route("/api/completions/today")
 def api_completions_today():
+    uid = _uid()
     today_start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("""
+    if uid:
+        cur.execute("""
+SELECT assignment_title, class_name, duration_minutes, estimate_minutes, timed, completed_at
+FROM completions WHERE completed_at >= %s AND user_id = %s ORDER BY completed_at DESC""", (today_start, uid))
+    else:
+        cur.execute("""
 SELECT assignment_title, class_name, duration_minutes, estimate_minutes, timed, completed_at
 FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_start,))
     rows = [dict(r) for r in cur.fetchall()]
@@ -5055,14 +5428,14 @@ def api_uncomplete():
         cur = conn.cursor()
 
         # Delete the most recent completion record for this assignment from today
+        uid = _uid()
         today_start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-        cur.execute("""
-DELETE FROM completions
-WHERE assignment_title = %s
-  AND class_name = %s
-  AND completed_at >= %s
-ORDER BY completed_at DESC
-LIMIT 1""", (title, class_name, today_start))
+        uid_and = " AND user_id = %s" if uid else ""
+        uid_p = (uid,) if uid else ()
+        cur.execute(
+            f"DELETE FROM completions WHERE assignment_title = %s AND class_name = %s AND completed_at >= %s{uid_and} ORDER BY completed_at DESC LIMIT 1",
+            (title, class_name, today_start) + uid_p
+        )
 
         conn.commit()
         cur.close()
@@ -5138,7 +5511,7 @@ def api_availability():
         })
 
     # Personal + job calendar events today
-    for _busy_url in filter(None, [PERSONAL_ICAL_URL, JOB_SCHEDULE_ICAL_URL]):
+    for _busy_url in filter(None, [u_personal_ical(), u_job_schedule_ical()]):
         try:
             _busy_cal = fetch_ical(_busy_url)
             if _busy_cal:
@@ -5270,28 +5643,31 @@ def api_day_type():
 
 @app.route("/api/stats")
 def api_stats():
+    uid = _uid()
+    uid_and = " AND user_id = %s" if uid else ""
+    uid_p = (uid,) if uid else ()
     conn = get_db()
     cur = conn.cursor()
     week_start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
     week_start -= timedelta(days=week_start.weekday())
-    cur.execute("SELECT SUM(duration_minutes) as total FROM completions WHERE completed_at >= %s AND timed=TRUE", (week_start,))
+    cur.execute(f"SELECT SUM(duration_minutes) as total FROM completions WHERE completed_at >= %s AND timed=TRUE{uid_and}", (week_start,) + uid_p)
     week_row = cur.fetchone()
     weekly_minutes = float(week_row["total"] or 0)
-    cur.execute("""
+    cur.execute(f"""
 SELECT class_name, AVG(duration_minutes) as avg, COUNT(*) as cnt
-FROM completions WHERE timed=TRUE AND duration_minutes>0 AND class_name!=''
-GROUP BY class_name ORDER BY avg DESC LIMIT 10""")
+FROM completions WHERE timed=TRUE AND duration_minutes>0 AND class_name!=''{uid_and}
+GROUP BY class_name ORDER BY avg DESC LIMIT 10""", uid_p)
     by_class = [{"class_name": r["class_name"], "avg_minutes": round(float(r["avg"]), 1), "count": r["cnt"]} for r in cur.fetchall()]
-    cur.execute("""
+    cur.execute(f"""
 SELECT AVG(ABS(duration_minutes - estimate_minutes) / NULLIF(estimate_minutes, 0)) as err
-FROM completions WHERE timed=TRUE AND estimate_minutes>0 AND duration_minutes>0""")
+FROM completions WHERE timed=TRUE AND estimate_minutes>0 AND duration_minutes>0{uid_and}""", uid_p)
     acc_row = cur.fetchone()
     accuracy_pct = None
     if acc_row and acc_row["err"] is not None:
         accuracy_pct = round((1.0 - min(float(acc_row["err"]), 1.0)) * 100, 1)
-    cur.execute("""
+    cur.execute(f"""
 SELECT DISTINCT DATE(completed_at AT TIME ZONE 'America/Denver') as day
-FROM completions ORDER BY day DESC LIMIT 30""")
+FROM completions{' WHERE user_id = %s' if uid else ''} ORDER BY day DESC LIMIT 30""", uid_p)
     streak_days = [r["day"] for r in cur.fetchall()]
     streak = 0
     check = date.today()
@@ -5315,20 +5691,37 @@ FROM completions ORDER BY day DESC LIMIT 30""")
 def api_tasks_get():
     start = time.time()
     try:
+        uid = _uid()
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("""
+        if uid:
+            cur.execute("""
+SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
+       NULL as project_id, NULL as project_title, hidden_from_parent
+FROM tasks WHERE user_id = %s ORDER BY completed ASC,
+    CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
+    created_at ASC""", (uid,))
+        else:
+            cur.execute("""
 SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
        NULL as project_id, NULL as project_title, hidden_from_parent
 FROM tasks ORDER BY completed ASC,
     CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
     created_at ASC""")
         rows = [dict(r) for r in cur.fetchall()]
-        # Sync all project tasks from active projects into the main task list,
-        # preserving project linkage via project_id/project_title. The two
-        # queries draw from separate tables (tasks vs. project_tasks) so this
-        # union does not duplicate rows even if invoked repeatedly.
-        cur.execute("""
+        # Sync all project tasks from active projects into the main task list.
+        if uid:
+            cur.execute("""
+SELECT pt.id, pt.title, pt.notes, 'medium' as urgency,
+       (pt.status = 'done') as completed, NULL as completed_at, pt.due_date,
+       pt.created_at, pt.project_id, pt.assignee, p.title as project_title,
+       p.hidden_from_parent
+FROM project_tasks pt
+JOIN projects p ON p.id = pt.project_id
+WHERE p.status = 'active' AND p.user_id = %s
+ORDER BY pt.created_at ASC""", (uid,))
+        else:
+            cur.execute("""
 SELECT pt.id, pt.title, pt.notes, 'medium' as urgency,
        (pt.status = 'done') as completed, NULL as completed_at, pt.due_date,
        pt.created_at, pt.project_id, pt.assignee, p.title as project_title,
@@ -5377,26 +5770,27 @@ def api_tasks_create():
     due_date = data.get("due_date") or None
     recurrence = str(data.get("recurrence", "")).lower() or None
 
+    uid = _uid()
     conn = get_db()
     cur = conn.cursor()
 
     if recurrence and recurrence in ("daily", "weekly", "biweekly", "monthly"):
         cur.execute("""
-INSERT INTO recurring_tasks (title, notes, urgency, recurrence, active)
-VALUES (%s, %s, %s, %s, TRUE) RETURNING id""",
-                    (title, notes, urgency, recurrence))
+INSERT INTO recurring_tasks (title, notes, urgency, recurrence, active, user_id)
+VALUES (%s, %s, %s, %s, TRUE, %s) RETURNING id""",
+                    (title, notes, urgency, recurrence, uid))
         task_id = cur.fetchone()["id"]
 
         calc_due_date = _calculate_next_due_date(recurrence)
         cur.execute("""
-INSERT INTO tasks (title, notes, urgency, due_date)
-VALUES (%s, %s, %s, %s)""",
-                    (title, f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]", urgency, calc_due_date))
+INSERT INTO tasks (title, notes, urgency, due_date, user_id)
+VALUES (%s, %s, %s, %s, %s)""",
+                    (title, f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]", urgency, calc_due_date, uid))
         cur.execute("UPDATE recurring_tasks SET last_created_at = NOW() WHERE id = %s", (task_id,))
     else:
         cur.execute("""
-INSERT INTO tasks (title, notes, urgency, due_date) VALUES (%s, %s, %s, %s) RETURNING id""",
-                    (title, notes, urgency, due_date))
+INSERT INTO tasks (title, notes, urgency, due_date, user_id) VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                    (title, notes, urgency, due_date, uid))
         task_id = cur.fetchone()["id"]
 
     conn.commit()
@@ -5407,15 +5801,18 @@ INSERT INTO tasks (title, notes, urgency, due_date) VALUES (%s, %s, %s, %s) RETU
 
 @app.route("/api/tasks/<int:task_id>", methods=["PATCH"])
 def api_tasks_update(task_id):
+    uid = _uid()
     data = request.get_json(force=True) or {}
     conn = get_db()
     try:
         cur = conn.cursor()
+        uid_clause = " AND user_id = %s" if uid else ""
+        uid_params = (uid,) if uid else ()
         if "completed" in data:
             completed = bool(data["completed"])
-            cur.execute("""
-UPDATE tasks SET completed=%s, completed_at=%s WHERE id=%s""",
-                        (completed, datetime.now(TZ) if completed else None, task_id))
+            cur.execute(
+                f"UPDATE tasks SET completed=%s, completed_at=%s WHERE id=%s{uid_clause}",
+                (completed, datetime.now(TZ) if completed else None, task_id) + uid_params)
             # Mark today's plan as needing update if task is completed
             if completed:
                 today = datetime.now(TZ).date()
@@ -5425,13 +5822,13 @@ WHERE plan_date = %s""", (today,))
         if "title" in data:
             title = str(data["title"])[:300]
             if title.strip():
-                cur.execute("UPDATE tasks SET title=%s WHERE id=%s", (title, task_id))
+                cur.execute(f"UPDATE tasks SET title=%s WHERE id=%s{uid_clause}", (title, task_id) + uid_params)
         if "urgency" in data:
             urgency = str(data["urgency"]).lower()
             if urgency in ("high", "medium", "low"):
-                cur.execute("UPDATE tasks SET urgency=%s WHERE id=%s", (urgency, task_id))
+                cur.execute(f"UPDATE tasks SET urgency=%s WHERE id=%s{uid_clause}", (urgency, task_id) + uid_params)
         if "notes" in data:
-            cur.execute("UPDATE tasks SET notes=%s WHERE id=%s", (str(data["notes"])[:2000], task_id))
+            cur.execute(f"UPDATE tasks SET notes=%s WHERE id=%s{uid_clause}", (str(data["notes"])[:2000], task_id) + uid_params)
         if "due_date" in data:
             due_date = data["due_date"] or None
             if due_date:
@@ -5439,10 +5836,10 @@ WHERE plan_date = %s""", (today,))
                     datetime.strptime(due_date, "%Y-%m-%d")
                 except (ValueError, TypeError):
                     return jsonify({"error": "invalid due_date format"}), 400
-            cur.execute("UPDATE tasks SET due_date=%s WHERE id=%s", (due_date, task_id))
+            cur.execute(f"UPDATE tasks SET due_date=%s WHERE id=%s{uid_clause}", (due_date, task_id) + uid_params)
         if "hidden_from_parent" in data:
-            cur.execute("UPDATE tasks SET hidden_from_parent=%s WHERE id=%s",
-                        (bool(data["hidden_from_parent"]), task_id))
+            cur.execute(f"UPDATE tasks SET hidden_from_parent=%s WHERE id=%s{uid_clause}",
+                        (bool(data["hidden_from_parent"]), task_id) + uid_params)
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -5456,10 +5853,14 @@ WHERE plan_date = %s""", (today,))
 
 @app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
 def api_tasks_delete(task_id):
+    uid = _uid()
     conn = get_db()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM tasks WHERE id=%s", (task_id,))
+        if uid:
+            cur.execute("DELETE FROM tasks WHERE id=%s AND user_id=%s", (task_id, uid))
+        else:
+            cur.execute("DELETE FROM tasks WHERE id=%s", (task_id,))
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -5768,7 +6169,7 @@ def api_task_suggestions():
         # Fetch pending assignments
         assignments = []
         try:
-            cal = fetch_ical(CANVAS_ICAL_URL)
+            cal = fetch_ical(u_canvas_ical())
             if cal:
                 assignments = get_canvas_assignments_with_overdue(cal)
         except Exception as e:
@@ -5776,7 +6177,7 @@ def api_task_suggestions():
 
         # Fetch calendar events
         calendar_events = []
-        for _sug_url in filter(None, [PERSONAL_ICAL_URL, SPORTS_ICAL_URL, JOB_SCHEDULE_ICAL_URL]):
+        for _sug_url in filter(None, [u_personal_ical(), u_sports_ical(), u_job_schedule_ical()]):
             try:
                 _sug_cal = fetch_ical(_sug_url)
                 if _sug_cal:
@@ -6075,18 +6476,22 @@ VALUES (%s, %s, %s, %s)""",
 @app.route("/api/projects", methods=["GET"])
 def api_projects_get():
     start = time.time()
+    uid = _uid()
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("""
+        uid_where = "WHERE user_id = %s" if uid else ""
+        uid_p = (uid,) if uid else ()
+        cur.execute(f"""
 SELECT id, title, description, status, lead, members, last_checkin,
        checkin_interval_days, created_at, hidden_from_parent,
        CASE WHEN last_checkin IS NULL OR
            NOW() - last_checkin > make_interval(days => checkin_interval_days)
        THEN TRUE ELSE FALSE END as needs_checkin
 FROM projects
+{uid_where}
 ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
-         created_at DESC""")
+         created_at DESC""", uid_p)
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
@@ -6103,6 +6508,7 @@ ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'done' THEN 
 
 @app.route("/api/projects", methods=["POST"])
 def api_projects_create():
+    uid = _uid()
     data = request.get_json(force=True) or {}
     title = str(data.get("title", "")).strip()[:300]
     if not title:
@@ -6110,13 +6516,13 @@ def api_projects_create():
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-INSERT INTO projects (title, description, status, lead, members, checkin_interval_days, last_checkin)
-VALUES (%s, %s, %s, %s, %s, %s, NOW()) RETURNING id""",
+INSERT INTO projects (title, description, status, lead, members, checkin_interval_days, last_checkin, user_id)
+VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s) RETURNING id""",
                 (title, str(data.get("description", ""))[:2000],
                  str(data.get("status", "active")),
                  str(data.get("lead", ""))[:200],
                  str(data.get("members", ""))[:500],
-                 int(data.get("checkin_interval_days", 7))))
+                 int(data.get("checkin_interval_days", 7)), uid))
     new_id = cur.fetchone()["id"]
     conn.commit()
     cur.close()
@@ -6364,7 +6770,8 @@ def api_project_tasks_delete(project_id, task_id):
 
 @app.route("/api/config", methods=["GET"])
 def api_config_get():
-    cfg = get_config()
+    uid = _uid()
+    cfg = get_user_config(uid) if uid else get_config()
     return jsonify({
         "name": cfg.get("name", "Jarvis"),
         "morning_briefing_time": cfg.get("morning_briefing_time", "07:00"),
@@ -6376,7 +6783,14 @@ def api_config_get():
         "app_mode": cfg.get("app_mode", "school"),
         "is_summer_school": cfg.get("is_summer_school", "false") == "true",
         "has_summer_job": cfg.get("has_summer_job", "false") == "true",
-        "has_job_schedule": bool(JOB_SCHEDULE_ICAL_URL),
+        "has_job_schedule": bool(u_job_schedule_ical()),
+        # Calendar URLs (per-user)
+        "personal_ical_url":     cfg.get("personal_ical_url", ""),
+        "canvas_ical_url":       cfg.get("canvas_ical_url", ""),
+        "canvas_api_token":      "••••••••" if cfg.get("canvas_api_token", "") else "",
+        "canvas_base_url":       cfg.get("canvas_base_url", ""),
+        "sports_ical_url":       cfg.get("sports_ical_url", ""),
+        "job_schedule_ical_url": cfg.get("job_schedule_ical_url", ""),
     })
 
 
@@ -6387,16 +6801,24 @@ def api_config_post():
         "name", "morning_briefing_time", "timer_cutoff_multiplier", "anthropic_api_key",
         "weekly_recap_advisor", "formal_signoff_name", "timezone",
         "app_mode", "is_summer_school", "has_summer_job",
+        "personal_ical_url", "canvas_ical_url", "canvas_api_token",
+        "canvas_base_url", "sports_ical_url", "job_schedule_ical_url",
     }
     updates = {k: str(v)[:2000] for k, v in data.items() if k in allowed}
+    # Skip masked Canvas token (UI sends •••••••• when unchanged)
+    if updates.get("canvas_api_token", "").strip().startswith("•"):
+        del updates["canvas_api_token"]
     if updates:
-        # Validate timezone if provided
         if "timezone" in updates:
             try:
                 ZoneInfo(updates["timezone"])
             except Exception:
                 return jsonify({"status": "error", "message": "Invalid timezone"}), 400
-        set_config(updates)
+        uid = _uid()
+        if uid:
+            set_user_config(updates, user_id=uid)
+        else:
+            set_config(updates)
         if "morning_briefing_time" in updates:
             schedule_briefing()
     return jsonify({"status": "ok"})
@@ -6521,11 +6943,11 @@ def api_weather_uv():
 
 @app.route("/api/job-schedule", methods=["GET"])
 def api_job_schedule():
-    """Return upcoming job schedule events from JOB_SCHEDULE_ICAL_URL."""
-    if not JOB_SCHEDULE_ICAL_URL:
+    """Return upcoming job schedule events from u_job_schedule_ical()."""
+    if not u_job_schedule_ical():
         return jsonify({"events": [], "configured": False})
     try:
-        cal = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+        cal = fetch_ical(u_job_schedule_ical())
         if not cal:
             return jsonify({"events": [], "configured": True, "error": "could not fetch"})
         tz = get_tz()
@@ -7575,10 +7997,10 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             return {"status": "updated", "task_id": task_id, "title": row["title"] if row else None}
 
         elif name == "get_assignments":
-            if not CANVAS_ICAL_URL:
+            if not u_canvas_ical():
                 return {"assignments": [], "note": "Canvas calendar not configured"}
             try:
-                cal = fetch_ical(CANVAS_ICAL_URL)
+                cal = fetch_ical(u_canvas_ical())
                 if not cal:
                     return {"assignments": [], "error": "Could not fetch Canvas calendar"}
                 asgn_list = get_canvas_assignments_with_overdue(cal)
@@ -7624,7 +8046,7 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
         elif name == "get_calendar_events":
             days_ahead = min(30, max(1, int(inputs.get("days_ahead", 7))))
             events = []
-            for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports"), (JOB_SCHEDULE_ICAL_URL, "job")):
+            for url, tag in ((u_personal_ical(), "personal"), (u_sports_ical(), "sports"), (u_job_schedule_ical(), "job")):
                 if not url:
                     continue
                 try:
@@ -7813,7 +8235,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
 
         elif name == "get_assignment_details":
             if not _canvas_configured():
-                return {"error": "Canvas API not configured (CANVAS_API_TOKEN / CANVAS_BASE_URL missing)."}
+                return {"error": "Canvas API not configured. Add your Canvas API token and base URL in Settings → Calendars."}
             title = str(inputs.get("title", "")).strip()
             if not title:
                 return {"error": "title is required"}
@@ -8947,7 +9369,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
 # ── Chat persistence + recall helpers ────────────────────────────────────────
 # Used by /api/chat to remember conversations across sessions.
 
-def _chat_persist_message(conversation_id, role, content):
+def _chat_persist_message(conversation_id, role, content, user_id=None):
     """Insert one message row. Best-effort; never raises."""
     if not conversation_id or not role or content is None:
         return
@@ -8955,8 +9377,8 @@ def _chat_persist_message(conversation_id, role, content):
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO chat_messages (conversation_id, role, content) VALUES (%s, %s, %s)",
-            (conversation_id[:64], role[:16], (content or "")[:20000]),
+            "INSERT INTO chat_messages (conversation_id, role, content, user_id) VALUES (%s, %s, %s, %s)",
+            (conversation_id[:64], role[:16], (content or "")[:20000], user_id),
         )
         conn.commit()
         cur.close(); conn.close()
@@ -8964,17 +9386,25 @@ def _chat_persist_message(conversation_id, role, content):
         log.warning("chat_persist_message failed", exc_info=True)
 
 
-def _chat_recent_summaries(exclude_conversation_id, limit=5):
+def _chat_recent_summaries(exclude_conversation_id, limit=5, user_id=None):
     """Return [{'updated_at', 'summary'}] for the most recent prior conversations."""
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute(
-            "SELECT conversation_id, summary, updated_at FROM chat_summaries "
-            "WHERE conversation_id != %s AND summary != '' "
-            "ORDER BY updated_at DESC LIMIT %s",
-            (exclude_conversation_id or "", int(limit)),
-        )
+        if user_id:
+            cur.execute(
+                "SELECT conversation_id, summary, updated_at FROM chat_summaries "
+                "WHERE conversation_id != %s AND summary != '' AND user_id = %s "
+                "ORDER BY updated_at DESC LIMIT %s",
+                (exclude_conversation_id or "", user_id, int(limit)),
+            )
+        else:
+            cur.execute(
+                "SELECT conversation_id, summary, updated_at FROM chat_summaries "
+                "WHERE conversation_id != %s AND summary != '' "
+                "ORDER BY updated_at DESC LIMIT %s",
+                (exclude_conversation_id or "", int(limit)),
+            )
         rows = [dict(r) for r in cur.fetchall()]
         cur.close(); conn.close()
         return rows
@@ -9021,7 +9451,7 @@ def _chat_summary_status(conversation_id):
         return (0, None)
 
 
-def _chat_maybe_summarize_async(conversation_id, api_key):
+def _chat_maybe_summarize_async(conversation_id, api_key, user_id=None):
     """Spawn a background thread to (re)summarize the conversation if eligible.
 
     Eligibility: message_count >= 6 AND (no summary yet OR summary is >24h old AND >=4 new messages).
@@ -9039,18 +9469,17 @@ def _chat_maybe_summarize_async(conversation_id, api_key):
             except Exception:
                 last_n = 0
             if (n_msgs - last_n) < 4:
-                # Not enough new content to bother re-summarizing.
                 return
         threading.Thread(
             target=_chat_summarize_worker,
-            args=(conversation_id, api_key),
+            args=(conversation_id, api_key, user_id),
             daemon=True,
         ).start()
     except Exception:
         pass
 
 
-def _chat_summarize_worker(conversation_id, api_key):
+def _chat_summarize_worker(conversation_id, api_key, user_id=None):
     try:
         msgs = _chat_last_messages(conversation_id, limit=40)
         if not msgs:
@@ -9075,11 +9504,11 @@ def _chat_summarize_worker(conversation_id, api_key):
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO chat_summaries (conversation_id, summary, message_count, updated_at) "
-            "VALUES (%s, %s, %s, NOW()) "
+            "INSERT INTO chat_summaries (conversation_id, summary, message_count, updated_at, user_id) "
+            "VALUES (%s, %s, %s, NOW(), %s) "
             "ON CONFLICT (conversation_id) DO UPDATE SET "
             "summary=EXCLUDED.summary, message_count=EXCLUDED.message_count, updated_at=NOW()",
-            (conversation_id, summary[:4000], len(msgs)),
+            (conversation_id, summary[:4000], len(msgs), user_id),
         )
         conn.commit()
         cur.close(); conn.close()
@@ -9135,6 +9564,7 @@ def _build_active_tools() -> list:
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
+    chat_user_id = _uid()
     data = request.get_json(force=True) or {}
     messages = data.get("messages", [])
     conversation_id = (data.get("conversation_id") or "").strip()[:64] or uuid.uuid4().hex
@@ -9273,8 +9703,8 @@ def api_chat():
 
         # Inject live assignments (disabled in summer mode when not in summer school)
         try:
-            if _canvas_active and CANVAS_ICAL_URL:
-                cal = fetch_ical(CANVAS_ICAL_URL)
+            if _canvas_active and u_canvas_ical():
+                cal = fetch_ical(u_canvas_ical())
                 if cal:
                     asgn_list = get_canvas_assignments_with_overdue(cal)
                     try:
@@ -9320,9 +9750,9 @@ def api_chat():
                 pass
 
             # Job schedule — inject upcoming shifts when student has a summer job
-            if _has_summer_job and JOB_SCHEDULE_ICAL_URL:
+            if _has_summer_job and u_job_schedule_ical():
                 try:
-                    _job_cal = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+                    _job_cal = fetch_ical(u_job_schedule_ical())
                     if _job_cal:
                         _tz = get_tz()
                         _today = datetime.now(_tz).date()
@@ -9475,7 +9905,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
 
         # Inject prior-conversation recall + recent messages from current conversation
         try:
-            summaries = _chat_recent_summaries(conversation_id, limit=5)
+            summaries = _chat_recent_summaries(conversation_id, limit=5, user_id=chat_user_id)
             if summaries:
                 lines = []
                 for s in summaries:
@@ -9548,7 +9978,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                         (b.get("text", "") for b in content_val if isinstance(b, dict) and b.get("type") == "text"),
                         "",
                     )
-                _chat_persist_message(conversation_id, "user", content_val or "")
+                _chat_persist_message(conversation_id, "user", content_val or "", user_id=chat_user_id)
         except Exception:
             log.warning("/api/chat: failed to persist incoming user message", exc_info=True)
 
@@ -9806,8 +10236,8 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                 # Persist the assistant's final reply and lazily refresh the summary.
                 try:
                     if _final_text_box[0]:
-                        _chat_persist_message(conversation_id, "assistant", _final_text_box[0])
-                    _chat_maybe_summarize_async(conversation_id, _api_key_for_summary)
+                        _chat_persist_message(conversation_id, "assistant", _final_text_box[0], user_id=chat_user_id)
+                    _chat_maybe_summarize_async(conversation_id, _api_key_for_summary, user_id=chat_user_id)
                     # Extract and store long-term memories from this exchange
                     _user_text_for_mem0 = ""
                     if latest_user:
@@ -9941,7 +10371,7 @@ def _generate_daily_plan_for_date(target_date):
         school_assignments = []
 
         try:
-            cal = fetch_ical(CANVAS_ICAL_URL)
+            cal = fetch_ical(u_canvas_ical())
             if cal:
                 all_asgn = get_canvas_assignments_with_overdue(cal)
                 class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
@@ -9995,20 +10425,20 @@ def _generate_daily_plan_for_date(target_date):
         sports_events = []
         job_events = []
         try:
-            personal_cal = fetch_ical(PERSONAL_ICAL_URL)
+            personal_cal = fetch_ical(u_personal_ical())
             if personal_cal:
                 personal_events = parse_calendar_events(personal_cal, days_ahead=2)
         except Exception as e:
             log.warning(f"Could not fetch personal calendar for plan: {e}")
         try:
-            sports_cal = fetch_ical(SPORTS_ICAL_URL)
+            sports_cal = fetch_ical(u_sports_ical())
             if sports_cal:
                 sports_events = parse_calendar_events(sports_cal, days_ahead=2)
         except Exception as e:
             log.warning(f"Could not fetch sports calendar for plan: {e}")
-        if JOB_SCHEDULE_ICAL_URL:
+        if u_job_schedule_ical():
             try:
-                job_cal = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+                job_cal = fetch_ical(u_job_schedule_ical())
                 if job_cal:
                     job_events = parse_calendar_events(job_cal, days_ahead=2)
             except Exception as e:
@@ -10728,7 +11158,7 @@ def api_daily_outlook():
 
     def _get_assignments():
         try:
-            cal = fetch_ical(CANVAS_ICAL_URL)
+            cal = fetch_ical(u_canvas_ical())
             if not cal:
                 return []
             conn = get_db()
@@ -10763,7 +11193,7 @@ def api_daily_outlook():
     def _get_events():
         try:
             out = []
-            for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports"), (JOB_SCHEDULE_ICAL_URL, "job")):
+            for url, tag in ((u_personal_ical(), "personal"), (u_sports_ical(), "sports"), (u_job_schedule_ical(), "job")):
                 c = fetch_ical(url)
                 if not c:
                     continue
@@ -11197,6 +11627,574 @@ def gmail_discard_draft(draft_id):
         )
     cur.close(); conn.close()
     return jsonify({"status": "discarded"})
+
+
+# ── SaaS: Signup ──────────────────────────────────────────────────────────────
+
+@app.route("/signup", methods=["GET"])
+def signup_page():
+    if session.get("authenticated"):
+        return redirect("/")
+    return render_template("signup.html")
+
+
+@app.route("/api/signup/validate-code", methods=["POST"])
+def api_signup_validate_code():
+    data = request.get_json(force=True) or {}
+    code = str(data.get("code", "")).strip().upper()
+    if not code:
+        return jsonify({"error": "Access code required"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+SELECT id, code, bypass_payment, expires_at, redeemed_by
+FROM access_codes WHERE code = %s""", (code,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Invalid access code"}), 404
+    if row["redeemed_by"]:
+        return jsonify({"error": "This access code has already been used"}), 409
+    if row["expires_at"] and row["expires_at"] < datetime.now(TZ):
+        return jsonify({"error": "This access code has expired"}), 410
+
+    # Fetch current price for display
+    monthly_cents = 999
+    try:
+        pc = get_db(); pcur = pc.cursor()
+        pcur.execute("SELECT monthly_cents FROM pricing_config WHERE id = 1")
+        prow = pcur.fetchone()
+        pcur.close(); pc.close()
+        if prow:
+            monthly_cents = prow["monthly_cents"]
+    except Exception:
+        pass
+
+    return jsonify({
+        "valid": True,
+        "bypass_payment": row["bypass_payment"],
+        "monthly_cents": monthly_cents,
+        "monthly_display": f"${monthly_cents / 100:.2f}",
+    })
+
+
+_CAL_KEYS = ("personal_ical_url", "canvas_ical_url", "canvas_api_token",
+             "canvas_base_url", "sports_ical_url", "job_schedule_ical_url")
+
+
+def _save_calendar_urls(user_id, data):
+    """Save optional calendar URLs from signup data into user_config."""
+    cals = {k: str(data.get(k, "")).strip()[:2000] for k in _CAL_KEYS}
+    cals = {k: v for k, v in cals.items() if v}
+    if "canvas_base_url" in cals:
+        cals["canvas_base_url"] = cals["canvas_base_url"].rstrip("/")
+    if cals:
+        set_user_config(cals, user_id=user_id)
+
+
+@app.route("/api/signup/create-checkout", methods=["POST"])
+def api_signup_create_checkout():
+    if not stripe or not STRIPE_SECRET_KEY:
+        return jsonify({"error": "Stripe is not configured"}), 503
+    data = request.get_json(force=True) or {}
+    code    = str(data.get("code", "")).strip().upper()
+    email   = str(data.get("email", "")).strip().lower()
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", "")).strip()
+
+    if not all([code, email, username, password]):
+        return jsonify({"error": "All fields are required"}), 400
+    if len(username) < 3 or len(password) < 6:
+        return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
+
+    # Validate code
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT id, bypass_payment, redeemed_by, expires_at FROM access_codes WHERE code = %s", (code,))
+    ac = cur.fetchone()
+    if not ac or ac["redeemed_by"]:
+        cur.close(); conn.close()
+        return jsonify({"error": "Invalid or already-used access code"}), 400
+    if ac["expires_at"] and ac["expires_at"] < datetime.now(TZ):
+        cur.close(); conn.close()
+        return jsonify({"error": "Access code expired"}), 400
+    if ac["bypass_payment"]:
+        cur.close(); conn.close()
+        return jsonify({"error": "Use free signup for this code type"}), 400
+
+    # Check username/email uniqueness
+    cur.execute("SELECT id FROM users WHERE username = %s OR email = %s", (username, email))
+    if cur.fetchone():
+        cur.close(); conn.close()
+        return jsonify({"error": "Username or email already taken"}), 409
+
+    # Get current price_id
+    cur.execute("SELECT stripe_price_id FROM pricing_config WHERE id = 1")
+    pc_row = cur.fetchone()
+    cur.close(); conn.close()
+    price_id = pc_row["stripe_price_id"] if pc_row else ""
+    if not price_id:
+        return jsonify({"error": "Pricing not configured. Contact admin."}), 503
+
+    # Stash calendar URLs in pending_signups so they survive the Stripe round trip
+    cals_json = json.dumps({k: str(data.get(k, "")).strip() for k in _CAL_KEYS})
+    pconn = get_db(); pcur = pconn.cursor()
+    try:
+        pcur.execute("""
+INSERT INTO pending_signups (access_code, calendar_data, created_at)
+VALUES (%s, %s, NOW())
+ON CONFLICT (access_code) DO UPDATE SET calendar_data = EXCLUDED.calendar_data, created_at = NOW()""",
+                     (code, cals_json))
+        pconn.commit()
+    except Exception as _pe:
+        log.warning("pending_signups insert failed: %s", _pe)
+        pconn.rollback()
+    finally:
+        pcur.close(); pconn.close()
+
+    host = request.host_url.rstrip("/")
+    try:
+        checkout = stripe.checkout.Session.create(
+            mode="subscription",
+            payment_method_types=["card"],
+            line_items=[{"price": price_id, "quantity": 1}],
+            customer_email=email,
+            success_url=f"{host}/signup/success?session_id={{CHECKOUT_SESSION_ID}}&code={code}&username={username}",
+            cancel_url=f"{host}/signup/cancelled",
+            metadata={"access_code": code, "username": username, "password_hash": generate_password_hash(password)},
+        )
+    except Exception as e:
+        log.error("Stripe checkout create error: %s", e)
+        return jsonify({"error": "Payment setup failed. Try again."}), 500
+
+    return jsonify({"url": checkout.url})
+
+
+@app.route("/api/signup/create-free", methods=["POST"])
+def api_signup_create_free():
+    data = request.get_json(force=True) or {}
+    code     = str(data.get("code", "")).strip().upper()
+    email    = str(data.get("email", "")).strip().lower()
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", "")).strip()
+
+    if not all([code, email, username, password]):
+        return jsonify({"error": "All fields are required"}), 400
+    if len(username) < 3 or len(password) < 6:
+        return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
+
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT id, bypass_payment, redeemed_by, expires_at FROM access_codes WHERE code = %s", (code,))
+    ac = cur.fetchone()
+    if not ac or ac["redeemed_by"]:
+        cur.close(); conn.close()
+        return jsonify({"error": "Invalid or already-used access code"}), 400
+    if ac["expires_at"] and ac["expires_at"] < datetime.now(TZ):
+        cur.close(); conn.close()
+        return jsonify({"error": "Access code expired"}), 400
+    if not ac["bypass_payment"]:
+        cur.close(); conn.close()
+        return jsonify({"error": "This code requires payment. Use the paid signup."}), 400
+
+    cur.execute("SELECT id FROM users WHERE username = %s OR email = %s", (username, email))
+    if cur.fetchone():
+        cur.close(); conn.close()
+        return jsonify({"error": "Username or email already taken"}), 409
+
+    user_id = str(uuid.uuid4())
+    cur.execute("""
+INSERT INTO users (id, email, username, password_hash, display_name, is_comped, active)
+VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
+        (user_id, email, username, generate_password_hash(password), username.title()))
+    cur.execute("UPDATE access_codes SET redeemed_by = %s, redeemed_at = NOW() WHERE id = %s",
+                (user_id, ac["id"]))
+    conn.commit()
+    cur.close(); conn.close()
+
+    _init_user_defaults(user_id)
+    _save_calendar_urls(user_id, data)
+    log.info("Free signup: user %s (%s) created via code %s", username, email, code)
+    return jsonify({"status": "ok", "redirect": "/login"})
+
+
+@app.route("/signup/success", methods=["GET"])
+def signup_success():
+    session_id = request.args.get("session_id", "")
+    code       = request.args.get("code", "").upper()
+    username   = request.args.get("username", "")
+
+    if not stripe or not session_id:
+        return redirect("/login")
+
+    try:
+        checkout = stripe.checkout.Session.retrieve(session_id)
+    except Exception as e:
+        log.error("Stripe session retrieve: %s", e)
+        return redirect("/login")
+
+    if checkout.payment_status not in ("paid", "no_payment_required"):
+        return redirect("/signup/cancelled")
+
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT id, bypass_payment, redeemed_by, expires_at FROM access_codes WHERE code = %s", (code,))
+    ac = cur.fetchone()
+    if not ac or ac["redeemed_by"]:
+        cur.close(); conn.close()
+        return render_template("signup_success.html", already_exists=True)
+
+    email = checkout.customer_details.email if checkout.customer_details else checkout.customer_email or ""
+    pw_hash = checkout.metadata.get("password_hash", generate_password_hash(secrets.token_urlsafe(16)))
+    un = checkout.metadata.get("username") or username
+
+    # Create user
+    user_id = str(uuid.uuid4())
+    cur.execute("""
+INSERT INTO users (id, email, username, password_hash, display_name, is_comped, active)
+VALUES (%s, %s, %s, %s, %s, FALSE, TRUE)
+ON CONFLICT (email) DO UPDATE SET last_login_at = NOW() RETURNING id""",
+        (user_id, email, un, pw_hash, un.title()))
+    result = cur.fetchone()
+    if result:
+        user_id = str(result["id"])
+
+    # Create subscription record
+    stripe_sub_id = None
+    stripe_price_id = ""
+    period_end = None
+    if checkout.subscription:
+        try:
+            sub = stripe.Subscription.retrieve(checkout.subscription)
+            stripe_sub_id = sub.id
+            if sub.items.data:
+                stripe_price_id = sub.items.data[0].price.id
+            period_end = datetime.fromtimestamp(sub.current_period_end, tz=TZ)
+        except Exception as _e:
+            log.warning("Subscription retrieve: %s", _e)
+
+    cur.execute("""
+INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id, stripe_price_id, status, current_period_end)
+VALUES (%s, %s, %s, %s, 'active', %s)
+ON CONFLICT (stripe_customer_id) DO UPDATE SET status='active', updated_at=NOW()""",
+        (user_id, checkout.customer or "", stripe_sub_id, stripe_price_id, period_end))
+
+    cur.execute("UPDATE access_codes SET redeemed_by = %s, redeemed_at = NOW() WHERE id = %s", (user_id, ac["id"]))
+
+    # Retrieve pending calendar URLs and save them for this user
+    cal_data = {}
+    try:
+        cur.execute("SELECT calendar_data FROM pending_signups WHERE access_code = %s", (code,))
+        prow = cur.fetchone()
+        if prow and prow["calendar_data"]:
+            cal_data = json.loads(prow["calendar_data"])
+        cur.execute("DELETE FROM pending_signups WHERE access_code = %s", (code,))
+    except Exception as _ce:
+        log.warning("pending_signups retrieve: %s", _ce)
+
+    conn.commit()
+    cur.close(); conn.close()
+
+    _init_user_defaults(user_id)
+    if cal_data:
+        _save_calendar_urls(user_id, cal_data)
+    log.info("Paid signup success: user %s (%s)", un, email)
+    return render_template("signup_success.html", username=un, email=email)
+
+
+@app.route("/signup/cancelled", methods=["GET"])
+def signup_cancelled():
+    return render_template("signup.html", cancelled=True)
+
+
+# ── SaaS: Stripe Webhooks ─────────────────────────────────────────────────────
+
+@app.route("/api/webhooks/stripe", methods=["POST"])
+def stripe_webhook():
+    if not stripe or not STRIPE_WEBHOOK_SECRET:
+        return jsonify({"error": "Stripe not configured"}), 503
+
+    payload = request.get_data()
+    sig_header = request.headers.get("Stripe-Signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except stripe.error.SignatureVerificationError:
+        return jsonify({"error": "Invalid signature"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    conn = get_db(); cur = conn.cursor()
+    try:
+        cur.execute("""INSERT INTO billing_events (stripe_event_id, event_type, payload)
+VALUES (%s, %s, %s) ON CONFLICT (stripe_event_id) DO NOTHING RETURNING id""",
+                    (event["id"], event["type"], json.dumps(dict(event))))
+        if not cur.fetchone():
+            cur.close(); conn.close()
+            return jsonify({"status": "already_processed"})
+        conn.commit()
+    except Exception as e:
+        log.warning("billing_events insert: %s", e)
+        conn.rollback()
+
+    etype = event["type"]
+    obj = event["data"]["object"]
+
+    try:
+        if etype == "customer.subscription.updated":
+            sub_id = obj["id"]
+            status = obj["status"]
+            period_end = datetime.fromtimestamp(obj["current_period_end"], tz=TZ)
+            cur.execute("""UPDATE subscriptions SET status=%s, current_period_end=%s, updated_at=NOW()
+WHERE stripe_subscription_id=%s""", (status, period_end, sub_id))
+
+        elif etype == "customer.subscription.deleted":
+            sub_id = obj["id"]
+            cur.execute("""UPDATE subscriptions SET status='canceled', canceled_at=NOW(), updated_at=NOW()
+WHERE stripe_subscription_id=%s""", (sub_id,))
+
+        elif etype == "invoice.payment_failed":
+            customer_id = obj.get("customer")
+            if customer_id:
+                cur.execute("UPDATE subscriptions SET status='past_due', updated_at=NOW() WHERE stripe_customer_id=%s", (customer_id,))
+
+        conn.commit()
+    except Exception as e:
+        log.error("Stripe webhook handler error (%s): %s", etype, e)
+        conn.rollback()
+    finally:
+        cur.close(); conn.close()
+
+    return jsonify({"status": "ok"})
+
+
+# ── SaaS: Billing portal ──────────────────────────────────────────────────────
+
+@app.route("/billing", methods=["GET"])
+def billing_page():
+    if not session.get("authenticated"):
+        return redirect("/login")
+    user_id = _uid()
+    sub_info = None
+    if user_id:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""
+SELECT s.status, s.current_period_end, s.cancel_at_period_end, u.is_comped, u.email, u.username
+FROM users u LEFT JOIN subscriptions s ON s.user_id = u.id
+WHERE u.id = %s ORDER BY s.created_at DESC LIMIT 1""", (user_id,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if row:
+            sub_info = dict(row)
+            if sub_info.get("current_period_end"):
+                sub_info["current_period_end"] = sub_info["current_period_end"].isoformat()
+    return render_template("billing.html", sub=sub_info)
+
+
+@app.route("/api/billing/portal", methods=["POST"])
+def api_billing_portal():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    if not stripe or not STRIPE_SECRET_KEY:
+        return jsonify({"error": "Stripe not configured"}), 503
+
+    user_id = _uid()
+    if not user_id:
+        return jsonify({"error": "No user session"}), 401
+
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT stripe_customer_id FROM subscriptions WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (user_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return jsonify({"error": "No subscription found"}), 404
+
+    try:
+        portal = stripe.billing_portal.Session.create(
+            customer=row["stripe_customer_id"],
+            return_url=request.host_url.rstrip("/") + "/billing",
+        )
+        return jsonify({"url": portal.url})
+    except Exception as e:
+        log.error("Billing portal create: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ── SaaS: Admin routes ────────────────────────────────────────────────────────
+
+@app.route("/api/admin/pricing", methods=["GET", "POST"])
+def api_admin_pricing():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authorized"}), 403
+
+    conn = get_db(); cur = conn.cursor()
+    if request.method == "GET":
+        cur.execute("SELECT stripe_price_id, monthly_cents FROM pricing_config WHERE id = 1")
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if row:
+            return jsonify({"stripe_price_id": row["stripe_price_id"], "monthly_cents": row["monthly_cents"],
+                            "monthly_display": f"${row['monthly_cents']/100:.2f}"})
+        return jsonify({"stripe_price_id": "", "monthly_cents": 999, "monthly_display": "$9.99"})
+
+    data = request.get_json(force=True) or {}
+    monthly_dollars = float(data.get("monthly_dollars", 9.99))
+    monthly_cents = int(round(monthly_dollars * 100))
+
+    new_price_id = ""
+    if stripe and STRIPE_SECRET_KEY and STRIPE_PRODUCT_ID:
+        try:
+            price = stripe.Price.create(
+                unit_amount=monthly_cents,
+                currency="usd",
+                recurring={"interval": "month"},
+                product=STRIPE_PRODUCT_ID,
+            )
+            new_price_id = price.id
+        except Exception as e:
+            log.error("Stripe price create: %s", e)
+            cur.close(); conn.close()
+            return jsonify({"error": f"Stripe error: {e}"}), 500
+    else:
+        new_price_id = data.get("stripe_price_id", "")
+
+    cur.execute("""INSERT INTO pricing_config (id, stripe_price_id, monthly_cents, updated_at)
+VALUES (1, %s, %s, NOW()) ON CONFLICT (id) DO UPDATE
+SET stripe_price_id=EXCLUDED.stripe_price_id, monthly_cents=EXCLUDED.monthly_cents, updated_at=NOW()""",
+                (new_price_id, monthly_cents))
+    conn.commit()
+    cur.close(); conn.close()
+    return jsonify({"status": "ok", "stripe_price_id": new_price_id, "monthly_cents": monthly_cents})
+
+
+@app.route("/api/admin/access-codes", methods=["GET"])
+def api_admin_access_codes_list():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authorized"}), 403
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+SELECT ac.id, ac.code, ac.bypass_payment, ac.created_at, ac.expires_at, ac.notes,
+       ac.redeemed_at, u.username as redeemed_by_username
+FROM access_codes ac
+LEFT JOIN users u ON u.id = ac.redeemed_by
+ORDER BY ac.created_at DESC""")
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    for r in rows:
+        if r["created_at"]: r["created_at"] = r["created_at"].isoformat()
+        if r["expires_at"]: r["expires_at"] = r["expires_at"].isoformat()
+        if r["redeemed_at"]: r["redeemed_at"] = r["redeemed_at"].isoformat()
+    return jsonify({"codes": rows})
+
+
+@app.route("/api/admin/access-codes", methods=["POST"])
+def api_admin_access_codes_create():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authorized"}), 403
+    data = request.get_json(force=True) or {}
+    count        = min(int(data.get("count", 1)), 20)
+    bypass       = bool(data.get("bypass_payment", False))
+    notes        = str(data.get("notes", ""))[:200]
+    expires_days = data.get("expires_days")
+    expires_at   = None
+    if expires_days:
+        expires_at = datetime.now(TZ) + timedelta(days=int(expires_days))
+
+    conn = get_db(); cur = conn.cursor()
+    created = []
+    for _ in range(count):
+        code = "JARVIS-" + secrets.token_hex(3).upper()
+        cur.execute("""
+INSERT INTO access_codes (code, bypass_payment, expires_at, notes)
+VALUES (%s, %s, %s, %s) ON CONFLICT (code) DO NOTHING RETURNING id, code""",
+            (code, bypass, expires_at, notes))
+        row = cur.fetchone()
+        if row:
+            created.append({"id": str(row["id"]), "code": row["code"], "bypass_payment": bypass})
+    conn.commit()
+    cur.close(); conn.close()
+    return jsonify({"created": created})
+
+
+@app.route("/api/admin/access-codes/<code_id>", methods=["DELETE"])
+def api_admin_access_codes_delete(code_id):
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authorized"}), 403
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM access_codes WHERE id = %s AND redeemed_by IS NULL", (code_id,))
+    deleted = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    if deleted:
+        return jsonify({"status": "revoked"})
+    return jsonify({"error": "Code not found or already redeemed"}), 404
+
+
+@app.route("/api/admin/subscribers", methods=["GET"])
+def api_admin_subscribers():
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authorized"}), 403
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""
+SELECT u.id, u.username, u.email, u.display_name, u.created_at, u.last_login_at,
+       u.active, u.is_comped,
+       s.status as sub_status, s.current_period_end, s.cancel_at_period_end
+FROM users u
+LEFT JOIN subscriptions s ON s.user_id = u.id
+  AND s.created_at = (SELECT MAX(s2.created_at) FROM subscriptions s2 WHERE s2.user_id = u.id)
+ORDER BY u.created_at DESC""")
+    rows = [dict(r) for r in cur.fetchall()]
+
+    # MRR calc
+    cur.execute("SELECT monthly_cents FROM pricing_config WHERE id = 1")
+    pc = cur.fetchone()
+    monthly_cents = pc["monthly_cents"] if pc else 999
+    cur.close(); conn.close()
+
+    paying_active = sum(1 for r in rows if not r["is_comped"] and r.get("sub_status") == "active")
+    mrr_cents = paying_active * monthly_cents
+
+    for r in rows:
+        r["id"] = str(r["id"])
+        if r["created_at"]: r["created_at"] = r["created_at"].isoformat()
+        if r["last_login_at"]: r["last_login_at"] = r["last_login_at"].isoformat()
+        if r["current_period_end"]: r["current_period_end"] = r["current_period_end"].isoformat()
+
+    return jsonify({"subscribers": rows, "mrr_cents": mrr_cents,
+                    "mrr_display": f"${mrr_cents/100:.2f}", "monthly_cents": monthly_cents})
+
+
+@app.route("/api/admin/subscribers/<user_id>/cancel", methods=["POST"])
+def api_admin_subscriber_cancel(user_id):
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authorized"}), 403
+    if not stripe or not STRIPE_SECRET_KEY:
+        return jsonify({"error": "Stripe not configured"}), 503
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT stripe_subscription_id FROM subscriptions WHERE user_id = %s ORDER BY created_at DESC LIMIT 1", (user_id,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row or not row["stripe_subscription_id"]:
+        return jsonify({"error": "No active subscription found"}), 404
+    try:
+        stripe.Subscription.delete(row["stripe_subscription_id"])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"status": "canceled"})
+
+
+@app.route("/api/admin/subscribers/<user_id>/revoke", methods=["POST"])
+def api_admin_subscriber_revoke(user_id):
+    if not session.get("admin_authenticated"):
+        return jsonify({"error": "Not authorized"}), 403
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE users SET active = FALSE WHERE id = %s AND is_comped = TRUE", (user_id,))
+    affected = cur.rowcount
+    conn.commit()
+    cur.close(); conn.close()
+    if affected:
+        return jsonify({"status": "revoked"})
+    return jsonify({"error": "User not found or not a comped user"}), 404
+
+
+# ── End of SaaS routes ────────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":

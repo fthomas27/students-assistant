@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Jarvis — Sign Up</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+--bg: #0a0a0f;
+--surface: #111118;
+--surface2: #18181f;
+--border: rgba(255,255,255,0.07);
+--border2: rgba(255,255,255,0.12);
+--text: #f0f0f5;
+--text2: #8888a0;
+--text3: #555568;
+--accent: #FF7F50;
+--accent2: #FF9966;
+--red: #f05c5c;
+--green: #4caf82;
+--purple: #7c6af7;
+}
+
+body {
+font-family: 'DM Sans', sans-serif;
+background: var(--bg);
+color: var(--text);
+min-height: 100dvh;
+display: flex;
+align-items: center;
+justify-content: center;
+padding: 24px;
+position: relative;
+overflow: hidden;
+}
+
+body::before {
+content: '';
+position: fixed;
+inset: -20%;
+background:
+  radial-gradient(ellipse 50% 40% at 25% 30%, rgba(255,127,80,0.10) 0%, transparent 65%),
+  radial-gradient(ellipse 45% 35% at 75% 70%, rgba(124,106,247,0.08) 0%, transparent 65%);
+pointer-events: none;
+filter: blur(20px);
+animation: auroraDrift 28s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite alternate;
+will-change: transform;
+}
+
+@keyframes auroraDrift {
+0%   { transform: translate3d(0, 0, 0) rotate(0deg); }
+100% { transform: translate3d(2%, -1.5%, 0) rotate(4deg); }
+}
+
+.card {
+width: 100%;
+max-width: 400px;
+background: var(--surface);
+border: 1px solid var(--border2);
+border-radius: 24px;
+padding: 40px 32px 36px;
+position: relative;
+animation: fadeUp 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+@keyframes fadeUp {
+from { opacity: 0; transform: translateY(20px); }
+to { opacity: 1; transform: translateY(0); }
+}
+
+.logo-ring {
+width: 56px; height: 56px;
+border-radius: 50%;
+background: linear-gradient(135deg, rgba(255,127,80,0.2), rgba(255,127,80,0.06));
+border: 1px solid rgba(255,127,80,0.3);
+display: flex; align-items: center; justify-content: center;
+font-size: 24px;
+margin: 0 auto 20px;
+}
+
+.title {
+font-family: 'DM Serif Display', serif;
+font-size: 26px;
+text-align: center;
+margin-bottom: 6px;
+}
+
+.subtitle {
+font-size: 13px;
+color: var(--text3);
+text-align: center;
+margin-bottom: 28px;
+}
+
+.step-indicator {
+display: flex;
+justify-content: center;
+gap: 8px;
+margin-bottom: 24px;
+}
+
+.step-dot {
+width: 8px; height: 8px;
+border-radius: 50%;
+background: var(--surface2);
+border: 1px solid var(--border2);
+transition: all 0.3s ease;
+}
+
+.step-dot.active {
+background: var(--accent);
+border-color: var(--accent);
+transform: scale(1.2);
+}
+
+.step-dot.done {
+background: var(--green);
+border-color: var(--green);
+}
+
+.field-label {
+font-size: 11px;
+font-weight: 600;
+color: var(--text3);
+text-transform: uppercase;
+letter-spacing: 0.08em;
+margin-bottom: 8px;
+}
+
+.field-wrap { margin-bottom: 16px; }
+
+.field-input {
+width: 100%;
+background: var(--surface2);
+border: 1px solid var(--border2);
+border-radius: 12px;
+padding: 14px 16px;
+font-size: 15px;
+font-family: 'DM Sans', sans-serif;
+color: var(--text);
+outline: none;
+transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.field-input:focus {
+border-color: var(--accent);
+box-shadow: 0 0 0 3px rgba(255,127,80,0.15);
+}
+
+.field-input.error { border-color: var(--red); box-shadow: 0 0 0 3px rgba(240,92,92,0.1); }
+
+.code-row { display: flex; gap: 8px; }
+.code-row .field-input { border-radius: 12px 0 0 12px; margin-bottom: 0; }
+.code-row .check-btn {
+flex-shrink: 0;
+background: var(--surface2);
+border: 1px solid var(--border2);
+border-left: none;
+border-radius: 0 12px 12px 0;
+padding: 0 18px;
+color: var(--text2);
+font-size: 14px;
+font-weight: 600;
+cursor: pointer;
+transition: background 0.2s, color 0.2s;
+white-space: nowrap;
+}
+.code-row .check-btn:hover { background: var(--border2); color: var(--text); }
+
+.code-status {
+margin-top: 8px;
+font-size: 13px;
+display: flex;
+align-items: center;
+gap: 6px;
+min-height: 20px;
+}
+
+.price-badge {
+display: inline-flex;
+align-items: center;
+gap: 6px;
+background: rgba(76,175,130,0.12);
+border: 1px solid rgba(76,175,130,0.3);
+color: var(--green);
+font-size: 12px;
+font-weight: 600;
+padding: 4px 10px;
+border-radius: 6px;
+}
+
+.free-badge {
+background: rgba(124,106,247,0.12);
+border: 1px solid rgba(124,106,247,0.3);
+color: var(--purple);
+}
+
+.submit-btn {
+width: 100%;
+background: var(--accent);
+color: #fff;
+border: none;
+border-radius: 12px;
+padding: 15px;
+font-size: 16px;
+font-weight: 600;
+font-family: 'DM Sans', sans-serif;
+cursor: pointer;
+transition: opacity 0.2s, transform 0.2s, box-shadow 0.2s;
+margin-top: 8px;
+}
+
+.submit-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(255,127,80,0.3); }
+.submit-btn:active { opacity: 0.85; transform: scale(0.97); }
+.submit-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
+
+.error-msg {
+font-size: 13px;
+color: var(--red);
+text-align: center;
+margin-top: 12px;
+min-height: 18px;
+}
+
+.login-link {
+font-size: 12px;
+color: var(--text3);
+text-align: center;
+margin-top: 20px;
+}
+
+.login-link a {
+color: var(--accent);
+text-decoration: none;
+}
+
+.step-section { display: none; }
+.step-section.active { display: block; }
+
+.cancelled-banner {
+background: rgba(240,92,92,0.08);
+border: 1px solid rgba(240,92,92,0.3);
+border-radius: 10px;
+padding: 12px 16px;
+font-size: 13px;
+color: var(--red);
+text-align: center;
+margin-bottom: 20px;
+}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="logo-ring">✦</div>
+  <div class="title">Create Account</div>
+  <div class="subtitle">Jarvis Student AI</div>
+
+  {% if cancelled %}
+  <div class="cancelled-banner">Payment cancelled. Your code is still valid — try again below.</div>
+  {% endif %}
+
+  <div class="step-indicator">
+    <div class="step-dot active" id="dot-0"></div>
+    <div class="step-dot" id="dot-1"></div>
+    <div class="step-dot" id="dot-2"></div>
+    <div class="step-dot" id="dot-3"></div>
+  </div>
+
+  <!-- Step 1: Access Code -->
+  <div class="step-section active" id="step-0">
+    <div class="field-label">Access Code</div>
+    <div class="code-row">
+      <input class="field-input" id="code-input" type="text" placeholder="JARVIS-XXXXXX"
+             autocomplete="off" spellcheck="false" autocapitalize="characters">
+      <button class="check-btn" onclick="validateCode()">Check</button>
+    </div>
+    <div class="code-status" id="code-status"></div>
+  </div>
+
+  <!-- Step 2: Account details -->
+  <div class="step-section" id="step-1">
+    <div class="field-wrap">
+      <div class="field-label">Email</div>
+      <input class="field-input" id="email-input" type="email" placeholder="you@example.com" autocomplete="email">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Username</div>
+      <input class="field-input" id="username-input" type="text" placeholder="yourname" autocomplete="username">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Password</div>
+      <input class="field-input" id="password-input" type="password" placeholder="6+ characters" autocomplete="new-password">
+    </div>
+    <button class="submit-btn" onclick="goToCalendars()">Continue →</button>
+    <div class="error-msg" id="error-msg-1"></div>
+  </div>
+
+  <!-- Step 3: Calendar setup -->
+  <div class="step-section" id="step-2">
+    <p style="font-size:13px; color:var(--text3); margin-bottom:18px; line-height:1.5;">
+      Connect your calendars so Jarvis knows your schedule.
+      <strong style="color:var(--text2);">All optional — you can configure later in Settings.</strong>
+    </p>
+    <div class="field-wrap">
+      <div class="field-label">Canvas iCal URL</div>
+      <input class="field-input" id="canvas-ical-input" type="url" placeholder="https://...instructure.com/feeds/calendars/...ics" autocomplete="off" spellcheck="false">
+      <div style="font-size:11px; color:var(--text3); margin-top:6px;">Canvas → Calendar → Calendar Feed link (assignments + due dates)</div>
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Canvas API Token (optional, unlocks grades + rubrics)</div>
+      <input class="field-input" id="canvas-token-input" type="password" placeholder="Canvas personal access token" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Canvas Base URL (required if token set)</div>
+      <input class="field-input" id="canvas-base-input" type="url" placeholder="https://yourschool.instructure.com" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Personal Calendar iCal (Google, Apple, etc.)</div>
+      <input class="field-input" id="personal-ical-input" type="url" placeholder="https://calendar.google.com/...ics" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Sports / Activities Calendar (optional)</div>
+      <input class="field-input" id="sports-ical-input" type="url" placeholder="https://...ics" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Job Schedule Calendar (optional)</div>
+      <input class="field-input" id="job-ical-input" type="url" placeholder="https://...ics" autocomplete="off" spellcheck="false">
+    </div>
+    <button class="submit-btn" id="submit-btn" onclick="submitSignup()">Continue</button>
+    <button onclick="submitSignup(true)" style="width:100%; background:transparent; color:var(--text3); border:none; padding:10px; margin-top:6px; font-size:13px; cursor:pointer;">Skip for now</button>
+    <div class="error-msg" id="error-msg"></div>
+  </div>
+
+  <!-- Step 4: Loading/redirect -->
+  <div class="step-section" id="step-3">
+    <div style="text-align:center; padding: 20px 0; color: var(--text2); font-size: 14px;" id="step-3-msg">
+      Setting up your account...
+    </div>
+  </div>
+
+  <div class="login-link">Already have an account? <a href="/login">Sign in</a></div>
+</div>
+
+<script>
+var validCode = '';
+var bypassPayment = false;
+var monthlyDisplay = '';
+
+var codeInput = document.getElementById('code-input');
+codeInput.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') validateCode();
+});
+
+function setStep(n) {
+  document.querySelectorAll('.step-section').forEach(function(s, i) {
+    s.classList.toggle('active', i === n);
+  });
+  document.querySelectorAll('.step-dot').forEach(function(d, i) {
+    d.classList.remove('active', 'done');
+    if (i < n) d.classList.add('done');
+    else if (i === n) d.classList.add('active');
+  });
+}
+
+function validateCode() {
+  var code = document.getElementById('code-input').value.trim().toUpperCase();
+  if (!code) return;
+  var statusEl = document.getElementById('code-status');
+  statusEl.innerHTML = '<span style="color:var(--text3)">Checking...</span>';
+
+  fetch('/api/signup/validate-code', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({code: code})
+  }).then(function(r) { return r.json().then(function(d) { return {s: r.status, d: d}; }); })
+  .then(function(res) {
+    if (res.s === 200 && res.d.valid) {
+      validCode = code;
+      bypassPayment = res.d.bypass_payment;
+      monthlyDisplay = res.d.monthly_display;
+      var badgeClass = bypassPayment ? 'price-badge free-badge' : 'price-badge';
+      var badgeText = bypassPayment ? '✓ Free access' : '✓ ' + monthlyDisplay + '/month';
+      statusEl.innerHTML = '<span class="' + badgeClass + '">' + badgeText + '</span>';
+      setTimeout(function() { setStep(1); }, 600);
+    } else {
+      statusEl.innerHTML = '<span style="color:var(--red)">' + (res.d.error || 'Invalid code') + '</span>';
+      document.getElementById('code-input').classList.add('error');
+      setTimeout(function() { document.getElementById('code-input').classList.remove('error'); }, 1000);
+    }
+  }).catch(function() {
+    statusEl.innerHTML = '<span style="color:var(--red)">Connection error</span>';
+  });
+}
+
+function goToCalendars() {
+  var email    = document.getElementById('email-input').value.trim();
+  var username = document.getElementById('username-input').value.trim();
+  var password = document.getElementById('password-input').value;
+  var errEl    = document.getElementById('error-msg-1');
+
+  errEl.textContent = '';
+  if (!email || !username || !password) { errEl.textContent = 'All fields required'; return; }
+  if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters'; return; }
+  if (username.length < 3) { errEl.textContent = 'Username must be at least 3 characters'; return; }
+
+  setStep(2);
+}
+
+function submitSignup(skipCalendars) {
+  var email    = document.getElementById('email-input').value.trim();
+  var username = document.getElementById('username-input').value.trim();
+  var password = document.getElementById('password-input').value;
+  var errEl    = document.getElementById('error-msg');
+  var btn      = document.getElementById('submit-btn');
+
+  errEl.textContent = '';
+
+  var payload = {code: validCode, email: email, username: username, password: password};
+  if (!skipCalendars) {
+    payload.canvas_ical_url       = document.getElementById('canvas-ical-input').value.trim();
+    payload.canvas_api_token      = document.getElementById('canvas-token-input').value.trim();
+    payload.canvas_base_url       = document.getElementById('canvas-base-input').value.trim();
+    payload.personal_ical_url     = document.getElementById('personal-ical-input').value.trim();
+    payload.sports_ical_url       = document.getElementById('sports-ical-input').value.trim();
+    payload.job_schedule_ical_url = document.getElementById('job-ical-input').value.trim();
+
+    // If they set the Canvas token, they need the base URL too
+    if (payload.canvas_api_token && !payload.canvas_base_url) {
+      errEl.textContent = 'Canvas Base URL is required when an API token is set.';
+      return;
+    }
+  }
+
+  btn.disabled = true;
+  btn.textContent = bypassPayment ? 'Creating account...' : 'Redirecting to payment...';
+
+  var endpoint = bypassPayment ? '/api/signup/create-free' : '/api/signup/create-checkout';
+
+  fetch(endpoint, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  }).then(function(r) { return r.json().then(function(d) { return {s: r.status, d: d}; }); })
+  .then(function(res) {
+    if (res.s === 200 || res.s === 201) {
+      setStep(3);
+      if (res.d.url) {
+        document.getElementById('step-3-msg').textContent = 'Redirecting to payment...';
+        window.location.href = res.d.url;
+      } else {
+        document.getElementById('step-3-msg').innerHTML =
+          '✓ Account created! <a href="/login" style="color:var(--accent)">Sign in now</a>';
+      }
+    } else {
+      errEl.textContent = res.d.error || 'Something went wrong. Try again.';
+      btn.disabled = false;
+      btn.textContent = bypassPayment ? 'Create Account' : ('Subscribe ' + monthlyDisplay + '/mo');
+    }
+  }).catch(function() {
+    errEl.textContent = 'Connection error. Try again.';
+    btn.disabled = false;
+    btn.textContent = bypassPayment ? 'Create Account' : ('Subscribe ' + monthlyDisplay + '/mo');
+  });
+}
+
+// Update button text when step 2 (calendars) becomes active
+var observer = new MutationObserver(function() {
+  var s2 = document.getElementById('step-2');
+  if (s2 && s2.classList.contains('active')) {
+    var btn = document.getElementById('submit-btn');
+    if (btn) btn.textContent = bypassPayment ? 'Create Account' : ('Subscribe ' + monthlyDisplay + '/mo');
+  }
+});
+observer.observe(document.getElementById('step-2'), {attributes: true});
+</script>
+
+</body>
+</html>
