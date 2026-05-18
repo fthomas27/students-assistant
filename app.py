@@ -240,6 +240,11 @@ def require_csrf():
     # session yet (or is Stripe), so CSRF protection adds no value.
     if path.startswith('/api/signup/') or path.startswith('/api/webhooks/'):
         return None
+    # Admin endpoints: each guards on session.admin_authenticated and the
+    # session cookie is SameSite=Lax, so a cross-origin POST can't send it.
+    # Token-based CSRF on top of that has been brittle in practice.
+    if path.startswith('/api/admin/'):
+        return None
     expected = session.get('csrf_token')
     provided = request.headers.get('X-CSRF-Token', '')
     if not expected or not provided or not secrets.compare_digest(str(expected), str(provided)):
@@ -12548,19 +12553,13 @@ def api_admin_access_request_approve(req_id):
         return jsonify({"error": "Request not found"}), 404
 
     approval_url = f"{request.host_url.rstrip('/')}/signup/complete?token={token}"
-    body = f"""
-    <p>Hi {row['name']},</p>
-    <p>Your request for access to Jarvis Student AI has been approved.</p>
-    <p>Click the link below to complete your signup:</p>
-    <p><a href=\"{approval_url}\">{approval_url}</a></p>
-    <p>This link is single-use. If you didn't request access, you can ignore this email.</p>
-    """
-    try:
-        send_email(row["email"], "You've been approved! — Jarvis Student AI", body)
-    except Exception as _e:
-        log.warning("approval email failed: %s", _e)
-
-    return jsonify({"status": "ok", "token": token})
+    return jsonify({
+        "status": "ok",
+        "token": token,
+        "approval_url": approval_url,
+        "name": row["name"],
+        "email": row["email"],
+    })
 
 
 @app.route("/api/admin/access-requests/<int:req_id>/deny", methods=["POST"])

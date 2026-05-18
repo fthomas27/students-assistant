@@ -1252,12 +1252,19 @@ function loadAccessRequests() {
 }
 
 function approveAccessRequest(id) {
-  if (!confirm('Approve this access request? An email with a signup link will be sent.')) return;
+  if (!confirm('Approve this access request? You will need to share the signup link with them yourself.')) return;
   fetch('/api/admin/access-requests/' + id + '/approve', {method: 'POST', credentials: 'same-origin'})
     .then(function(r) { return r.json().then(function(d) { return {s: r.status, d: d}; }); })
     .then(function(res) {
-      if (res.s === 200) { loadAccessRequests(); }
-      else { alert((res.d && res.d.error) || 'Failed to approve.'); }
+      if (res.s === 200) {
+        loadAccessRequests();
+        var url = res.d && res.d.approval_url;
+        if (url) {
+          window.prompt('Approved. Share this single-use signup link with ' + (res.d.name || res.d.email || 'them') + ':', url);
+        }
+      } else {
+        alert((res.d && res.d.error) || 'Failed to approve.');
+      }
     });
 }
 
