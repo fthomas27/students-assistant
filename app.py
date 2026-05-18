@@ -257,8 +257,16 @@ _plan_lock = threading.Lock()
 
 
 def _uid():
-    """Returns current student's user_id UUID string, or None for admin/scheduler sessions."""
-    return session.get("user_id")
+    """Returns current student's user_id UUID string, or None for admin/scheduler sessions.
+
+    Returns None instead of raising when called outside a Flask request context
+    (e.g. from a worker thread spawned by ThreadPoolExecutor) — Flask's session
+    LocalProxy is bound to the request thread and raises RuntimeError elsewhere.
+    """
+    try:
+        return session.get("user_id")
+    except RuntimeError:
+        return None
 
 
 def _init_user_singleton(user_id, table, extra_cols=""):
@@ -969,7 +977,10 @@ def get_config():
 def get_user_config(user_id=None):
     """Returns config for a specific student, falling back to global config for missing keys."""
     if not user_id:
-        uid = session.get("user_id") if session else None
+        try:
+            uid = session.get("user_id") if session else None
+        except RuntimeError:
+            uid = None
     else:
         uid = user_id
     if not uid:
@@ -1003,7 +1014,10 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""", (k, str(v)))
 def set_user_config(updates, user_id=None):
     """Write config for a specific student."""
     if not user_id:
-        uid = session.get("user_id") if session else None
+        try:
+            uid = session.get("user_id") if session else None
+        except RuntimeError:
+            uid = None
     else:
         uid = user_id
     if not uid:
@@ -5009,6 +5023,15 @@ def api_calendar():
     events = []
     today = datetime.now(TZ).date()
 
+    # Resolve user-scoped calendar URLs in the request thread. Flask's `session`
+    # is bound to the request context and is NOT accessible from worker threads,
+    # so calling u_*_ical() inside the ThreadPoolExecutor below silently falls
+    # back to the (usually empty) env vars and the user's saved URLs are ignored.
+    personal_url = u_personal_ical()
+    sports_url   = u_sports_ical()
+    job_url      = u_job_schedule_ical()
+    canvas_url   = u_canvas_ical()
+
     def fetch_source(name, url, parser):
         """Helper to fetch one source with timeout protection."""
         if not url:
@@ -5029,24 +5052,24 @@ def api_calendar():
             return []
 
     def get_personal():
-        return fetch_source("personal", u_personal_ical(),
+        return fetch_source("personal", personal_url,
                             lambda cal, d: [dict(e, source="personal") for e in parse_calendar_events(cal, days_ahead=d)])
 
     def get_sports():
-        return fetch_source("sports", u_sports_ical(),
+        return fetch_source("sports", sports_url,
                             lambda cal, d: [dict(e, source="sports") for e in parse_calendar_events(cal, days_ahead=d)])
 
     def get_job():
-        return fetch_source("job", u_job_schedule_ical(),
+        return fetch_source("job", job_url,
                             lambda cal, d: [dict(e, source="job") for e in parse_calendar_events(cal, days_ahead=d)])
 
     def get_canvas():
         result = []
-        if not u_canvas_ical():
+        if not canvas_url:
             return result
         try:
             t = time.time()
-            cal = fetch_ical(u_canvas_ical())
+            cal = fetch_ical(canvas_url)
             elapsed = time.time() - t
             if elapsed > 8:
                 log.warning(f"/api/calendar: canvas fetch took {elapsed:.2f}s (slow)")
@@ -11156,9 +11179,18 @@ def api_daily_outlook():
     today = datetime.now(TZ).date()
     today_iso = today.isoformat()
 
+    # Resolve user-scoped calendar URLs in the request thread; the worker
+    # threads below cannot access Flask's session-bound LocalProxy. Without
+    # this, u_*_ical() would silently fall back to env vars and the user's
+    # saved settings calendars would be ignored.
+    canvas_url   = u_canvas_ical()
+    personal_url = u_personal_ical()
+    sports_url   = u_sports_ical()
+    job_url      = u_job_schedule_ical()
+
     def _get_assignments():
         try:
-            cal = fetch_ical(u_canvas_ical())
+            cal = fetch_ical(canvas_url)
             if not cal:
                 return []
             conn = get_db()
@@ -11193,7 +11225,7 @@ def api_daily_outlook():
     def _get_events():
         try:
             out = []
-            for url, tag in ((u_personal_ical(), "personal"), (u_sports_ical(), "sports"), (u_job_schedule_ical(), "job")):
+            for url, tag in ((personal_url, "personal"), (sports_url, "sports"), (job_url, "job")):
                 c = fetch_ical(url)
                 if not c:
                     continue
