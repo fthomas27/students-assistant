@@ -269,6 +269,7 @@ margin-bottom: 20px;
     <div class="step-dot active" id="dot-0"></div>
     <div class="step-dot" id="dot-1"></div>
     <div class="step-dot" id="dot-2"></div>
+    <div class="step-dot" id="dot-3"></div>
   </div>
 
   <!-- Step 1: Access Code -->
@@ -296,12 +297,48 @@ margin-bottom: 20px;
       <div class="field-label">Password</div>
       <input class="field-input" id="password-input" type="password" placeholder="6+ characters" autocomplete="new-password">
     </div>
+    <button class="submit-btn" onclick="goToCalendars()">Continue →</button>
+    <div class="error-msg" id="error-msg-1"></div>
+  </div>
+
+  <!-- Step 3: Calendar setup -->
+  <div class="step-section" id="step-2">
+    <p style="font-size:13px; color:var(--text3); margin-bottom:18px; line-height:1.5;">
+      Connect your calendars so Jarvis knows your schedule.
+      <strong style="color:var(--text2);">All optional — you can configure later in Settings.</strong>
+    </p>
+    <div class="field-wrap">
+      <div class="field-label">Canvas iCal URL</div>
+      <input class="field-input" id="canvas-ical-input" type="url" placeholder="https://...instructure.com/feeds/calendars/...ics" autocomplete="off" spellcheck="false">
+      <div style="font-size:11px; color:var(--text3); margin-top:6px;">Canvas → Calendar → Calendar Feed link (assignments + due dates)</div>
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Canvas API Token (optional, unlocks grades + rubrics)</div>
+      <input class="field-input" id="canvas-token-input" type="password" placeholder="Canvas personal access token" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Canvas Base URL (required if token set)</div>
+      <input class="field-input" id="canvas-base-input" type="url" placeholder="https://yourschool.instructure.com" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Personal Calendar iCal (Google, Apple, etc.)</div>
+      <input class="field-input" id="personal-ical-input" type="url" placeholder="https://calendar.google.com/...ics" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Sports / Activities Calendar (optional)</div>
+      <input class="field-input" id="sports-ical-input" type="url" placeholder="https://...ics" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Job Schedule Calendar (optional)</div>
+      <input class="field-input" id="job-ical-input" type="url" placeholder="https://...ics" autocomplete="off" spellcheck="false">
+    </div>
     <button class="submit-btn" id="submit-btn" onclick="submitSignup()">Continue</button>
+    <button onclick="submitSignup(true)" style="width:100%; background:transparent; color:var(--text3); border:none; padding:10px; margin-top:6px; font-size:13px; cursor:pointer;">Skip for now</button>
     <div class="error-msg" id="error-msg"></div>
   </div>
 
-  <!-- Step 3: Loading/redirect -->
-  <div class="step-section" id="step-2">
+  <!-- Step 4: Loading/redirect -->
+  <div class="step-section" id="step-3">
     <div style="text-align:center; padding: 20px 0; color: var(--text2); font-size: 14px;" id="step-3-msg">
       Setting up your account...
     </div>
@@ -361,7 +398,21 @@ function validateCode() {
   });
 }
 
-function submitSignup() {
+function goToCalendars() {
+  var email    = document.getElementById('email-input').value.trim();
+  var username = document.getElementById('username-input').value.trim();
+  var password = document.getElementById('password-input').value;
+  var errEl    = document.getElementById('error-msg-1');
+
+  errEl.textContent = '';
+  if (!email || !username || !password) { errEl.textContent = 'All fields required'; return; }
+  if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters'; return; }
+  if (username.length < 3) { errEl.textContent = 'Username must be at least 3 characters'; return; }
+
+  setStep(2);
+}
+
+function submitSignup(skipCalendars) {
   var email    = document.getElementById('email-input').value.trim();
   var username = document.getElementById('username-input').value.trim();
   var password = document.getElementById('password-input').value;
@@ -369,9 +420,22 @@ function submitSignup() {
   var btn      = document.getElementById('submit-btn');
 
   errEl.textContent = '';
-  if (!email || !username || !password) { errEl.textContent = 'All fields required'; return; }
-  if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters'; return; }
-  if (username.length < 3) { errEl.textContent = 'Username must be at least 3 characters'; return; }
+
+  var payload = {code: validCode, email: email, username: username, password: password};
+  if (!skipCalendars) {
+    payload.canvas_ical_url       = document.getElementById('canvas-ical-input').value.trim();
+    payload.canvas_api_token      = document.getElementById('canvas-token-input').value.trim();
+    payload.canvas_base_url       = document.getElementById('canvas-base-input').value.trim();
+    payload.personal_ical_url     = document.getElementById('personal-ical-input').value.trim();
+    payload.sports_ical_url       = document.getElementById('sports-ical-input').value.trim();
+    payload.job_schedule_ical_url = document.getElementById('job-ical-input').value.trim();
+
+    // If they set the Canvas token, they need the base URL too
+    if (payload.canvas_api_token && !payload.canvas_base_url) {
+      errEl.textContent = 'Canvas Base URL is required when an API token is set.';
+      return;
+    }
+  }
 
   btn.disabled = true;
   btn.textContent = bypassPayment ? 'Creating account...' : 'Redirecting to payment...';
@@ -381,11 +445,11 @@ function submitSignup() {
   fetch(endpoint, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({code: validCode, email: email, username: username, password: password})
+    body: JSON.stringify(payload)
   }).then(function(r) { return r.json().then(function(d) { return {s: r.status, d: d}; }); })
   .then(function(res) {
     if (res.s === 200 || res.s === 201) {
-      setStep(2);
+      setStep(3);
       if (res.d.url) {
         document.getElementById('step-3-msg').textContent = 'Redirecting to payment...';
         window.location.href = res.d.url;
@@ -405,15 +469,15 @@ function submitSignup() {
   });
 }
 
-// Update button text when step 1 becomes active
+// Update button text when step 2 (calendars) becomes active
 var observer = new MutationObserver(function() {
-  var s1 = document.getElementById('step-1');
-  if (s1 && s1.classList.contains('active')) {
+  var s2 = document.getElementById('step-2');
+  if (s2 && s2.classList.contains('active')) {
     var btn = document.getElementById('submit-btn');
     if (btn) btn.textContent = bypassPayment ? 'Create Account' : ('Subscribe ' + monthlyDisplay + '/mo');
   }
 });
-observer.observe(document.getElementById('step-1'), {attributes: true});
+observer.observe(document.getElementById('step-2'), {attributes: true});
 </script>
 
 </body>

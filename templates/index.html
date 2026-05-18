@@ -2960,6 +2960,34 @@ margin-bottom: 0;
         </div>
       </div>
       <div class="settings-section">
+        <h3>Calendars</h3>
+        <p style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">These calendars are private to your account. Paste the iCal feed URLs from your services.</p>
+        <div class="settings-item" style="display:block;">
+          <label style="display:block;margin-bottom:6px;">Canvas iCal URL</label>
+          <input type="url" id="cfgCanvasIcal" placeholder="https://...instructure.com/feeds/calendars/...ics" style="width:100%;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;box-sizing:border-box;">
+        </div>
+        <div class="settings-item" style="display:block;">
+          <label style="display:block;margin-bottom:6px;">Canvas API Token <span style="color:var(--text3);font-weight:400;">(optional, unlocks grades + rubrics)</span></label>
+          <input type="password" id="cfgCanvasToken" placeholder="Canvas personal access token" style="width:100%;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;box-sizing:border-box;">
+        </div>
+        <div class="settings-item" style="display:block;">
+          <label style="display:block;margin-bottom:6px;">Canvas Base URL <span style="color:var(--text3);font-weight:400;">(required if token set)</span></label>
+          <input type="url" id="cfgCanvasBase" placeholder="https://yourschool.instructure.com" style="width:100%;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;box-sizing:border-box;">
+        </div>
+        <div class="settings-item" style="display:block;">
+          <label style="display:block;margin-bottom:6px;">Personal Calendar (Google / Apple)</label>
+          <input type="url" id="cfgPersonalIcal" placeholder="https://calendar.google.com/...ics" style="width:100%;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;box-sizing:border-box;">
+        </div>
+        <div class="settings-item" style="display:block;">
+          <label style="display:block;margin-bottom:6px;">Sports / Activities</label>
+          <input type="url" id="cfgSportsIcal" placeholder="https://...ics" style="width:100%;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;box-sizing:border-box;">
+        </div>
+        <div class="settings-item" style="display:block;">
+          <label style="display:block;margin-bottom:6px;">Job Schedule</label>
+          <input type="url" id="cfgJobIcal" placeholder="https://...ics" style="width:100%;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--text);font-size:13px;box-sizing:border-box;">
+        </div>
+      </div>
+      <div class="settings-section">
         <div style="display: flex; gap: 8px;">
           <button class="logout-btn" onclick="confirmLogout()" style="flex: 1;">Log Out</button>
           <button onclick="saveSettings()" style="flex: 1; padding: 10px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-sm); color: white; cursor: pointer; font-weight: 600;">Save</button>
@@ -3646,13 +3674,21 @@ function openSettings() {
   document.getElementById('settingsNameInput').value = customName;
   document.getElementById('settingsTimezoneSelect').value = timezone;
 
-  // Load mode settings from server config
+  // Load mode + calendar settings from server config
   fetch('/api/config').then(r => r.json()).then(cfg => {
     const mode = cfg.app_mode || 'school';
     _applyModeButtons(mode);
     document.getElementById('isSummerSchoolCheck').checked = !!cfg.is_summer_school;
     document.getElementById('hasSummerJobCheck').checked = !!cfg.has_summer_job;
     document.getElementById('summerQuestionsDiv').style.display = mode === 'summer' ? 'block' : 'none';
+
+    // Calendar URLs
+    if (document.getElementById('cfgCanvasIcal'))    document.getElementById('cfgCanvasIcal').value    = cfg.canvas_ical_url || '';
+    if (document.getElementById('cfgCanvasToken'))   document.getElementById('cfgCanvasToken').value   = cfg.canvas_api_token || '';
+    if (document.getElementById('cfgCanvasBase'))    document.getElementById('cfgCanvasBase').value    = cfg.canvas_base_url || '';
+    if (document.getElementById('cfgPersonalIcal'))  document.getElementById('cfgPersonalIcal').value  = cfg.personal_ical_url || '';
+    if (document.getElementById('cfgSportsIcal'))    document.getElementById('cfgSportsIcal').value    = cfg.sports_ical_url || '';
+    if (document.getElementById('cfgJobIcal'))       document.getElementById('cfgJobIcal').value       = cfg.job_schedule_ical_url || '';
   }).catch(() => {});
 }
 
@@ -3690,6 +3726,21 @@ function saveSettings() {
   const hasSummerJob = document.getElementById('hasSummerJobCheck').checked;
 
   const cfgPayload = { name: customName, timezone, app_mode: mode, is_summer_school: String(isSummerSchool), has_summer_job: String(hasSummerJob) };
+
+  // Include calendar URLs if present
+  const calFields = {
+    canvas_ical_url:       'cfgCanvasIcal',
+    canvas_api_token:      'cfgCanvasToken',
+    canvas_base_url:       'cfgCanvasBase',
+    personal_ical_url:     'cfgPersonalIcal',
+    sports_ical_url:       'cfgSportsIcal',
+    job_schedule_ical_url: 'cfgJobIcal',
+  };
+  Object.keys(calFields).forEach(function(k) {
+    const el = document.getElementById(calFields[k]);
+    if (el) cfgPayload[k] = el.value.trim();
+  });
+
   fetch('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

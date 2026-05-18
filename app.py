@@ -313,6 +313,28 @@ CANVAS_API_TOKEN = os.environ.get("CANVAS_API_TOKEN", "")
 CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/")
 SPORTS_ICAL_URL = os.environ.get("SPORTS_ICAL_URL", "")
 JOB_SCHEDULE_ICAL_URL = os.environ.get("JOB_SCHEDULE_ICAL_URL", "")
+
+
+def _resolve_user_url(config_key, env_fallback):
+    """Return current student's URL setting from user_config, falling back to env var.
+    Works in both request context (uses session) and scheduler context (env var only).
+    """
+    try:
+        if session.get("user_id"):
+            v = get_user_config(session["user_id"]).get(config_key, "").strip()
+            if v:
+                return v
+    except (RuntimeError, KeyError):
+        pass
+    return env_fallback
+
+
+def u_personal_ical():    return _resolve_user_url("personal_ical_url",     PERSONAL_ICAL_URL)
+def u_canvas_ical():      return _resolve_user_url("canvas_ical_url",       CANVAS_ICAL_URL)
+def u_canvas_api_token(): return _resolve_user_url("canvas_api_token",      CANVAS_API_TOKEN)
+def u_canvas_base_url():  return _resolve_user_url("canvas_base_url",       CANVAS_BASE_URL).rstrip("/")
+def u_sports_ical():      return _resolve_user_url("sports_ical_url",       SPORTS_ICAL_URL)
+def u_job_schedule_ical():return _resolve_user_url("job_schedule_ical_url", JOB_SCHEDULE_ICAL_URL)
 MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "").strip()
 RED_DAY_ICAL_URL = os.environ.get("RED_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_7ufb5f1vj8aks1shds5ou4fhe8%40group.calendar.google.com/public/basic.ics")
 WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_64ohm1bccvi50iti8fe455stkg%40group.calendar.google.com/public/basic.ics")
@@ -645,6 +667,11 @@ def init_db():
             stripe_price_id TEXT NOT NULL DEFAULT '',
             monthly_cents INT NOT NULL DEFAULT 999,
             updated_at TIMESTAMPTZ DEFAULT NOW()
+        )"""),
+        ("pending_signups", """CREATE TABLE IF NOT EXISTS pending_signups (
+            access_code TEXT PRIMARY KEY,
+            calendar_data TEXT NOT NULL DEFAULT '{}',
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )"""),
     ]
 
@@ -1199,7 +1226,7 @@ def _cache_set(key, value):
 
 # ── Canvas REST API helpers ──────────────────────────────────────────────────
 # Augment the iCal feed with course names, grades, and full assignment details.
-# Silently no-ops when CANVAS_API_TOKEN / CANVAS_BASE_URL are not configured.
+# Silently no-ops when the user's Canvas API token or base URL is not configured.
 
 CANVAS_COURSES_TTL = 3600          # 1 hour
 CANVAS_GRADES_TTL = 600            # 10 minutes
@@ -1207,14 +1234,14 @@ CANVAS_ASSIGNMENT_TTL = 1800       # 30 minutes
 
 
 def _canvas_configured():
-    return bool(CANVAS_API_TOKEN and CANVAS_BASE_URL)
+    return bool(u_canvas_api_token() and u_canvas_base_url())
 
 
 def _canvas_get(path, params=None, timeout=12):
     if not _canvas_configured():
         return None
-    url = CANVAS_BASE_URL + (path if path.startswith("/") else "/" + path)
-    headers = {"Authorization": "Bearer " + CANVAS_API_TOKEN, "Accept": "application/json"}
+    url = u_canvas_base_url() + (path if path.startswith("/") else "/" + path)
+    headers = {"Authorization": "Bearer " + u_canvas_api_token(), "Accept": "application/json"}
     try:
         resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
         resp.raise_for_status()
@@ -2881,17 +2908,17 @@ def generate_briefing(force=False):
                     return
 
         assignments = []
-        cal = fetch_ical(CANVAS_ICAL_URL)
+        cal = fetch_ical(u_canvas_ical())
         if cal:
             assignments = get_canvas_assignments_with_overdue(cal)
 
         events = []
-        cal2 = fetch_ical(PERSONAL_ICAL_URL)
+        cal2 = fetch_ical(u_personal_ical())
         if cal2:
             events = list(parse_calendar_events(cal2, days_ahead=1))
-        if JOB_SCHEDULE_ICAL_URL:
+        if u_job_schedule_ical():
             try:
-                cal_job = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+                cal_job = fetch_ical(u_job_schedule_ical())
                 if cal_job:
                     events.extend(parse_calendar_events(cal_job, days_ahead=1))
             except Exception as _e:
@@ -3147,7 +3174,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         # Metrics section
         metrics_text = "Items completed: %d | Total time: %.1f hours" % (item_count, total_hours)
 
-        cal = fetch_ical(CANVAS_ICAL_URL)
+        cal = fetch_ical(u_canvas_ical())
         remaining_asgn = []
         if cal:
             all_asgn = get_canvas_assignments_with_overdue(cal)
@@ -3282,7 +3309,7 @@ WHERE status = 'active'""")
 
         # Upcoming 7 days: assignments + events
         upcoming_assignments = []
-        cal = fetch_ical(CANVAS_ICAL_URL)
+        cal = fetch_ical(u_canvas_ical())
         if cal:
             all_asgn = get_canvas_assignments_with_overdue(cal)
             for a in all_asgn:
@@ -3398,9 +3425,9 @@ def cleanup_old_data():
 def _notif_canvas_assignments():
     """Return upcoming Canvas assignments not yet completed, or []."""
     try:
-        if not CANVAS_ICAL_URL:
+        if not u_canvas_ical():
             return []
-        cal = fetch_ical(CANVAS_ICAL_URL)
+        cal = fetch_ical(u_canvas_ical())
         if not cal:
             return []
         assignments = get_canvas_assignments_with_overdue(cal)
@@ -3526,7 +3553,7 @@ def check_meeting_reminders():
         now = datetime.now(TZ)
         window_start = now + timedelta(minutes=25)
         window_end = now + timedelta(minutes=40)
-        for url in filter(None, [PERSONAL_ICAL_URL, SPORTS_ICAL_URL, JOB_SCHEDULE_ICAL_URL]):
+        for url in filter(None, [u_personal_ical(), u_sports_ical(), u_job_schedule_ical()]):
             try:
                 cal = fetch_ical(url)
                 if not cal:
@@ -3591,13 +3618,13 @@ def check_idle_detection():
 
 def check_trash_recycling_reminder():
     """Tier 3 — remind about trash/recycling events from personal calendar at 7 PM."""
-    if not NTFY_TOPIC or not PERSONAL_ICAL_URL:
+    if not NTFY_TOPIC or not u_personal_ical():
         return
     try:
         now = datetime.now(TZ)
         if not (19 <= now.hour < 20):
             return
-        cal = fetch_ical(PERSONAL_ICAL_URL)
+        cal = fetch_ical(u_personal_ical())
         if not cal:
             return
         events = parse_calendar_events(cal, days_ahead=1)
@@ -4733,10 +4760,10 @@ def api_csrf_token():
 def api_sync_status():
     """Report which calendar feeds last failed to fetch and when."""
     label_for = {
-        CANVAS_ICAL_URL: "Canvas",
-        PERSONAL_ICAL_URL: "Personal",
-        SPORTS_ICAL_URL: "Sports",
-        JOB_SCHEDULE_ICAL_URL: "Job",
+        u_canvas_ical(): "Canvas",
+        u_personal_ical(): "Personal",
+        u_sports_ical(): "Sports",
+        u_job_schedule_ical(): "Job",
         RED_DAY_ICAL_URL: "Red Day",
         WHITE_DAY_ICAL_URL: "White Day",
     }
@@ -4891,7 +4918,7 @@ def api_assignments():
     start = time.time()
     try:
         t1 = time.time()
-        cal = fetch_ical(CANVAS_ICAL_URL)
+        cal = fetch_ical(u_canvas_ical())
         log.info(f"/api/assignments: fetch_ical took {time.time()-t1:.2f}s")
         if cal is None:
             return jsonify({"assignments": [], "error": "Failed to fetch Canvas calendar."})
@@ -5002,24 +5029,24 @@ def api_calendar():
             return []
 
     def get_personal():
-        return fetch_source("personal", PERSONAL_ICAL_URL,
+        return fetch_source("personal", u_personal_ical(),
                             lambda cal, d: [dict(e, source="personal") for e in parse_calendar_events(cal, days_ahead=d)])
 
     def get_sports():
-        return fetch_source("sports", SPORTS_ICAL_URL,
+        return fetch_source("sports", u_sports_ical(),
                             lambda cal, d: [dict(e, source="sports") for e in parse_calendar_events(cal, days_ahead=d)])
 
     def get_job():
-        return fetch_source("job", JOB_SCHEDULE_ICAL_URL,
+        return fetch_source("job", u_job_schedule_ical(),
                             lambda cal, d: [dict(e, source="job") for e in parse_calendar_events(cal, days_ahead=d)])
 
     def get_canvas():
         result = []
-        if not CANVAS_ICAL_URL:
+        if not u_canvas_ical():
             return result
         try:
             t = time.time()
-            cal = fetch_ical(CANVAS_ICAL_URL)
+            cal = fetch_ical(u_canvas_ical())
             elapsed = time.time() - t
             if elapsed > 8:
                 log.warning(f"/api/calendar: canvas fetch took {elapsed:.2f}s (slow)")
@@ -5484,7 +5511,7 @@ def api_availability():
         })
 
     # Personal + job calendar events today
-    for _busy_url in filter(None, [PERSONAL_ICAL_URL, JOB_SCHEDULE_ICAL_URL]):
+    for _busy_url in filter(None, [u_personal_ical(), u_job_schedule_ical()]):
         try:
             _busy_cal = fetch_ical(_busy_url)
             if _busy_cal:
@@ -6142,7 +6169,7 @@ def api_task_suggestions():
         # Fetch pending assignments
         assignments = []
         try:
-            cal = fetch_ical(CANVAS_ICAL_URL)
+            cal = fetch_ical(u_canvas_ical())
             if cal:
                 assignments = get_canvas_assignments_with_overdue(cal)
         except Exception as e:
@@ -6150,7 +6177,7 @@ def api_task_suggestions():
 
         # Fetch calendar events
         calendar_events = []
-        for _sug_url in filter(None, [PERSONAL_ICAL_URL, SPORTS_ICAL_URL, JOB_SCHEDULE_ICAL_URL]):
+        for _sug_url in filter(None, [u_personal_ical(), u_sports_ical(), u_job_schedule_ical()]):
             try:
                 _sug_cal = fetch_ical(_sug_url)
                 if _sug_cal:
@@ -6743,7 +6770,8 @@ def api_project_tasks_delete(project_id, task_id):
 
 @app.route("/api/config", methods=["GET"])
 def api_config_get():
-    cfg = get_config()
+    uid = _uid()
+    cfg = get_user_config(uid) if uid else get_config()
     return jsonify({
         "name": cfg.get("name", "Jarvis"),
         "morning_briefing_time": cfg.get("morning_briefing_time", "07:00"),
@@ -6755,7 +6783,14 @@ def api_config_get():
         "app_mode": cfg.get("app_mode", "school"),
         "is_summer_school": cfg.get("is_summer_school", "false") == "true",
         "has_summer_job": cfg.get("has_summer_job", "false") == "true",
-        "has_job_schedule": bool(JOB_SCHEDULE_ICAL_URL),
+        "has_job_schedule": bool(u_job_schedule_ical()),
+        # Calendar URLs (per-user)
+        "personal_ical_url":     cfg.get("personal_ical_url", ""),
+        "canvas_ical_url":       cfg.get("canvas_ical_url", ""),
+        "canvas_api_token":      "••••••••" if cfg.get("canvas_api_token", "") else "",
+        "canvas_base_url":       cfg.get("canvas_base_url", ""),
+        "sports_ical_url":       cfg.get("sports_ical_url", ""),
+        "job_schedule_ical_url": cfg.get("job_schedule_ical_url", ""),
     })
 
 
@@ -6766,16 +6801,24 @@ def api_config_post():
         "name", "morning_briefing_time", "timer_cutoff_multiplier", "anthropic_api_key",
         "weekly_recap_advisor", "formal_signoff_name", "timezone",
         "app_mode", "is_summer_school", "has_summer_job",
+        "personal_ical_url", "canvas_ical_url", "canvas_api_token",
+        "canvas_base_url", "sports_ical_url", "job_schedule_ical_url",
     }
     updates = {k: str(v)[:2000] for k, v in data.items() if k in allowed}
+    # Skip masked Canvas token (UI sends •••••••• when unchanged)
+    if updates.get("canvas_api_token", "").strip().startswith("•"):
+        del updates["canvas_api_token"]
     if updates:
-        # Validate timezone if provided
         if "timezone" in updates:
             try:
                 ZoneInfo(updates["timezone"])
             except Exception:
                 return jsonify({"status": "error", "message": "Invalid timezone"}), 400
-        set_config(updates)
+        uid = _uid()
+        if uid:
+            set_user_config(updates, user_id=uid)
+        else:
+            set_config(updates)
         if "morning_briefing_time" in updates:
             schedule_briefing()
     return jsonify({"status": "ok"})
@@ -6900,11 +6943,11 @@ def api_weather_uv():
 
 @app.route("/api/job-schedule", methods=["GET"])
 def api_job_schedule():
-    """Return upcoming job schedule events from JOB_SCHEDULE_ICAL_URL."""
-    if not JOB_SCHEDULE_ICAL_URL:
+    """Return upcoming job schedule events from u_job_schedule_ical()."""
+    if not u_job_schedule_ical():
         return jsonify({"events": [], "configured": False})
     try:
-        cal = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+        cal = fetch_ical(u_job_schedule_ical())
         if not cal:
             return jsonify({"events": [], "configured": True, "error": "could not fetch"})
         tz = get_tz()
@@ -7954,10 +7997,10 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             return {"status": "updated", "task_id": task_id, "title": row["title"] if row else None}
 
         elif name == "get_assignments":
-            if not CANVAS_ICAL_URL:
+            if not u_canvas_ical():
                 return {"assignments": [], "note": "Canvas calendar not configured"}
             try:
-                cal = fetch_ical(CANVAS_ICAL_URL)
+                cal = fetch_ical(u_canvas_ical())
                 if not cal:
                     return {"assignments": [], "error": "Could not fetch Canvas calendar"}
                 asgn_list = get_canvas_assignments_with_overdue(cal)
@@ -8003,7 +8046,7 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
         elif name == "get_calendar_events":
             days_ahead = min(30, max(1, int(inputs.get("days_ahead", 7))))
             events = []
-            for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports"), (JOB_SCHEDULE_ICAL_URL, "job")):
+            for url, tag in ((u_personal_ical(), "personal"), (u_sports_ical(), "sports"), (u_job_schedule_ical(), "job")):
                 if not url:
                     continue
                 try:
@@ -8192,7 +8235,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
 
         elif name == "get_assignment_details":
             if not _canvas_configured():
-                return {"error": "Canvas API not configured (CANVAS_API_TOKEN / CANVAS_BASE_URL missing)."}
+                return {"error": "Canvas API not configured. Add your Canvas API token and base URL in Settings → Calendars."}
             title = str(inputs.get("title", "")).strip()
             if not title:
                 return {"error": "title is required"}
@@ -9660,8 +9703,8 @@ def api_chat():
 
         # Inject live assignments (disabled in summer mode when not in summer school)
         try:
-            if _canvas_active and CANVAS_ICAL_URL:
-                cal = fetch_ical(CANVAS_ICAL_URL)
+            if _canvas_active and u_canvas_ical():
+                cal = fetch_ical(u_canvas_ical())
                 if cal:
                     asgn_list = get_canvas_assignments_with_overdue(cal)
                     try:
@@ -9707,9 +9750,9 @@ def api_chat():
                 pass
 
             # Job schedule — inject upcoming shifts when student has a summer job
-            if _has_summer_job and JOB_SCHEDULE_ICAL_URL:
+            if _has_summer_job and u_job_schedule_ical():
                 try:
-                    _job_cal = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+                    _job_cal = fetch_ical(u_job_schedule_ical())
                     if _job_cal:
                         _tz = get_tz()
                         _today = datetime.now(_tz).date()
@@ -10328,7 +10371,7 @@ def _generate_daily_plan_for_date(target_date):
         school_assignments = []
 
         try:
-            cal = fetch_ical(CANVAS_ICAL_URL)
+            cal = fetch_ical(u_canvas_ical())
             if cal:
                 all_asgn = get_canvas_assignments_with_overdue(cal)
                 class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
@@ -10382,20 +10425,20 @@ def _generate_daily_plan_for_date(target_date):
         sports_events = []
         job_events = []
         try:
-            personal_cal = fetch_ical(PERSONAL_ICAL_URL)
+            personal_cal = fetch_ical(u_personal_ical())
             if personal_cal:
                 personal_events = parse_calendar_events(personal_cal, days_ahead=2)
         except Exception as e:
             log.warning(f"Could not fetch personal calendar for plan: {e}")
         try:
-            sports_cal = fetch_ical(SPORTS_ICAL_URL)
+            sports_cal = fetch_ical(u_sports_ical())
             if sports_cal:
                 sports_events = parse_calendar_events(sports_cal, days_ahead=2)
         except Exception as e:
             log.warning(f"Could not fetch sports calendar for plan: {e}")
-        if JOB_SCHEDULE_ICAL_URL:
+        if u_job_schedule_ical():
             try:
-                job_cal = fetch_ical(JOB_SCHEDULE_ICAL_URL)
+                job_cal = fetch_ical(u_job_schedule_ical())
                 if job_cal:
                     job_events = parse_calendar_events(job_cal, days_ahead=2)
             except Exception as e:
@@ -11115,7 +11158,7 @@ def api_daily_outlook():
 
     def _get_assignments():
         try:
-            cal = fetch_ical(CANVAS_ICAL_URL)
+            cal = fetch_ical(u_canvas_ical())
             if not cal:
                 return []
             conn = get_db()
@@ -11150,7 +11193,7 @@ def api_daily_outlook():
     def _get_events():
         try:
             out = []
-            for url, tag in ((PERSONAL_ICAL_URL, "personal"), (SPORTS_ICAL_URL, "sports"), (JOB_SCHEDULE_ICAL_URL, "job")):
+            for url, tag in ((u_personal_ical(), "personal"), (u_sports_ical(), "sports"), (u_job_schedule_ical(), "job")):
                 c = fetch_ical(url)
                 if not c:
                     continue
@@ -11636,6 +11679,20 @@ FROM access_codes WHERE code = %s""", (code,))
     })
 
 
+_CAL_KEYS = ("personal_ical_url", "canvas_ical_url", "canvas_api_token",
+             "canvas_base_url", "sports_ical_url", "job_schedule_ical_url")
+
+
+def _save_calendar_urls(user_id, data):
+    """Save optional calendar URLs from signup data into user_config."""
+    cals = {k: str(data.get(k, "")).strip()[:2000] for k in _CAL_KEYS}
+    cals = {k: v for k, v in cals.items() if v}
+    if "canvas_base_url" in cals:
+        cals["canvas_base_url"] = cals["canvas_base_url"].rstrip("/")
+    if cals:
+        set_user_config(cals, user_id=user_id)
+
+
 @app.route("/api/signup/create-checkout", methods=["POST"])
 def api_signup_create_checkout():
     if not stripe or not STRIPE_SECRET_KEY:
@@ -11678,6 +11735,22 @@ def api_signup_create_checkout():
     price_id = pc_row["stripe_price_id"] if pc_row else ""
     if not price_id:
         return jsonify({"error": "Pricing not configured. Contact admin."}), 503
+
+    # Stash calendar URLs in pending_signups so they survive the Stripe round trip
+    cals_json = json.dumps({k: str(data.get(k, "")).strip() for k in _CAL_KEYS})
+    pconn = get_db(); pcur = pconn.cursor()
+    try:
+        pcur.execute("""
+INSERT INTO pending_signups (access_code, calendar_data, created_at)
+VALUES (%s, %s, NOW())
+ON CONFLICT (access_code) DO UPDATE SET calendar_data = EXCLUDED.calendar_data, created_at = NOW()""",
+                     (code, cals_json))
+        pconn.commit()
+    except Exception as _pe:
+        log.warning("pending_signups insert failed: %s", _pe)
+        pconn.rollback()
+    finally:
+        pcur.close(); pconn.close()
 
     host = request.host_url.rstrip("/")
     try:
@@ -11739,6 +11812,7 @@ VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
     cur.close(); conn.close()
 
     _init_user_defaults(user_id)
+    _save_calendar_urls(user_id, data)
     log.info("Free signup: user %s (%s) created via code %s", username, email, code)
     return jsonify({"status": "ok", "redirect": "/login"})
 
@@ -11804,10 +11878,24 @@ ON CONFLICT (stripe_customer_id) DO UPDATE SET status='active', updated_at=NOW()
         (user_id, checkout.customer or "", stripe_sub_id, stripe_price_id, period_end))
 
     cur.execute("UPDATE access_codes SET redeemed_by = %s, redeemed_at = NOW() WHERE id = %s", (user_id, ac["id"]))
+
+    # Retrieve pending calendar URLs and save them for this user
+    cal_data = {}
+    try:
+        cur.execute("SELECT calendar_data FROM pending_signups WHERE access_code = %s", (code,))
+        prow = cur.fetchone()
+        if prow and prow["calendar_data"]:
+            cal_data = json.loads(prow["calendar_data"])
+        cur.execute("DELETE FROM pending_signups WHERE access_code = %s", (code,))
+    except Exception as _ce:
+        log.warning("pending_signups retrieve: %s", _ce)
+
     conn.commit()
     cur.close(); conn.close()
 
     _init_user_defaults(user_id)
+    if cal_data:
+        _save_calendar_urls(user_id, cal_data)
     log.info("Paid signup success: user %s (%s)", un, email)
     return render_template("signup_success.html", username=un, email=email)
 
