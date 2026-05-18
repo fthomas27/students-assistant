@@ -3275,9 +3275,16 @@ const TZ = "{{ tz }}";
   function loadToken() {
     if (csrfPromise) return csrfPromise;
     csrfPromise = origFetch('/api/csrf-token', { credentials: 'same-origin' })
-      .then(r => r.json())
-      .then(d => { csrfToken = d && d.csrf_token; return csrfToken; })
-      .catch(() => { csrfPromise = null; return null; });
+      .then(r => {
+        if (!r.ok) throw new Error('csrf token fetch failed: ' + r.status);
+        return r.json();
+      })
+      .then(d => {
+        csrfToken = d && d.csrf_token;
+        if (!csrfToken) throw new Error('csrf token missing in response');
+        return csrfToken;
+      })
+      .catch(() => { csrfPromise = null; csrfToken = null; return null; });
     return csrfPromise;
   }
   loadToken();
