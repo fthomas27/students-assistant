@@ -1229,8 +1229,15 @@ function loadAccessRequests() {
             '<button class="btn" style="padding:5px 10px; font-size:12px; background:var(--green); color:white; border:none; border-radius:4px; cursor:pointer; margin-right:6px;" onclick="approveAccessRequest(' + r.id + ')">Approve</button>' +
             '<button class="btn" style="padding:5px 10px; font-size:12px; background:var(--red); color:white; border:none; border-radius:4px; cursor:pointer;" onclick="denyAccessRequest(' + r.id + ')">Deny</button>';
         } else if (r.status === 'approved') {
-          actionHtml = '<span class="badge badge-green">Approved ' + (r.reviewed_at ? formatDate(r.reviewed_at) : '') + '</span>' +
-            (r.token_used ? ' <span class="badge badge-gray">Used</span>' : '');
+          actionHtml = '<span class="badge badge-green">Approved ' + (r.reviewed_at ? formatDate(r.reviewed_at) : '') + '</span>';
+          if (r.token_used) {
+            actionHtml += ' <span class="badge badge-gray">Used</span>';
+          } else if (r.token) {
+            var signupUrl = window.location.origin + '/signup/complete?token=' + encodeURIComponent(r.token);
+            actionHtml +=
+              ' <button class="btn" style="padding:4px 10px; font-size:12px; margin-left:6px; background:var(--surface2); color:var(--text); border:1px solid var(--border2); border-radius:4px; cursor:pointer;" ' +
+              'onclick="copySignupLink(this, ' + JSON.stringify(signupUrl) + ')">Copy signup link</button>';
+          }
         } else {
           actionHtml = '<span class="badge badge-red">Denied ' + (r.reviewed_at ? formatDate(r.reviewed_at) : '') + '</span>';
         }
@@ -1249,6 +1256,16 @@ function loadAccessRequests() {
     .catch(function() {
       tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Error loading</td></tr>';
     });
+}
+
+function copySignupLink(btn, url) {
+  function ok() { btn.textContent = '✓ Copied'; setTimeout(function() { btn.textContent = 'Copy signup link'; }, 1500); }
+  function fallback() { window.prompt('Copy this signup link:', url); }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(ok, fallback);
+  } else {
+    fallback();
+  }
 }
 
 function approveAccessRequest(id) {

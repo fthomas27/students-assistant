@@ -430,11 +430,16 @@ def test_admin_approve_deny(client, monkeypatch):
         def __init__(self):
             super().__init__()
             self._row = None
+            self.rowcount = 1
 
         def execute(self, sql, params=None, *_a, **_kw):
             sql_l = (sql or "").lower()
-            if "update access_requests set status='approved'" in sql_l:
-                self._row = {"email": "ada@example.com", "name": "Ada"}
+            if "select id, email, name, status, token, token_used from access_requests" in sql_l:
+                # approve's lookup — pretend the row is pending so we hit the UPDATE branch
+                self._row = {
+                    "id": 1, "email": "ada@example.com", "name": "Ada",
+                    "status": "pending", "token": None, "token_used": False,
+                }
             elif "update access_requests set status='denied'" in sql_l:
                 self._row = {"email": "ada@example.com", "name": "Ada"}
             else:
@@ -461,11 +466,59 @@ def test_admin_approve_deny(client, monkeypatch):
     data = resp.get_json()
     assert data and data.get("status") == "ok"
     assert data.get("token") and len(data["token"]) > 16
+    assert data.get("approval_url") and "/signup/complete?token=" in data["approval_url"]
 
     # Deny
     resp = c.post("/api/admin/access-requests/2/deny", headers=hdrs)
     assert resp.status_code == 200, resp.get_data(as_text=True)
     assert resp.get_json().get("status") == "ok"
+
+
+def test_admin_approve_is_idempotent(client, monkeypatch):
+    """Approving an already-approved-not-used request must return the same token."""
+    c, flask_app = client
+    existing_token = "preexisting-token-abcdef0123456789"
+
+    class StubCursor(FakeCursor):
+        def __init__(self):
+            super().__init__()
+            self._row = None
+            self.updates = []
+
+        def execute(self, sql, params=None, *_a, **_kw):
+            sql_l = (sql or "").lower()
+            if "select id, email, name, status, token, token_used from access_requests" in sql_l:
+                self._row = {
+                    "id": 1, "email": "ada@example.com", "name": "Ada",
+                    "status": "approved", "token": existing_token, "token_used": False,
+                }
+            elif "update access_requests set status='approved'" in sql_l:
+                self.updates.append(params)
+                self._row = None
+            else:
+                self._row = None
+
+        def fetchone(self):
+            return self._row
+
+    cursors = []
+
+    class StubConn(FakeConn):
+        def cursor(self):
+            c = StubCursor(); cursors.append(c); return c
+
+    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
+
+    with c.session_transaction() as s:
+        s["admin_authenticated"] = True
+        s["csrf_token"] = "tt"
+
+    resp = c.post("/api/admin/access-requests/1/approve", headers={"X-CSRF-Token": "tt"})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["token"] == existing_token
+    # Crucially, no UPDATE was issued on a still-valid approval
+    assert all(not c.updates for c in cursors)
 
 
 def test_complete_signup_invalid_token(client):
