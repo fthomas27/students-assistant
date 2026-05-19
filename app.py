@@ -12011,7 +12011,7 @@ ON CONFLICT (access_code) DO UPDATE SET calendar_data = EXCLUDED.calendar_data, 
 
 @app.route("/api/signup/create-free", methods=["POST"])
 def api_signup_create_free():
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True, silent=True) or {}
     code     = str(data.get("code", "")).strip().upper()
     email    = str(data.get("email", "")).strip().lower()
     username = str(data.get("username", "")).strip()
@@ -12021,34 +12021,45 @@ def api_signup_create_free():
         return jsonify({"error": "All fields are required"}), 400
     if len(username) < 3 or len(password) < 6:
         return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
-
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT id, bypass_payment, redeemed_by, expires_at FROM access_codes WHERE code = %s", (code,))
-    ac = cur.fetchone()
-    if not ac or ac["redeemed_by"]:
-        cur.close(); conn.close()
-        return jsonify({"error": "Invalid or already-used access code"}), 400
-    if ac["expires_at"] and ac["expires_at"] < datetime.now(TZ):
-        cur.close(); conn.close()
-        return jsonify({"error": "Access code expired"}), 400
-    if not ac["bypass_payment"]:
-        cur.close(); conn.close()
-        return jsonify({"error": "This code requires payment. Use the paid signup."}), 400
-
-    cur.execute("SELECT id FROM users WHERE username = %s OR email = %s", (username, email))
-    if cur.fetchone():
-        cur.close(); conn.close()
-        return jsonify({"error": "Username or email already taken"}), 409
+    if not _basic_email_ok(email):
+        return jsonify({"error": "Invalid email"}), 400
 
     user_id = str(uuid.uuid4())
-    cur.execute("""
+    conn = get_db(); cur = conn.cursor()
+    try:
+        # Lock the access_codes row so two parallel signups can't both claim it
+        cur.execute(
+            "SELECT id, bypass_payment, redeemed_by, expires_at "
+            "FROM access_codes WHERE code = %s FOR UPDATE",
+            (code,),
+        )
+        ac = cur.fetchone()
+        if not ac or ac["redeemed_by"]:
+            return jsonify({"error": "Invalid or already-used access code"}), 400
+        if ac["expires_at"] and ac["expires_at"] < datetime.now(TZ):
+            return jsonify({"error": "Access code expired"}), 400
+        if not ac["bypass_payment"]:
+            return jsonify({"error": "This code requires payment. Use the paid signup."}), 400
+
+        cur.execute("SELECT id FROM users WHERE username = %s OR email = %s", (username, email))
+        if cur.fetchone():
+            return jsonify({"error": "Username or email already taken"}), 409
+
+        try:
+            cur.execute("""
 INSERT INTO users (id, email, username, password_hash, display_name, is_comped, active)
 VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
-        (user_id, email, username, generate_password_hash(password), username.title()))
-    cur.execute("UPDATE access_codes SET redeemed_by = %s, redeemed_at = NOW() WHERE id = %s",
-                (user_id, ac["id"]))
-    conn.commit()
-    cur.close(); conn.close()
+                (user_id, email, username, generate_password_hash(password), username.title()))
+        except psycopg2.IntegrityError:
+            conn.rollback()
+            return jsonify({"error": "Username or email already taken"}), 409
+        cur.execute(
+            "UPDATE access_codes SET redeemed_by = %s, redeemed_at = NOW() WHERE id = %s",
+            (user_id, ac["id"]),
+        )
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
 
     _init_user_defaults(user_id)
     _save_calendar_urls(user_id, data)
@@ -12327,28 +12338,42 @@ ORDER BY ac.created_at DESC""")
 def api_admin_access_codes_create():
     if not session.get("admin_authenticated"):
         return jsonify({"error": "Not authorized"}), 403
-    data = request.get_json(force=True) or {}
-    count        = min(int(data.get("count", 1)), 20)
-    bypass       = bool(data.get("bypass_payment", False))
-    notes        = str(data.get("notes", ""))[:200]
-    expires_days = data.get("expires_days")
-    expires_at   = None
-    if expires_days:
-        expires_at = datetime.now(TZ) + timedelta(days=int(expires_days))
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        count = max(1, min(int(data.get("count", 1) or 1), 20))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Count must be a number"}), 400
+    bypass = bool(data.get("bypass_payment", False))
+    notes = str(data.get("notes", ""))[:200]
+    expires_at = None
+    expires_days_raw = data.get("expires_days")
+    if expires_days_raw not in (None, "", 0, "0"):
+        try:
+            expires_days = int(expires_days_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Expires-in days must be a number"}), 400
+        if expires_days < 1:
+            return jsonify({"error": "Expires-in days must be ≥ 1"}), 400
+        expires_at = datetime.now(TZ) + timedelta(days=expires_days)
 
     conn = get_db(); cur = conn.cursor()
-    created = []
-    for _ in range(count):
-        code = "JARVIS-" + secrets.token_hex(3).upper()
-        cur.execute("""
+    try:
+        created = []
+        for _ in range(count):
+            # Retry a few times if we hit a collision; 24 bits → vanishingly rare
+            for _attempt in range(5):
+                code = "JARVIS-" + secrets.token_hex(3).upper()
+                cur.execute("""
 INSERT INTO access_codes (code, bypass_payment, expires_at, notes)
 VALUES (%s, %s, %s, %s) ON CONFLICT (code) DO NOTHING RETURNING id, code""",
-            (code, bypass, expires_at, notes))
-        row = cur.fetchone()
-        if row:
-            created.append({"id": str(row["id"]), "code": row["code"], "bypass_payment": bypass})
-    conn.commit()
-    cur.close(); conn.close()
+                    (code, bypass, expires_at, notes))
+                row = cur.fetchone()
+                if row:
+                    created.append({"id": str(row["id"]), "code": row["code"], "bypass_payment": bypass})
+                    break
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
     return jsonify({"created": created})
 
 
@@ -12439,7 +12464,13 @@ def api_admin_subscriber_revoke(user_id):
 # ── Waitlist / Approval signup flow ───────────────────────────────────────────
 
 def _basic_email_ok(email):
-    return bool(email) and "@" in email and "." in email.split("@")[-1]
+    if not email or "@" not in email:
+        return False
+    local, _, domain = email.rpartition("@")
+    if not local or "." not in domain:
+        return False
+    head, _, tld = domain.rpartition(".")
+    return bool(head) and len(tld) >= 2
 
 
 @app.route("/api/signup/request-access", methods=["POST"])
@@ -12457,7 +12488,6 @@ def api_signup_request_access():
     try:
         cur.execute("SELECT id FROM users WHERE email = %s", (email,))
         if cur.fetchone():
-            cur.close(); conn.close()
             return jsonify({"error": "An account with this email already exists"}), 409
 
         cur.execute(
@@ -12465,7 +12495,6 @@ def api_signup_request_access():
             (email,),
         )
         if cur.fetchone():
-            cur.close(); conn.close()
             return jsonify({"status": "ok", "message": "Request already pending"})
 
         cur.execute(
@@ -12535,30 +12564,44 @@ def api_admin_access_requests_list():
 def api_admin_access_request_approve(req_id):
     if not session.get("admin_authenticated"):
         return jsonify({"error": "Unauthorized"}), 401
-    token = secrets.token_urlsafe(32)
+
     conn = get_db(); cur = conn.cursor()
     try:
         cur.execute(
-            "UPDATE access_requests SET status='approved', token=%s, token_used=FALSE, "
-            "reviewed_at=NOW(), reviewed_by='admin' WHERE id = %s "
-            "RETURNING email, name",
-            (token, req_id),
+            "SELECT id, email, name, status, token, token_used "
+            "FROM access_requests WHERE id = %s FOR UPDATE",
+            (req_id,),
         )
         row = cur.fetchone()
-        conn.commit()
+        if not row:
+            return jsonify({"error": "Request not found"}), 404
+
+        if row["status"] == "approved" and row["token"] and not row["token_used"]:
+            # Idempotent: the previously shared link is still valid, return it as-is
+            token = row["token"]
+            email = row["email"]
+            name = row["name"]
+            conn.commit()
+        else:
+            token = secrets.token_urlsafe(32)
+            cur.execute(
+                "UPDATE access_requests SET status='approved', token=%s, token_used=FALSE, "
+                "reviewed_at=NOW(), reviewed_by='admin' WHERE id = %s",
+                (token, req_id),
+            )
+            conn.commit()
+            email = row["email"]
+            name = row["name"]
     finally:
         cur.close(); conn.close()
-
-    if not row:
-        return jsonify({"error": "Request not found"}), 404
 
     approval_url = f"{request.host_url.rstrip('/')}/signup/complete?token={token}"
     return jsonify({
         "status": "ok",
         "token": token,
         "approval_url": approval_url,
-        "name": row["name"],
-        "email": row["email"],
+        "name": name,
+        "email": email,
     })
 
 
@@ -12568,9 +12611,10 @@ def api_admin_access_request_deny(req_id):
         return jsonify({"error": "Unauthorized"}), 401
     conn = get_db(); cur = conn.cursor()
     try:
+        # Only deny pending requests — won't clobber an already-shared approval link
         cur.execute(
             "UPDATE access_requests SET status='denied', reviewed_at=NOW(), "
-            "reviewed_by='admin' WHERE id = %s RETURNING email, name",
+            "reviewed_by='admin' WHERE id = %s AND status = 'pending' RETURNING email, name",
             (req_id,),
         )
         row = cur.fetchone()
@@ -12579,17 +12623,7 @@ def api_admin_access_request_deny(req_id):
         cur.close(); conn.close()
 
     if not row:
-        return jsonify({"error": "Request not found"}), 404
-
-    try:
-        send_email(
-            row["email"],
-            "Access request update — Jarvis Student AI",
-            f"<p>Hi {row['name']},</p><p>Thanks for your interest in Jarvis Student AI. "
-            f"At this time we're unable to grant access. You're welcome to reach out later.</p>",
-        )
-    except Exception as _e:
-        log.debug("denial email failed: %s", _e)
+        return jsonify({"error": "Request not found or not pending"}), 404
 
     return jsonify({"status": "ok"})
 
@@ -12637,25 +12671,30 @@ def api_signup_complete_approved():
         return jsonify({"error": "All fields are required"}), 400
     if len(username) < 3 or len(password) < 6:
         return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
+    if not _basic_email_ok(email):
+        return jsonify({"error": "Invalid email"}), 400
 
     conn = get_db(); cur = conn.cursor()
-    cur.execute(
-        "SELECT id, email, status, token_used FROM access_requests WHERE token = %s",
-        (token,),
-    )
-    ar = cur.fetchone()
-    if not ar or ar["status"] != "approved" or ar["token_used"]:
-        cur.close(); conn.close()
-        return jsonify({"error": "Invalid or already-used approval token"}), 400
-    if (ar["email"] or "").lower() != email:
-        cur.close(); conn.close()
-        return jsonify({"error": "Email does not match the approved request"}), 400
+    try:
+        # Lock the access_request row so two parallel submits with the same
+        # token can't both pass validation
+        cur.execute(
+            "SELECT id, email, status, token_used FROM access_requests "
+            "WHERE token = %s FOR UPDATE",
+            (token,),
+        )
+        ar = cur.fetchone()
+        if not ar or ar["status"] != "approved" or ar["token_used"]:
+            return jsonify({"error": "Invalid or already-used approval token"}), 400
+        if (ar["email"] or "").lower() != email:
+            return jsonify({"error": "Email does not match the approved request"}), 400
 
-    cur.execute("SELECT id FROM users WHERE username = %s OR email = %s", (username, email))
-    if cur.fetchone():
+        cur.execute("SELECT id FROM users WHERE username = %s OR email = %s", (username, email))
+        if cur.fetchone():
+            return jsonify({"error": "Username or email already taken"}), 409
+        conn.commit()  # release the row lock; Stripe round-trip below takes longer than we want to hold it
+    finally:
         cur.close(); conn.close()
-        return jsonify({"error": "Username or email already taken"}), 409
-    cur.close(); conn.close()
 
     # If Stripe is configured, route through checkout. Otherwise create directly.
     if stripe and STRIPE_SECRET_KEY:
@@ -12703,18 +12742,27 @@ ON CONFLICT (access_code) DO UPDATE SET calendar_data = EXCLUDED.calendar_data, 
             return jsonify({"error": "Payment setup failed. Try again."}), 500
         return jsonify({"url": checkout.url})
 
-    # No Stripe: create the user directly and burn the token.
+    # No Stripe: create the user directly and burn the token in a single tx.
     user_id = str(uuid.uuid4())
     conn = get_db(); cur = conn.cursor()
     try:
-        cur.execute("""
-INSERT INTO users (id, email, username, password_hash, display_name, is_comped, active)
-VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
-            (user_id, email, username, generate_password_hash(password), username.title()))
+        # Atomic token claim: only succeeds if the token is still unused
         cur.execute(
-            "UPDATE access_requests SET token_used = TRUE WHERE token = %s",
+            "UPDATE access_requests SET token_used = TRUE WHERE token = %s "
+            "AND status = 'approved' AND token_used = FALSE",
             (token,),
         )
+        if cur.rowcount == 0:
+            conn.rollback()
+            return jsonify({"error": "Invalid or already-used approval token"}), 400
+        try:
+            cur.execute("""
+INSERT INTO users (id, email, username, password_hash, display_name, is_comped, active)
+VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
+                (user_id, email, username, generate_password_hash(password), username.title()))
+        except psycopg2.IntegrityError:
+            conn.rollback()
+            return jsonify({"error": "Username or email already taken"}), 409
         conn.commit()
     finally:
         cur.close(); conn.close()
