@@ -1281,21 +1281,36 @@ def fetch_ical(url):
         return None
 
     # We own the fetch now
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; StudentsAssistant/1.0; +https://github.com)",
+        "Accept": "text/calendar, text/plain, */*",
+    }
+    last_exc = None
     try:
-        log.info(f"iCal: fetching {url}")
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        cal = Calendar.from_ical(resp.content)
-        with _ical_cache_lock:
-            _ical_cache[url] = (time.monotonic(), cal)
-        new_event.set()  # Signal other waiting threads
-        log.info(f"iCal: successfully cached {url}")
-        return cal
-    except Exception as e:
-        log.warning("iCal fetch failed for %s: %s", url, e)
+        for attempt in range(2):
+            try:
+                log.info(f"iCal: fetching {url} (attempt {attempt + 1})")
+                resp = requests.get(url, timeout=20, headers=headers, allow_redirects=True)
+                resp.raise_for_status()
+                cal = Calendar.from_ical(resp.content)
+                with _ical_cache_lock:
+                    _ical_cache[url] = (time.monotonic(), cal)
+                # Clear any prior error now that we have a successful fetch
+                with _ical_sync_lock:
+                    _ical_last_error.pop(url, None)
+                new_event.set()  # Signal other waiting threads
+                log.info(f"iCal: successfully cached {url}")
+                return cal
+            except Exception as e:
+                last_exc = e
+                if attempt == 0:
+                    log.info(f"iCal: attempt 1 failed for {url} ({e}); retrying once")
+                    time.sleep(1.5)
+        # Both attempts failed
+        log.warning("iCal fetch failed for %s: %s", url, last_exc)
         new_event.set()  # Signal other waiting threads even on failure
         with _ical_sync_lock:
-            _ical_last_error[url] = {"at": datetime.now(TZ).isoformat(), "msg": str(e)}
+            _ical_last_error[url] = {"at": datetime.now(TZ).isoformat(), "msg": str(last_exc)}
         # Return stale cache on failure rather than None
         with _ical_cache_lock:
             if url in _ical_cache:
