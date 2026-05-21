@@ -11,6 +11,7 @@ from datetime import datetime
 from unittest import mock
 
 import pytest
+import requests
 
 os.environ.setdefault("FLASK_BOOT_DEV", "1")
 os.environ.setdefault("FLASK_SKIP_BOOT", "1")
@@ -535,3 +536,83 @@ def test_reduced_motion_styles_present(client):
     for path in ("/login",):
         body = c.get(path).get_data(as_text=True)
         assert "prefers-reduced-motion" in body
+
+
+def _reset_ical_state(flask_app):
+    flask_app._ical_cache.clear()
+    flask_app._ical_neg_cache.clear()
+    with flask_app._ical_sync_lock:
+        flask_app._ical_last_error.clear()
+
+
+def _http_error_get(status, counter):
+    """A requests.get stand-in that always raises an HTTPError of `status`."""
+    def fake_get(*_args, **_kwargs):
+        counter["n"] += 1
+        resp = mock.Mock()
+        resp.status_code = status
+        resp.content = b""
+
+        def raise_for_status():
+            err = requests.exceptions.HTTPError(f"{status} error")
+            err.response = resp
+            raise err
+
+        resp.raise_for_status = raise_for_status
+        return resp
+    return fake_get
+
+
+def test_fetch_ical_skips_retry_and_backs_off_on_permanent_404(client):
+    """A stale Canvas feed (404) must be fetched once, then served from the
+    negative cache — not re-fetched on every request (the 404-storm bug)."""
+    _, flask_app = client
+    _reset_ical_state(flask_app)
+    url = "https://example.test/canvas-stale-feed.ics"
+    calls = {"n": 0}
+    with mock.patch.object(flask_app.requests, "get", side_effect=_http_error_get(404, calls)), \
+         mock.patch.object(flask_app.time, "sleep") as sleep_mock:
+        assert flask_app.fetch_ical(url) is None
+        assert calls["n"] == 1                 # no retry on a permanent 404
+        sleep_mock.assert_not_called()         # and no 1.5s back-off sleep
+        assert url in flask_app._ical_neg_cache
+        # A second call inside the back-off window must NOT hit the network.
+        assert flask_app.fetch_ical(url) is None
+        assert calls["n"] == 1
+
+
+def test_fetch_ical_retries_transient_server_error(client):
+    """A 5xx is transient, so the existing single-retry behavior is preserved."""
+    _, flask_app = client
+    _reset_ical_state(flask_app)
+    url = "https://example.test/transient-500.ics"
+    calls = {"n": 0}
+    with mock.patch.object(flask_app.requests, "get", side_effect=_http_error_get(500, calls)), \
+         mock.patch.object(flask_app.time, "sleep"):
+        assert flask_app.fetch_ical(url) is None
+        assert calls["n"] == 2                 # transient → retried once
+
+
+def test_sync_status_only_reports_configured_feeds(client, monkeypatch):
+    """An error logged for a since-replaced URL must not stick in the banner."""
+    c, flask_app = client
+    canvas_url = "https://canvas.example/current-feed.ics"
+    old_url = "https://canvas.example/OLD-replaced-feed.ics"
+    monkeypatch.setattr(flask_app, "u_canvas_ical", lambda: canvas_url)
+    monkeypatch.setattr(flask_app, "u_personal_ical", lambda: "")
+    monkeypatch.setattr(flask_app, "u_sports_ical", lambda: "")
+    monkeypatch.setattr(flask_app, "u_job_schedule_ical", lambda: "")
+
+    now_iso = datetime.now(flask_app.TZ).isoformat()
+    with flask_app._ical_sync_lock:
+        flask_app._ical_last_error.clear()
+        flask_app._ical_last_error[canvas_url] = {"at": now_iso, "msg": "404 Not Found"}
+        flask_app._ical_last_error[old_url] = {"at": now_iso, "msg": "404 Not Found"}
+
+    with c.session_transaction() as sess:
+        sess["authenticated"] = True
+    resp = c.get("/api/sync-status")
+    assert resp.status_code == 200
+    feeds = [i["feed"] for i in resp.get_json()["issues"]]
+    assert "Canvas" in feeds                   # the configured feed is reported
+    assert "Calendar" not in feeds             # the replaced URL is dropped

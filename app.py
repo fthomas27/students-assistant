@@ -1225,8 +1225,23 @@ _ical_cache = {}  # url -> (monotonic_time, Calendar)
 _ical_cache_lock = threading.Lock()
 _ical_inflight = {}  # url -> threading.Event for request coalescing
 _ical_last_error = {}  # url -> {"at": iso, "msg": str}
+_ical_neg_cache = {}  # url -> (monotonic_time, ttl_seconds) — back-off after a failed fetch
 _ical_sync_lock = threading.Lock()
 ICAL_CACHE_TTL = 300  # 5 minutes
+ICAL_NEG_CACHE_TTL = 120  # back off 2 min after a transient fetch failure
+ICAL_NEG_CACHE_TTL_PERMANENT = 600  # back off 10 min after a permanent (4xx) failure
+
+
+def _ical_http_status(exc):
+    """HTTP status code behind a requests error, or None for network errors."""
+    resp = getattr(exc, "response", None)
+    return getattr(resp, "status_code", None) if resp is not None else None
+
+
+def _ical_error_is_permanent(exc):
+    """A 4xx (other than 408/429) won't succeed on retry — don't hammer the feed."""
+    code = _ical_http_status(exc)
+    return code is not None and 400 <= code < 500 and code not in (408, 429)
 
 
 def fetch_ical(url):
@@ -1242,6 +1257,17 @@ def fetch_ical(url):
             cached_at, cached_cal = _ical_cache[url]
             if now - cached_at < ICAL_CACHE_TTL:
                 return cached_cal
+
+        # Back off if this URL failed recently — avoid re-fetching a dead feed
+        # on every request (a stale Canvas feed 404s on each page load otherwise)
+        neg = _ical_neg_cache.get(url)
+        if neg:
+            failed_at, neg_ttl = neg
+            if now - failed_at < neg_ttl:
+                if url in _ical_cache:
+                    return _ical_cache[url][1]  # serve stale rather than nothing
+                return None
+            _ical_neg_cache.pop(url, None)
 
         # Check if another thread is already fetching this URL
         if url in _ical_inflight:
@@ -1295,6 +1321,7 @@ def fetch_ical(url):
                 cal = Calendar.from_ical(resp.content)
                 with _ical_cache_lock:
                     _ical_cache[url] = (time.monotonic(), cal)
+                    _ical_neg_cache.pop(url, None)
                 # Clear any prior error now that we have a successful fetch
                 with _ical_sync_lock:
                     _ical_last_error.pop(url, None)
@@ -1303,12 +1330,21 @@ def fetch_ical(url):
                 return cal
             except Exception as e:
                 last_exc = e
+                if _ical_error_is_permanent(e):
+                    # 404/401/403/410 etc. — a retry would fail identically.
+                    log.warning("iCal: permanent error %s for %s; not retrying",
+                                _ical_http_status(e), url)
+                    break
                 if attempt == 0:
                     log.info(f"iCal: attempt 1 failed for {url} ({e}); retrying once")
                     time.sleep(1.5)
-        # Both attempts failed
+        # Both attempts failed (or a permanent error short-circuited the retry)
         log.warning("iCal fetch failed for %s: %s", url, last_exc)
         new_event.set()  # Signal other waiting threads even on failure
+        neg_ttl = (ICAL_NEG_CACHE_TTL_PERMANENT if _ical_error_is_permanent(last_exc)
+                   else ICAL_NEG_CACHE_TTL)
+        with _ical_cache_lock:
+            _ical_neg_cache[url] = (time.monotonic(), neg_ttl)
         with _ical_sync_lock:
             _ical_last_error[url] = {"at": datetime.now(TZ).isoformat(), "msg": str(last_exc)}
         # Return stale cache on failure rather than None
@@ -1321,6 +1357,23 @@ def fetch_ical(url):
     finally:
         with _ical_cache_lock:
             _ical_inflight.pop(url, None)  # Clean up the inflight marker
+
+
+def _ical_forget(url):
+    """Drop all cached state for a feed URL so the next fetch starts fresh.
+
+    Called when a user updates a calendar URL in settings, so a corrected feed
+    recovers immediately instead of waiting out the failure back-off.
+    """
+    if not url:
+        return
+    if url.startswith("webcal://"):
+        url = "https://" + url[9:]
+    with _ical_cache_lock:
+        _ical_neg_cache.pop(url, None)
+        _ical_cache.pop(url, None)
+    with _ical_sync_lock:
+        _ical_last_error.pop(url, None)
 
 
 # ── Simple TTL cache for JSON-returning external fetches ─────────────────────
@@ -5003,11 +5056,16 @@ def api_sync_status():
         RED_DAY_ICAL_URL: "Red Day",
         WHITE_DAY_ICAL_URL: "White Day",
     }
+    label_for.pop("", None)  # ignore unconfigured feeds
     cutoff = datetime.now(TZ) - timedelta(hours=6)
     issues = []
     with _ical_sync_lock:
         snapshot = dict(_ical_last_error)
     for url, info in snapshot.items():
+        # Only surface errors for feeds currently configured for this user; a
+        # stale error for a replaced URL must not keep sticking in the banner.
+        if url not in label_for:
+            continue
         try:
             at = datetime.fromisoformat(info["at"])
         except Exception:
@@ -5015,7 +5073,7 @@ def api_sync_status():
         if at < cutoff:
             continue
         issues.append({
-            "feed": label_for.get(url, "Calendar"),
+            "feed": label_for[url],
             "at": info["at"],
             "message": info.get("msg", ""),
         })
@@ -7066,6 +7124,12 @@ def api_config_post():
             set_config(updates)
         if "morning_briefing_time" in updates:
             schedule_briefing()
+        # A changed calendar URL should retry right away, not sit out the
+        # failure back-off from the previous (possibly broken) URL.
+        for _ical_key in ("personal_ical_url", "canvas_ical_url",
+                          "sports_ical_url", "job_schedule_ical_url"):
+            if _ical_key in updates:
+                _ical_forget(updates[_ical_key])
     return jsonify({"status": "ok"})
 
 
