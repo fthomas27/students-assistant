@@ -1417,6 +1417,53 @@ def _ical_forget(url):
         _ical_last_error.pop(url, None)
 
 
+# Friendly labels for calendar feeds, shared by validation + sync-status.
+ICAL_FEED_LABELS = {
+    "personal_ical_url":     "Personal",
+    "canvas_ical_url":       "Canvas",
+    "sports_ical_url":       "Sports",
+    "job_schedule_ical_url": "Job schedule",
+}
+
+
+def _validate_ical_url(url):
+    """Lightweight reachability + format check for a user-supplied calendar URL.
+
+    Returns a short, human-readable problem description (suitable for showing to
+    the student), or None if the feed looks OK. Used at settings-save time so a
+    dead/expired link (e.g. a reset Canvas feed token that 404s) is caught
+    immediately instead of silently importing zero assignments.
+    """
+    url = (url or "").strip()
+    if not url:
+        return None
+    if url.startswith("webcal://"):
+        url = "https://" + url[9:]
+    if not url.lower().startswith(("http://", "https://")):
+        return "doesn't look like a valid URL — paste the full https:// feed link"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; StudentsAssistant/1.0; +https://github.com)",
+        "Accept": "text/calendar, text/plain, */*",
+    }
+    try:
+        resp = requests.get(url, timeout=10, headers=headers, allow_redirects=True)
+    except requests.exceptions.Timeout:
+        return "timed out — the calendar server didn't respond"
+    except Exception:
+        return "could not be reached — double-check the URL"
+    if resp.status_code == 404:
+        return "returned 404 Not Found — the link is likely expired; copy a fresh feed URL from the calendar"
+    if resp.status_code in (401, 403):
+        return (f"returned HTTP {resp.status_code} (access denied) — the feed may be "
+                "private or the link has expired")
+    if resp.status_code >= 400:
+        return f"returned HTTP {resp.status_code}"
+    body = resp.text or ""
+    if "BEGIN:VCALENDAR" not in body[:8000].upper():
+        return "didn't return calendar data — make sure it's an iCal (.ics) feed URL"
+    return None
+
+
 # ── Simple TTL cache for JSON-returning external fetches ─────────────────────
 _simple_cache = {}  # key -> (monotonic_time, value)
 _simple_cache_lock = threading.Lock()
@@ -7161,11 +7208,20 @@ def api_config_post():
         if "morning_briefing_time" in updates:
             schedule_briefing()
         # A changed calendar URL should retry right away, not sit out the
-        # failure back-off from the previous (possibly broken) URL.
+        # failure back-off from the previous (possibly broken) URL. While we're
+        # here, probe each changed feed so a dead/expired link (a reset Canvas
+        # feed 404s, etc.) is reported to the student at save time instead of
+        # silently importing nothing.
+        warnings = []
         for _ical_key in ("personal_ical_url", "canvas_ical_url",
                           "sports_ical_url", "job_schedule_ical_url"):
             if _ical_key in updates:
                 _ical_forget(updates[_ical_key])
+                problem = _validate_ical_url(updates[_ical_key])
+                if problem:
+                    warnings.append(f"{ICAL_FEED_LABELS[_ical_key]} calendar {problem}.")
+        if warnings:
+            return jsonify({"status": "ok", "warnings": warnings})
     return jsonify({"status": "ok"})
 
 

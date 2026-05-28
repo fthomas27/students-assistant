@@ -3765,7 +3765,14 @@ function saveSettings() {
       return;
     }
     closeSettingsModal();
-    alert('Settings saved successfully');
+    // The save succeeded, but a pasted calendar feed may be unreachable/expired
+    // — surface those warnings so a dead link doesn't silently import nothing.
+    const warnings = (body && Array.isArray(body.warnings)) ? body.warnings : [];
+    if (warnings.length) {
+      alert('Settings saved, but:\n\n• ' + warnings.join('\n• '));
+    } else {
+      alert('Settings saved successfully');
+    }
     // Calendar URLs may have changed — drop cached views and re-pull so the
     // newly saved iCal feeds take effect immediately instead of next reload.
     try { bustPlanCache(); } catch (_e) {}
@@ -8731,21 +8738,35 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-(async function checkSyncStatus() {
+// Global so settings-save (and other flows) can re-check after changing feeds.
+async function checkSyncStatus() {
   try {
     const r = await fetch('/api/sync-status');
     if (!r.ok) return;
     const data = await r.json();
-    if (!data.issues || !data.issues.length) return;
-    const names = data.issues.map(i => i.feed).join(', ');
     const banner = document.getElementById('syncStatusBanner');
     const text = document.getElementById('syncStatusText');
-    if (banner && text) {
-      text.textContent = `Calendar sync issue: ${names} — showing cached data. Last attempt failed; will retry automatically.`;
-      banner.style.display = 'block';
+    if (!banner || !text) return;
+    if (!data.issues || !data.issues.length) {
+      banner.style.display = 'none';  // feeds recovered — clear a stale banner
+      return;
     }
+    // A 404/401/403/410 means the feed URL itself is dead (e.g. a Canvas
+    // calendar-feed token that was reset), so tell the student to re-paste a
+    // fresh link rather than implying it will fix itself on retry.
+    const parts = data.issues.map(function (i) {
+      const msg = (i.message || '').toLowerCase();
+      const dead = /\b(404|401|403|410|not found)\b/.test(msg);
+      if (dead) {
+        return `${i.feed} calendar link looks broken or expired — open Settings and paste a fresh feed URL.`;
+      }
+      return `${i.feed} calendar couldn't be reached — showing cached data; will retry automatically.`;
+    });
+    text.textContent = 'Calendar sync issue: ' + parts.join(' ');
+    banner.style.display = 'block';
   } catch (e) { /* ignore */ }
-})();
+}
+checkSyncStatus();
 
 </script>
 

@@ -654,3 +654,59 @@ def test_sync_status_only_reports_configured_feeds(client, monkeypatch):
     feeds = [i["feed"] for i in resp.get_json()["issues"]]
     assert "Canvas" in feeds                   # the configured feed is reported
     assert "Calendar" not in feeds             # the replaced URL is dropped
+
+
+def _mock_get_response(status_code, text):
+    resp = mock.Mock()
+    resp.status_code = status_code
+    resp.text = text
+    return resp
+
+
+def test_validate_ical_url_flags_404(client):
+    _, flask_app = client
+    with mock.patch.object(flask_app.requests, "get",
+                           return_value=_mock_get_response(404, "")):
+        problem = flask_app._validate_ical_url("https://canvas.example/dead.ics")
+    assert problem and "404" in problem
+
+
+def test_validate_ical_url_flags_non_calendar_body(client):
+    _, flask_app = client
+    with mock.patch.object(flask_app.requests, "get",
+                           return_value=_mock_get_response(200, "<html>nope</html>")):
+        problem = flask_app._validate_ical_url("https://example.test/notacal")
+    assert problem and "calendar" in problem.lower()
+
+
+def test_validate_ical_url_accepts_good_feed(client):
+    _, flask_app = client
+    body = "BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR\n"
+    with mock.patch.object(flask_app.requests, "get",
+                           return_value=_mock_get_response(200, body)):
+        assert flask_app._validate_ical_url("https://example.test/good.ics") is None
+
+
+def test_validate_ical_url_empty_is_ok(client):
+    _, flask_app = client
+    assert flask_app._validate_ical_url("") is None
+    assert flask_app._validate_ical_url("not-a-url") is not None
+
+
+def test_config_post_returns_warning_for_dead_canvas_feed(client, monkeypatch):
+    """Saving a 404ing Canvas feed should still persist but warn the student."""
+    c, flask_app = client
+    monkeypatch.setattr(flask_app, "set_user_config", lambda *a, **k: None)
+    monkeypatch.setattr(flask_app, "set_config", lambda *a, **k: None)
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+        s["csrf_token"] = "tok"
+    with mock.patch.object(flask_app.requests, "get",
+                           return_value=_mock_get_response(404, "")):
+        resp = c.post("/api/config",
+                      json={"canvas_ical_url": "https://canvas.example/dead.ics"},
+                      headers={"X-CSRF-Token": "tok"})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "ok"
+    assert data.get("warnings") and any("Canvas" in w for w in data["warnings"])
