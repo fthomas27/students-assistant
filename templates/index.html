@@ -3748,16 +3748,33 @@ function saveSettings() {
     if (el) cfgPayload[k] = el.value.trim();
   });
 
+  // Build a minimal cfg-like object so applyAppMode can gate on is_summer_school
+  applyAppMode(mode, { is_summer_school: isSummerSchool, has_summer_job: hasSummerJob });
+
   fetch('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfgPayload),
-  }).catch(() => {});
-
-  // Build a minimal cfg-like object so applyAppMode can gate on is_summer_school
-  applyAppMode(mode, { is_summer_school: isSummerSchool, has_summer_job: hasSummerJob });
-  closeSettingsModal();
-  alert('Settings saved successfully');
+  }).then(async (r) => {
+    let body = {};
+    try { body = await r.json(); } catch (_e) { /* non-JSON */ }
+    if (!r.ok || (body && body.status === 'error')) {
+      const msg = (body && body.message) || (body && body.error) ||
+                  ('Save failed (HTTP ' + r.status + ')');
+      alert('Could not save settings: ' + msg);
+      return;
+    }
+    closeSettingsModal();
+    alert('Settings saved successfully');
+    // Calendar URLs may have changed — drop cached views and re-pull so the
+    // newly saved iCal feeds take effect immediately instead of next reload.
+    try { bustPlanCache(); } catch (_e) {}
+    [loadSidebarData, checkSyncStatus].forEach(function(fn) {
+      try { if (typeof fn === 'function') fn(); } catch (_e) {}
+    });
+  }).catch((e) => {
+    alert('Could not save settings: ' + (e && e.message ? e.message : 'network error'));
+  });
 }
 
 // ── App Mode Management ──────────────────────────────────────────────────────

@@ -100,6 +100,44 @@ def test_post_without_csrf_token_returns_403(client):
     assert resp.status_code == 403
 
 
+def test_authenticated_get_mints_csrf_token_into_session(client):
+    """An authenticated page-navigation GET must seed csrf_token into the
+    session so the cookie carries it before the page's parallel API burst —
+    this is what prevents the refresh-each-request cookie race that was
+    intermittently breaking CSRF (and thus settings saves)."""
+    c, _ = client
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+        s.pop("csrf_token", None)
+    # /login renders without auth; use /api/sync-status which is a plain
+    # authenticated GET that flows through the before_request hooks.
+    resp = c.get("/api/sync-status")
+    assert resp.status_code == 200
+    with c.session_transaction() as s:
+        token = s.get("csrf_token")
+    assert token and len(token) > 16
+    # The freshly minted token must now satisfy CSRF on a state-changing POST.
+    # POST /api/config with no recognised fields returns ok without touching
+    # the DB, so this isolates the CSRF check from storage.
+    resp = c.post("/api/config", json={}, headers={"X-CSRF-Token": token})
+    assert resp.status_code == 200
+    # And the same POST without the header is still rejected.
+    resp = c.post("/api/config", json={})
+    assert resp.status_code == 403
+
+
+def test_csrf_token_stable_across_repeated_fetches(client):
+    """Repeated csrf-token fetches must return the *same* token for a session,
+    so a token cached by the client stays valid for later POSTs."""
+    c, _ = client
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+        s.pop("csrf_token", None)
+    first = c.get("/api/csrf-token").get_json()["csrf_token"]
+    second = c.get("/api/csrf-token").get_json()["csrf_token"]
+    assert first and first == second
+
+
 def test_manifest_served(client):
     c, _ = client
     resp = c.get("/manifest.json")

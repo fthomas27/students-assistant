@@ -49,7 +49,16 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_SAMESITE='Lax',
-    PREFERRED_URL_SCHEME='https'
+    PREFERRED_URL_SCHEME='https',
+    # Only re-emit the session cookie when the session is actually modified.
+    # With the default (True), *every* response for a permanent session rewrites
+    # the cookie — so a burst of parallel page-load requests can clobber the
+    # csrf_token that the /api/csrf-token request just stored (the requests that
+    # loaded the session before the token existed re-serialize it without the
+    # token, and whichever response lands last wins). Disabling per-request
+    # refresh means only the request that mints the token emits a Set-Cookie,
+    # eliminating that race. See _ensure_session_csrf_token below.
+    SESSION_REFRESH_EACH_REQUEST=False,
 )
 
 
@@ -225,6 +234,38 @@ _CSRF_EXEMPT_PATHS = {
     '/api/login', '/api/csrf-token',
     '/api/test-admin-password', '/api/test-security-code', '/api/test-lockdown-status',
 }
+
+
+def _ensure_session_csrf_token():
+    """Mint a per-session CSRF token if the authenticated session lacks one.
+
+    Crucially this runs on the page-navigation request (GET / , /admin, /parent),
+    which is a *single* request issued before the page's JS fires its parallel
+    API burst. Storing the token here means the cookie already carries it by the
+    time those parallel requests run, so they all serialize the same token back
+    and none can clobber it. Returns the token (existing or freshly minted)."""
+    token = session.get('csrf_token')
+    if not token:
+        token = secrets.token_hex(32)
+        session['csrf_token'] = token
+        session.permanent = True
+        session.modified = True
+    return token
+
+
+@app.before_request
+def ensure_csrf_token_for_authenticated():
+    """Backfill csrf_token for any authenticated session that doesn't have one
+    yet (e.g. sessions created before this code shipped). Only mints on GET so
+    we never mutate the session mid-CSRF-check on a state-changing request."""
+    if request.method not in ("GET", "HEAD"):
+        return None
+    if (session.get("authenticated")
+            or session.get("admin_authenticated")
+            or session.get("parent_authenticated")):
+        if not session.get("csrf_token"):
+            _ensure_session_csrf_token()
+    return None
 
 
 @app.before_request
@@ -5037,12 +5078,7 @@ def api_admin_track_ip_name():
 @app.route("/api/csrf-token")
 def api_csrf_token():
     """Get CSRF token for form submissions"""
-    import secrets
-    if 'csrf_token' not in session:
-        session['csrf_token'] = secrets.token_hex(32)
-        session.permanent = True
-        session.modified = True
-    return jsonify({"csrf_token": session.get('csrf_token')})
+    return jsonify({"csrf_token": _ensure_session_csrf_token()})
 
 
 @app.route("/api/sync-status")
