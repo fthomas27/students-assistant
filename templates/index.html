@@ -4850,8 +4850,8 @@ function renderHealthDash() {
 
   const prWrap = document.getElementById('healthPRs');
   if (prWrap && prs && prs.records) {
-    const order = ['longest_run', 'fastest_mile', 'longest_swim'];
-    const icons = { longest_run: '🏃', fastest_mile: '⚡', longest_swim: '🏊' };
+    const order = ['longest_run', 'fastest_mile', 'longest_swim', 'highest_strain'];
+    const icons = { longest_run: '🏃', fastest_mile: '⚡', longest_swim: '🏊', highest_strain: '🔥' };
     prWrap.innerHTML = order.map(k => {
       const r = prs.records[k] || {};
       const when = r.achieved_on ? new Date(r.achieved_on + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
