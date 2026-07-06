@@ -7,28 +7,29 @@
 <title>Admin Panel</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
---bg: #0a0a0f;
---surface: #111118;
---surface2: #18181f;
---border: rgba(255,255,255,0.07);
---border2: rgba(255,255,255,0.12);
---text: #f0f0f5;
---text2: #8888a0;
---text3: #555568;
---accent: #FF7F50;
---accent2: #FF9966;
---red: #f05c5c;
---green: #4caf82;
---yellow: #ffc107;
+--bg: #070B10;
+--surface: #0D141C;
+--surface2: #131C26;
+--border: rgba(140,178,190,0.10);
+--border2: rgba(140,178,190,0.18);
+--text: #EDF5F1;
+--text2: #A9BBB4;
+--text3: #64766F;
+--accent: #55E6A5;
+--accent-ink: #04231A;
+--accent2: #7CF0BC;
+--red: #FF7A7A;
+--green: #55E6A5;
+--yellow: #FFC46B;
 }
 
 body {
-font-family: 'DM Sans', sans-serif;
+font-family: 'Inter', sans-serif;
 background: var(--bg);
 color: var(--text);
 padding: 20px;
@@ -40,8 +41,8 @@ content: '';
 position: fixed;
 inset: 0;
 background:
-radial-gradient(ellipse 60% 50% at 20% 20%, rgba(124,106,247,0.06) 0%, transparent 70%),
-radial-gradient(ellipse 50% 40% at 80% 80%, rgba(124,106,247,0.04) 0%, transparent 70%);
+radial-gradient(ellipse 60% 50% at 20% 20%, rgba(185,167,255,0.06) 0%, transparent 70%),
+radial-gradient(ellipse 50% 40% at 80% 80%, rgba(185,167,255,0.04) 0%, transparent 70%);
 pointer-events: none;
 z-index: -1;
 }
@@ -61,15 +62,15 @@ margin-bottom: 32px;
 }
 
 .header h1 {
-font-family: 'DM Serif Display', serif;
+font-family: 'Space Grotesk', sans-serif;
 font-size: 32px;
 }
 
 .logout-btn {
-background: var(--red);
-color: #fff;
-border: none;
-border-radius: 8px;
+background: transparent;
+color: var(--red);
+border: 1px solid rgba(255,122,122,0.5);
+border-radius: 999px;
 padding: 10px 18px;
 font-size: 14px;
 font-weight: 600;
@@ -133,7 +134,7 @@ margin-bottom: 32px;
 }
 
 .section-title {
-font-family: 'DM Serif Display', serif;
+font-family: 'Space Grotesk', sans-serif;
 font-size: 20px;
 margin-bottom: 16px;
 display: flex;
@@ -184,17 +185,17 @@ font-weight: 600;
 }
 
 .status-success {
-background: rgba(76, 175, 130, 0.15);
+background: rgba(85, 230, 165, 0.15);
 color: var(--green);
 }
 
 .status-failed {
-background: rgba(240, 92, 92, 0.15);
+background: rgba(255, 122, 122, 0.15);
 color: var(--red);
 }
 
 .status-locked {
-background: rgba(255, 193, 7, 0.15);
+background: rgba(255, 196, 107, 0.15);
 color: var(--yellow);
 }
 
@@ -221,8 +222,8 @@ color: var(--text2);
 }
 
 .alert {
-background: rgba(240, 92, 92, 0.05);
-border: 1px solid rgba(240, 92, 92, 0.3);
+background: rgba(255, 122, 122, 0.05);
+border: 1px solid rgba(255, 122, 122, 0.3);
 border-left: 3px solid var(--red);
 border-radius: 8px;
 padding: 16px;
@@ -259,7 +260,7 @@ border: 1px solid var(--border2);
 border-radius: 8px;
 color: var(--text);
 font-size: 14px;
-font-family: 'DM Sans', sans-serif;
+font-family: 'Inter', sans-serif;
 outline: none;
 transition: border-color 0.2s;
 }
@@ -272,27 +273,27 @@ border: none;
 border-radius: 8px;
 font-size: 13px;
 font-weight: 600;
-font-family: 'DM Sans', sans-serif;
+font-family: 'Inter', sans-serif;
 cursor: pointer;
 transition: opacity 0.15s, transform 0.15s;
 }
 .btn:hover { opacity: 0.85; }
 .btn:active { transform: scale(0.97); }
-.btn-accent { background: var(--accent); color: #fff; }
+.btn-accent { background: var(--accent); color: var(--accent-ink); }
 .btn-red { background: var(--red); color: #fff; }
 .btn-ghost { background: var(--surface2); color: var(--text2); border: 1px solid var(--border2); }
 
 .badge { display: inline-block; padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 600; }
-.badge-green  { background: rgba(76,175,130,0.15); color: var(--green); }
-.badge-amber  { background: rgba(255,193,7,0.15);  color: var(--yellow); }
-.badge-red    { background: rgba(240,92,92,0.15);  color: var(--red); }
-.badge-purple { background: rgba(124,106,247,0.15); color: #a89cf8; }
-.badge-gray   { background: rgba(255,255,255,0.07); color: var(--text3); }
-.badge-paid   { background: rgba(255,127,80,0.12); color: var(--accent); }
+.badge-green  { background: rgba(85,230,165,0.15); color: var(--green); }
+.badge-amber  { background: rgba(255,196,107,0.15);  color: var(--yellow); }
+.badge-red    { background: rgba(255,122,122,0.15);  color: var(--red); }
+.badge-purple { background: rgba(185,167,255,0.15); color: #a89cf8; }
+.badge-gray   { background: rgba(140,178,190,0.10); color: var(--text3); }
+.badge-paid   { background: rgba(85,230,165,0.12); color: var(--accent); }
 
 .mrr-card {
-background: linear-gradient(135deg, rgba(255,127,80,0.12), rgba(255,127,80,0.04));
-border: 1px solid rgba(255,127,80,0.25);
+background: linear-gradient(135deg, rgba(85,230,165,0.12), rgba(85,230,165,0.04));
+border: 1px solid rgba(85,230,165,0.25);
 border-radius: 12px;
 padding: 16px 20px;
 margin-bottom: 16px;
@@ -331,7 +332,7 @@ color: var(--text3);
 transition: background 0.15s, color 0.15s;
 }
 
-.toggle-opt.active { background: var(--accent); color: #fff; }
+.toggle-opt.active { background: var(--accent); color: var(--accent-ink); }
 </style>
 
 </head>
@@ -343,7 +344,7 @@ transition: background 0.15s, color 0.15s;
     <button class="logout-btn" onclick="logout()">Logout</button>
   </div>
 
-  <div class="card" style="margin-bottom: 24px; background: rgba(255,127,80,0.1); border: 1px solid rgba(255,127,80,0.3);">
+  <div class="card" style="margin-bottom: 24px; background: rgba(85,230,165,0.1); border: 1px solid rgba(85,230,165,0.3);">
     <div class="card-title">🔐 System Lockdown</div>
     <div style="display: flex; justify-content: space-between; align-items: center;">
       <div>
@@ -554,7 +555,7 @@ transition: background 0.15s, color 0.15s;
     <div class="section-title">📨 Access Requests</div>
 
     <div style="display:flex; gap:8px; margin-bottom:16px;">
-      <button class="btn" id="ar-tab-pending" onclick="switchAccessRequestsTab('pending')" style="padding:8px 14px; background:var(--accent); color:white; border:none; border-radius:6px; cursor:pointer; font-weight:600;">Pending</button>
+      <button class="btn" id="ar-tab-pending" onclick="switchAccessRequestsTab('pending')" style="padding:8px 14px; background:var(--accent); color:var(--accent-ink); border:none; border-radius:6px; cursor:pointer; font-weight:600;">Pending</button>
       <button class="btn" id="ar-tab-approved" onclick="switchAccessRequestsTab('approved')" style="padding:8px 14px; background:var(--surface2); color:var(--text); border:1px solid var(--border2); border-radius:6px; cursor:pointer;">Approved</button>
       <button class="btn" id="ar-tab-denied" onclick="switchAccessRequestsTab('denied')" style="padding:8px 14px; background:var(--surface2); color:var(--text); border:1px solid var(--border2); border-radius:6px; cursor:pointer;">Denied</button>
     </div>
@@ -583,7 +584,7 @@ transition: background 0.15s, color 0.15s;
       <input type="text" id="block-ip-input" placeholder="IP address (e.g., 192.168.1.1)" style="flex: 1; padding: 12px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; color: var(--text);">
       <input type="text" id="block-name-input" placeholder="Name (e.g., John's Phone)" style="flex: 1; padding: 12px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; color: var(--text);">
       <input type="text" id="block-reason-input" placeholder="Reason (optional)" style="flex: 1; padding: 12px; background: var(--surface2); border: 1px solid var(--border2); border-radius: 8px; color: var(--text);">
-      <button onclick="blockIP()" style="padding: 12px 24px; background: var(--accent); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Block IP</button>
+      <button onclick="blockIP()" style="padding: 12px 24px; background: var(--accent); color:var(--accent-ink); border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Block IP</button>
     </div>
 
     <div class="table-container">
@@ -691,7 +692,7 @@ function loadLoginAttempts() {
         var row = document.createElement('tr');
         var statusClass = attempt.success ? 'status-success' : 'status-failed';
         var statusText = attempt.success ? 'Success' : 'Failed';
-        row.innerHTML = '<td class="ip-address"></td><td class="ip-name-cell" style="cursor: pointer;"></td><td class="username-cell"></td><td class="status-cell"></td><td class="timestamp"></td><td class="user-agent"></td><td><button class="edit-btn" style="padding: 6px 12px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Name IP</button></td>';
+        row.innerHTML = '<td class="ip-address"></td><td class="ip-name-cell" style="cursor: pointer;"></td><td class="username-cell"></td><td class="status-cell"></td><td class="timestamp"></td><td class="user-agent"></td><td><button class="edit-btn" style="padding: 6px 12px; background: var(--accent); color:var(--accent-ink); border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Name IP</button></td>';
         row.querySelector('.ip-address').textContent = attempt.ip_address;
         row.querySelector('.ip-name-cell').textContent = attempt.ip_name || '-';
 

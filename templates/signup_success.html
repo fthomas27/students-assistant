@@ -6,23 +6,24 @@
 <title>Jarvis — Account Created</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
---bg: #0a0a0f; --surface: #111118; --surface2: #18181f;
---border2: rgba(255,255,255,0.12); --text: #f0f0f5; --text2: #8888a0; --text3: #555568;
---accent: #FF7F50; --green: #4caf82;
+--bg: #070B10; --surface: #0D141C; --surface2: #131C26;
+--border2: rgba(140,178,190,0.18); --text: #EDF5F1; --text2: #A9BBB4; --text3: #64766F;
+--accent: #55E6A5;
+--accent-ink: #04231A; --green: #55E6A5;
 }
 body {
-font-family: 'DM Sans', sans-serif;
+font-family: 'Inter', sans-serif;
 background: var(--bg); color: var(--text);
 min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 24px;
 }
 body::before {
 content: ''; position: fixed; inset: -20%;
-background: radial-gradient(ellipse 50% 40% at 35% 40%, rgba(76,175,130,0.08) 0%, transparent 65%),
-            radial-gradient(ellipse 45% 35% at 70% 65%, rgba(255,127,80,0.06) 0%, transparent 65%);
+background: radial-gradient(ellipse 50% 40% at 35% 40%, rgba(85,230,165,0.08) 0%, transparent 65%),
+            radial-gradient(ellipse 45% 35% at 70% 65%, rgba(85,230,165,0.06) 0%, transparent 65%);
 pointer-events: none; filter: blur(20px);
 }
 .card {
@@ -37,13 +38,13 @@ to   { opacity: 1; transform: translateY(0); }
 }
 .check-ring {
 width: 64px; height: 64px; border-radius: 50%;
-background: linear-gradient(135deg, rgba(76,175,130,0.2), rgba(76,175,130,0.06));
-border: 1px solid rgba(76,175,130,0.4);
+background: linear-gradient(135deg, rgba(85,230,165,0.2), rgba(85,230,165,0.06));
+border: 1px solid rgba(85,230,165,0.4);
 display: flex; align-items: center; justify-content: center;
 font-size: 28px; margin: 0 auto 24px;
 }
 .title {
-font-family: 'DM Serif Display', serif; font-size: 28px; margin-bottom: 10px;
+font-family: 'Space Grotesk', sans-serif; font-size: 28px; margin-bottom: 10px;
 }
 .subtitle { font-size: 14px; color: var(--text2); margin-bottom: 28px; line-height: 1.5; }
 .info-box {
@@ -55,9 +56,9 @@ padding: 16px 20px; margin-bottom: 24px; text-align: left;
 .info-key { color: var(--text3); }
 .info-val { color: var(--text); font-weight: 600; font-family: monospace; }
 .login-btn {
-display: block; width: 100%; background: var(--accent); color: #fff;
-border: none; border-radius: 12px; padding: 15px;
-font-size: 16px; font-weight: 600; font-family: 'DM Sans', sans-serif;
+display: block; width: 100%; background: var(--accent); color: var(--accent-ink);
+border: none; border-radius: 999px; padding: 15px;
+font-size: 16px; font-weight: 600; font-family: 'Space Grotesk', sans-serif;
 cursor: pointer; text-decoration: none;
 transition: opacity 0.2s, transform 0.2s;
 }

@@ -6,28 +6,30 @@
 <title>Jarvis — Sign Up</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
---bg: #0a0a0f;
---surface: #111118;
---surface2: #18181f;
---border: rgba(255,255,255,0.07);
---border2: rgba(255,255,255,0.12);
---text: #f0f0f5;
---text2: #8888a0;
---text3: #555568;
---accent: #FF7F50;
---accent2: #FF9966;
---red: #f05c5c;
---green: #4caf82;
---purple: #7c6af7;
+--bg: #070B10;
+--surface: #0D141C;
+--surface2: #131C26;
+--surface3: #1B2733;
+--border: rgba(140,178,190,0.10);
+--border2: rgba(140,178,190,0.18);
+--text: #EDF5F1;
+--text2: #A9BBB4;
+--text3: #64766F;
+--accent: #55E6A5;
+--accent2: #7CF0BC;
+--accent-ink: #04231A;
+--red: #FF7A7A;
+--green: #55E6A5;
+--purple: #B9A7FF;
 }
 
 body {
-font-family: 'DM Sans', sans-serif;
+font-family: 'Inter', sans-serif;
 background: var(--bg);
 color: var(--text);
 min-height: 100dvh;
@@ -37,6 +39,7 @@ padding: 24px;
 position: relative;
 overflow-x: hidden;
 overflow-y: auto;
+-webkit-font-smoothing: antialiased;
 }
 
 body::before {
@@ -44,8 +47,8 @@ content: '';
 position: fixed;
 inset: -20%;
 background:
-  radial-gradient(ellipse 50% 40% at 25% 30%, rgba(255,127,80,0.10) 0%, transparent 65%),
-  radial-gradient(ellipse 45% 35% at 75% 70%, rgba(124,106,247,0.08) 0%, transparent 65%);
+  radial-gradient(ellipse 50% 40% at 25% 30%, rgba(85,230,165,0.10) 0%, transparent 65%),
+  radial-gradient(ellipse 45% 35% at 75% 70%, rgba(111,199,242,0.07) 0%, transparent 65%);
 pointer-events: none;
 filter: blur(20px);
 animation: auroraDrift 28s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite alternate;
@@ -59,13 +62,14 @@ will-change: transform;
 
 .card {
 width: 100%;
-max-width: 400px;
+max-width: 410px;
 background: var(--surface);
 border: 1px solid var(--border2);
-border-radius: 24px;
-padding: 40px 32px 36px;
+border-radius: 26px;
+padding: 42px 34px 36px;
 position: relative;
 margin: auto;
+box-shadow: 0 30px 80px rgba(0,0,0,0.5);
 animation: fadeUp 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
 }
 
@@ -75,18 +79,22 @@ to { opacity: 1; transform: translateY(0); }
 }
 
 .logo-ring {
-width: 56px; height: 56px;
+width: 58px; height: 58px;
 border-radius: 50%;
-background: linear-gradient(135deg, rgba(255,127,80,0.2), rgba(255,127,80,0.06));
-border: 1px solid rgba(255,127,80,0.3);
+background: linear-gradient(135deg, rgba(85,230,165,0.22), rgba(85,230,165,0.05));
+border: 1px solid rgba(85,230,165,0.35);
+box-shadow: 0 0 32px rgba(85,230,165,0.18);
 display: flex; align-items: center; justify-content: center;
 font-size: 24px;
+color: var(--accent);
 margin: 0 auto 20px;
 }
 
 .title {
-font-family: 'DM Serif Display', serif;
-font-size: 26px;
+font-family: 'Space Grotesk', sans-serif;
+font-size: 25px;
+font-weight: 700;
+letter-spacing: -0.02em;
 text-align: center;
 margin-bottom: 6px;
 }
@@ -116,6 +124,7 @@ transition: all 0.3s ease;
 .step-dot.active {
 background: var(--accent);
 border-color: var(--accent);
+box-shadow: 0 0 10px rgba(85,230,165,0.5);
 transform: scale(1.2);
 }
 
@@ -125,11 +134,12 @@ border-color: var(--green);
 }
 
 .field-label {
-font-size: 11px;
+font-family: 'Space Grotesk', sans-serif;
+font-size: 10.5px;
 font-weight: 600;
 color: var(--text3);
 text-transform: uppercase;
-letter-spacing: 0.08em;
+letter-spacing: 0.1em;
 margin-bottom: 8px;
 }
 
@@ -139,10 +149,10 @@ margin-bottom: 8px;
 width: 100%;
 background: var(--surface2);
 border: 1px solid var(--border2);
-border-radius: 12px;
+border-radius: 14px;
 padding: 14px 16px;
 font-size: 15px;
-font-family: 'DM Sans', sans-serif;
+font-family: 'Inter', sans-serif;
 color: var(--text);
 outline: none;
 transition: border-color 0.2s, box-shadow 0.2s;
@@ -150,19 +160,19 @@ transition: border-color 0.2s, box-shadow 0.2s;
 
 .field-input:focus {
 border-color: var(--accent);
-box-shadow: 0 0 0 3px rgba(255,127,80,0.15);
+box-shadow: 0 0 0 3px rgba(85,230,165,0.13);
 }
 
-.field-input.error { border-color: var(--red); box-shadow: 0 0 0 3px rgba(240,92,92,0.1); }
+.field-input.error { border-color: var(--red); box-shadow: 0 0 0 3px rgba(255,122,122,0.1); }
 
 .code-row { display: flex; gap: 8px; }
-.code-row .field-input { border-radius: 12px 0 0 12px; margin-bottom: 0; }
+.code-row .field-input { border-radius: 14px 0 0 14px; margin-bottom: 0; }
 .code-row .check-btn {
 flex-shrink: 0;
 background: var(--surface2);
 border: 1px solid var(--border2);
 border-left: none;
-border-radius: 0 12px 12px 0;
+border-radius: 0 14px 14px 0;
 padding: 0 18px;
 color: var(--text2);
 font-size: 14px;
@@ -171,7 +181,7 @@ cursor: pointer;
 transition: background 0.2s, color 0.2s;
 white-space: nowrap;
 }
-.code-row .check-btn:hover { background: var(--border2); color: var(--text); }
+.code-row .check-btn:hover { background: var(--surface3); color: var(--accent); }
 
 .code-status {
 margin-top: 8px;
@@ -186,37 +196,38 @@ min-height: 20px;
 display: inline-flex;
 align-items: center;
 gap: 6px;
-background: rgba(76,175,130,0.12);
-border: 1px solid rgba(76,175,130,0.3);
+background: rgba(85,230,165,0.12);
+border: 1px solid rgba(85,230,165,0.3);
 color: var(--green);
 font-size: 12px;
 font-weight: 600;
-padding: 4px 10px;
-border-radius: 6px;
+padding: 4px 12px;
+border-radius: 999px;
 }
 
 .free-badge {
-background: rgba(124,106,247,0.12);
-border: 1px solid rgba(124,106,247,0.3);
+background: rgba(185,167,255,0.12);
+border: 1px solid rgba(185,167,255,0.3);
 color: var(--purple);
 }
 
 .submit-btn {
 width: 100%;
 background: var(--accent);
-color: #fff;
+color: var(--accent-ink);
 border: none;
-border-radius: 12px;
+border-radius: 999px;
 padding: 15px;
-font-size: 16px;
+font-size: 15.5px;
 font-weight: 600;
-font-family: 'DM Sans', sans-serif;
+font-family: 'Space Grotesk', sans-serif;
 cursor: pointer;
+box-shadow: 0 6px 26px rgba(85,230,165,0.22);
 transition: opacity 0.2s, transform 0.2s, box-shadow 0.2s;
 margin-top: 8px;
 }
 
-.submit-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(255,127,80,0.3); }
+.submit-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 34px rgba(85,230,165,0.32); }
 .submit-btn:active { opacity: 0.85; transform: scale(0.97); }
 .submit-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
 
@@ -244,9 +255,9 @@ text-decoration: none;
 .step-section.active { display: block; }
 
 .cancelled-banner {
-background: rgba(240,92,92,0.08);
-border: 1px solid rgba(240,92,92,0.3);
-border-radius: 10px;
+background: rgba(255,122,122,0.08);
+border: 1px solid rgba(255,122,122,0.3);
+border-radius: 12px;
 padding: 12px 16px;
 font-size: 13px;
 color: var(--red);
@@ -375,7 +386,7 @@ margin-bottom: 20px;
 
   <!-- Request Access (waitlist) -->
   <div id="request-access-section" style="margin-top:28px; padding-top:24px; border-top:1px solid var(--border);">
-    <div style="font-family:'DM Serif Display',serif; font-size:18px; text-align:center; margin-bottom:6px;">No code? Request access</div>
+    <div style="font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:17px; text-align:center; margin-bottom:6px;">No code? Request access</div>
     <div style="font-size:12px; color:var(--text3); text-align:center; margin-bottom:18px;">We review every request. Please check back in about a week.</div>
     <div class="field-wrap">
       <div class="field-label">Name</div>

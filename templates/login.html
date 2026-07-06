@@ -7,28 +7,30 @@
 <title>Jarvis Student AI -- Sign In</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
---bg: #0a0a0f;
---surface: #111118;
---surface2: #18181f;
---border: rgba(255,255,255,0.07);
---border2: rgba(255,255,255,0.12);
---text: #f0f0f5;
---text2: #8888a0;
---text3: #555568;
---accent: #FF7F50;
---accent2: #FF9966;
---red: #f05c5c;
---green: #4caf82;
---yellow: #ffc107;
+--bg: #070B10;
+--surface: #0D141C;
+--surface2: #131C26;
+--surface3: #1B2733;
+--border: rgba(140,178,190,0.10);
+--border2: rgba(140,178,190,0.18);
+--text: #EDF5F1;
+--text2: #A9BBB4;
+--text3: #64766F;
+--accent: #55E6A5;
+--accent2: #7CF0BC;
+--accent-ink: #04231A;
+--red: #FF7A7A;
+--green: #55E6A5;
+--yellow: #FFC46B;
 }
 
 body {
-font-family: 'DM Sans', sans-serif;
+font-family: 'Inter', sans-serif;
 background: var(--bg);
 color: var(--text);
 height: 100dvh;
@@ -38,6 +40,7 @@ justify-content: center;
 padding: 24px;
 position: relative;
 overflow: hidden;
+-webkit-font-smoothing: antialiased;
 }
 
 /* subtle animated aurora background */
@@ -46,9 +49,9 @@ content: '';
 position: fixed;
 inset: -20%;
 background:
-radial-gradient(ellipse 50% 40% at 25% 30%, rgba(255,127,80,0.10) 0%, transparent 65%),
-radial-gradient(ellipse 45% 35% at 75% 70%, rgba(124,106,247,0.08) 0%, transparent 65%),
-radial-gradient(ellipse 35% 30% at 55% 50%, rgba(255,153,102,0.05) 0%, transparent 70%);
+radial-gradient(ellipse 50% 40% at 25% 30%, rgba(85,230,165,0.10) 0%, transparent 65%),
+radial-gradient(ellipse 45% 35% at 75% 70%, rgba(111,199,242,0.07) 0%, transparent 65%),
+radial-gradient(ellipse 35% 30% at 55% 50%, rgba(124,240,188,0.05) 0%, transparent 70%);
 pointer-events: none;
 filter: blur(20px);
 animation: auroraDrift 28s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite alternate;
@@ -71,12 +74,13 @@ body::before { animation: none; }
 
 .login-card {
 width: 100%;
-max-width: 360px;
+max-width: 380px;
 background: var(--surface);
 border: 1px solid var(--border2);
-border-radius: 24px;
-padding: 40px 32px 36px;
+border-radius: 26px;
+padding: 42px 34px 36px;
 position: relative;
+box-shadow: 0 30px 80px rgba(0,0,0,0.5);
 animation: fadeUp 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
 }
 
@@ -86,18 +90,22 @@ to { opacity: 1; transform: translateY(0); }
 }
 
 .logo-ring {
-width: 56px; height: 56px;
+width: 58px; height: 58px;
 border-radius: 50%;
-background: linear-gradient(135deg, rgba(255,127,80,0.2), rgba(255,127,80,0.06));
-border: 1px solid rgba(255,127,80,0.3);
+background: linear-gradient(135deg, rgba(85,230,165,0.22), rgba(85,230,165,0.05));
+border: 1px solid rgba(85,230,165,0.35);
+box-shadow: 0 0 32px rgba(85,230,165,0.18);
 display: flex; align-items: center; justify-content: center;
 font-size: 24px;
+color: var(--accent);
 margin: 0 auto 20px;
 }
 
 .login-title {
-font-family: 'DM Serif Display', serif;
-font-size: 28px;
+font-family: 'Space Grotesk', sans-serif;
+font-size: 27px;
+font-weight: 700;
+letter-spacing: -0.02em;
 text-align: center;
 margin-bottom: 6px;
 line-height: 1.1;
@@ -112,11 +120,12 @@ letter-spacing: 0.02em;
 }
 
 .field-label {
-font-size: 11px;
+font-family: 'Space Grotesk', sans-serif;
+font-size: 10.5px;
 font-weight: 600;
 color: var(--text3);
 text-transform: uppercase;
-letter-spacing: 0.08em;
+letter-spacing: 0.1em;
 margin-bottom: 8px;
 }
 
@@ -129,10 +138,10 @@ margin-bottom: 20px;
 width: 100%;
 background: var(--surface2);
 border: 1px solid var(--border2);
-border-radius: 12px;
+border-radius: 14px;
 padding: 14px 46px 14px 16px;
 font-size: 17px;
-font-family: 'DM Sans', sans-serif;
+font-family: 'Inter', sans-serif;
 color: var(--text);
 outline: none;
 transition: border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -142,13 +151,13 @@ will-change: border-color, box-shadow;
 
 .field-input:focus {
 border-color: var(--accent);
-box-shadow: 0 0 0 3px rgba(255,127,80,0.15);
+box-shadow: 0 0 0 3px rgba(85,230,165,0.13), 0 0 24px rgba(85,230,165,0.07);
 transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .field-input.error {
 border-color: var(--red);
-box-shadow: 0 0 0 3px rgba(240,92,92,0.1);
+box-shadow: 0 0 0 3px rgba(255,122,122,0.1);
 animation: shake 0.35s ease;
 }
 
@@ -172,25 +181,27 @@ will-change: color, transform;
 .submit-btn {
 width: 100%;
 background: var(--accent);
-color: #fff;
+color: var(--accent-ink);
 border: none;
-border-radius: 12px;
+border-radius: 999px;
 padding: 15px;
-font-size: 16px;
+font-size: 15.5px;
 font-weight: 600;
-font-family: 'DM Sans', sans-serif;
+font-family: 'Space Grotesk', sans-serif;
+letter-spacing: 0.01em;
 cursor: pointer;
 transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 -webkit-tap-highlight-color: transparent;
 position: relative;
 overflow: hidden;
+box-shadow: 0 6px 26px rgba(85,230,165,0.22);
 will-change: transform, opacity, box-shadow;
 }
 .submit-btn:hover {
-  box-shadow: 0 4px 12px rgba(255, 127, 80, 0.3);
+  box-shadow: 0 8px 34px rgba(85,230,165,0.32);
   transform: translateY(-2px);
 }
-.submit-btn:active { opacity: 0.85; transform: scale(0.96) translateY(0); box-shadow: 0 2px 4px rgba(255, 127, 80, 0.2); }
+.submit-btn:active { opacity: 0.85; transform: scale(0.96) translateY(0); box-shadow: 0 2px 8px rgba(85,230,165,0.2); }
 .submit-btn:disabled { opacity: 0.5; cursor: default; transform: scale(1); }
 
 .error-msg {
@@ -212,7 +223,7 @@ to { opacity: 1; transform: translateY(0); }
 }
 
 .error-msg.lockout {
-color: #ff6b6b;
+color: var(--red);
 font-weight: 600;
 height: auto;
 }
@@ -223,14 +234,14 @@ color: var(--text3);
 text-align: center;
 margin-top: 20px;
 padding: 12px;
-background: var(--surface);
-border-radius: 8px;
-border-left: 3px solid var(--accent);
+background: var(--surface2);
+border-radius: 12px;
+border: 1px solid rgba(85,230,165,0.25);
 }
 
 .security-info.warning {
-border-left-color: var(--red);
-background: rgba(240, 92, 92, 0.05);
+border-color: rgba(255,122,122,0.35);
+background: rgba(255,122,122,0.05);
 }
 
 .session-note {
@@ -242,10 +253,9 @@ letter-spacing: 0.02em;
 }
 
 .system-status {
-background: rgba(255, 193, 7, 0.1);
-border: 1px solid rgba(255, 193, 7, 0.3);
-border-left: 3px solid var(--yellow);
-border-radius: 8px;
+background: rgba(255,196,107,0.08);
+border: 1px solid rgba(255,196,107,0.3);
+border-radius: 12px;
 padding: 12px;
 margin-bottom: 20px;
 font-size: 12px;
