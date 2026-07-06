@@ -4743,7 +4743,7 @@ async function loadHealthPage() {
   const [sR, wR, hR, pR, plR] = await Promise.allSettled([
     dashGet('/api/whoop/summary'),
     dashGet('/api/whoop/workouts'),
-    dashGet('/api/whoop/heart-rate', 30000),
+    _hrGet(30000),
     dashGet('/api/fitness/prs'),
     dashGet('/api/fitness/planned-workouts', 15000)
   ]);
@@ -4762,17 +4762,45 @@ async function loadHealthPage() {
 // everything else (recovery/strain/sleep/workouts) only changes when WHOOP
 // syncs, which is not on a per-minute cadence, so refetching it would just
 // be wasted movement on the page.
+
+// Fetch the heart-rate payload with nothing allowed to answer from a cache:
+// the URL is cache-busted (unique every call, so the service worker and any
+// proxy see a never-before-seen request) and the fetch is no-store. The
+// receive time is stamped on the payload — all displayed times derive from
+// it, on the device's own clock and timezone, so a wrong server clock or
+// timezone can't make a fresh reading look hours old.
+function _hrGet(ttl) {
+  const key = 'hr:/api/whoop/heart-rate';
+  const e = _dashFetch[key];
+  if (ttl && e && Date.now() - e.ts < ttl) return e.promise;
+  const p = fetchWithTimeout('/api/whoop/heart-rate?_=' + Date.now(), { cache: 'no-store' }, 15000)
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(hr => { hr._receivedAt = Date.now(); return hr; });
+  _dashFetch[key] = { ts: Date.now(), promise: p };
+  p.catch(() => { delete _dashFetch[key]; });
+  return p;
+}
+
+function _fmtClockMs(ms) {
+  return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 function _renderHRWidget(hr) {
   _setText('healthStatHR', hr && hr.current_bpm ? hr.current_bpm : '–');
   _setText('healthStatHRMeta', hr ? (hr.source === 'mock' ? 'bpm · sample data' : 'bpm · recent') : '');
   if (hr) {
+    // Label every sample on the client, anchored to when this payload
+    // arrived (newest sample = arrival time, one minute apart going back).
+    const samples = hr.samples || [];
+    const anchor = hr._receivedAt || Date.now();
+    const n = samples.length;
+    samples.forEach((s, i) => { s.t = _fmtClockMs(anchor - (n - 1 - i) * 60000); });
     const chip = document.getElementById('healthHRChip');
-    if (chip) {
-      const samples = hr.samples || [];
-      const lastT = samples.length ? samples[samples.length - 1].t : null;
-      chip.textContent = hr.current_bpm + ' bpm' + (lastT ? ' as of ' + to12Hour(lastT) : '');
-    }
-    _renderHRSparkline(hr.samples || []);
+    if (chip) chip.textContent = hr.current_bpm + ' bpm as of ' + _fmtClockMs(anchor);
+    _renderHRSparkline(samples);
   }
 }
 
@@ -4785,13 +4813,8 @@ let _hrFailStreak = 0;
 
 async function _refreshHeartRate() {
   try {
-    // Bypass the shared dashGet cache — this poll's entire job is to
-    // guarantee a genuinely fresh reading, so there's no TTL to reason about.
-    const r = await fetchWithTimeout('/api/whoop/heart-rate', {}, 15000);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const hr = await r.json();
+    const hr = await _hrGet(0); // ttl 0: always hits the network
     _hrFailStreak = 0;
-    _dashFetch['/api/whoop/heart-rate'] = { ts: Date.now(), promise: Promise.resolve(hr) };
     if (_healthData) _healthData.hr = hr;
     _renderHRWidget(hr);
   } catch (e) {

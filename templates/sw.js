@@ -1,4 +1,4 @@
-const VERSION = 'jarvis-v1';
+const VERSION = 'jarvis-v2';
 const STATIC_CACHE = `${VERSION}-static`;
 
 self.addEventListener('install', (event) => {
@@ -20,12 +20,18 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
-  // Network-first for API and HTML; cache-first for static assets.
-  if (url.pathname.startsWith('/api/') || req.destination === 'document') {
+  // API requests are live data: never answer them from a cache. A replayed
+  // API response looks exactly like fresh data (frozen heart rate, stale
+  // tasks) with no way for the page to tell. Let failures surface — the
+  // page marks the affected widget stale and retries on its own.
+  if (url.pathname.startsWith('/api/')) return;
+
+  // Network-first for HTML so deploys take effect, with an offline fallback.
+  if (req.destination === 'document') {
     event.respondWith((async () => {
       try {
         const fresh = await fetch(req);
-        if (fresh && fresh.status === 200 && req.destination === 'document') {
+        if (fresh && fresh.status === 200) {
           const cache = await caches.open(STATIC_CACHE);
           cache.put(req, fresh.clone());
         }

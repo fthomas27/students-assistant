@@ -69,11 +69,16 @@ _GZIP_TYPES = ('text/html', 'text/css', 'text/javascript', 'application/javascri
 @app.after_request
 def no_cache_html(response):
     """Force the browser to revalidate HTML pages — the embedded CSRF
-    interceptor JS would otherwise get stuck on a stale page after a deploy."""
+    interceptor JS would otherwise get stuck on a stale page after a deploy.
+    API responses are live data (heart rate, tasks, calendar): mark them
+    no-store so no browser, service worker, or proxy ever replays a stale
+    reading as if it were current."""
     try:
         if (response.mimetype or '').lower() == 'text/html':
             response.headers['Cache-Control'] = 'no-store, must-revalidate'
             response.headers.pop('ETag', None)
+        elif request.path.startswith('/api/'):
+            response.headers['Cache-Control'] = 'no-store'
     except Exception:
         pass
     return response
@@ -1931,18 +1936,21 @@ def fitness_workouts(limit=25):
 def _mock_heart_rate_samples():
     """Plausible last-30-minute HR series (WHOOP's REST API has no live HR
     stream — broadcast HR is BLE-only — so this seat-fills the display slot).
-    Phase is driven by each sample's actual clock time (not its position in
-    the loop), so the series actually moves between polls instead of
-    replaying the same frozen 30 values with relabeled timestamps."""
+    Phase is driven by each sample's epoch minute, so the series is
+    deterministic within a minute but guaranteed to move between polls, and
+    is independent of the server's configured timezone. Each sample carries
+    an epoch-ms "ts" — the client labels times itself from those, so a wrong
+    server clock or timezone can never show up as a stale-looking reading.
+    The legacy "t" label is kept as a fallback only."""
     import math
     now = datetime.now(TZ)
     base = 62
     samples = []
     for i in range(30):
         t = now - timedelta(minutes=29 - i)
-        minute_of_day = t.hour * 60 + t.minute
-        bpm = base + round(6 * math.sin(minute_of_day / 4.0)) + (3 if minute_of_day % 7 == 0 else 0)
-        samples.append({"t": t.strftime("%H:%M"), "bpm": bpm})
+        m = int(t.timestamp() // 60)  # epoch minute: timezone-independent
+        bpm = base + round(6 * math.sin(m / 4.7) + 3 * math.sin(m / 1.9)) + (m % 3)
+        samples.append({"t": t.strftime("%H:%M"), "ts": int(t.timestamp() * 1000), "bpm": bpm})
     return samples
 
 
