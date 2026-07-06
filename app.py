@@ -13,6 +13,7 @@ import secrets
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
+from urllib.parse import urlencode
 
 import psycopg2
 import psycopg2.extras
@@ -466,6 +467,11 @@ WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.goog
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+
+# ── WHOOP OAuth2 ────────────────────────────────────────────────────────────────
+WHOOP_CLIENT_ID = os.environ.get("WHOOP_CLIENT_ID", "").strip()
+WHOOP_CLIENT_SECRET = os.environ.get("WHOOP_CLIENT_SECRET", "").strip()
+WHOOP_REDIRECT_URI = os.environ.get("WHOOP_REDIRECT_URI", "").strip()
 NOAA_API_TOKEN   = os.environ.get("NOAA_API_TOKEN", "")
 GUARDIAN_API_KEY = os.environ.get("GUARDIAN_API_KEY", "")
 
@@ -1636,6 +1642,177 @@ def canvas_search_assignment(title_query):
         if sub:
             return (cid, sub.get("id"), course["name"])
     return None
+
+
+# ── WHOOP OAuth2 + API helpers ────────────────────────────────────────────────
+# Recovery / sleep / strain data from the WHOOP wearable. Uses OAuth2 with a
+# refresh token (WHOOP has no long-lived static API key), stored in the global
+# config table like the Google integration. Silently no-ops when not connected.
+
+WHOOP_AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
+WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
+WHOOP_API_BASE = "https://api.prod.whoop.com/developer/v2"
+WHOOP_SCOPES = "read:recovery read:cycles read:sleep read:profile read:body_measurement offline"
+WHOOP_CACHE_TTL = 900  # 15 minutes
+
+
+def _whoop_configured():
+    return bool(WHOOP_CLIENT_ID and WHOOP_CLIENT_SECRET)
+
+
+def _whoop_connected():
+    return bool(_whoop_configured() and get_config().get("whoop_refresh_token", "").strip())
+
+
+def _get_whoop_access_token():
+    """Return a valid WHOOP access token, refreshing it if expired. None if not connected."""
+    if not _whoop_configured():
+        return None
+    cfg = get_config()
+    refresh_token = cfg.get("whoop_refresh_token", "").strip()
+    if not refresh_token:
+        return None
+    access_token = cfg.get("whoop_access_token", "").strip()
+    try:
+        expires_at = float(cfg.get("whoop_token_expires_at", "0") or 0)
+    except ValueError:
+        expires_at = 0
+    if access_token and expires_at - 60 > time.time():
+        return access_token
+    try:
+        resp = requests.post(WHOOP_TOKEN_URL, data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": WHOOP_CLIENT_ID,
+            "client_secret": WHOOP_CLIENT_SECRET,
+            "scope": WHOOP_SCOPES,
+        }, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+        new_access = data.get("access_token", "")
+        set_config({
+            "whoop_access_token": new_access,
+            "whoop_refresh_token": data.get("refresh_token") or refresh_token,
+            "whoop_token_expires_at": str(time.time() + float(data.get("expires_in", 3600))),
+        })
+        return new_access or None
+    except Exception as e:
+        log.warning("WHOOP token refresh failed: %s", e)
+        return None
+
+
+def _whoop_get(path, params=None, timeout=12):
+    token = _get_whoop_access_token()
+    if not token:
+        return None
+    url = WHOOP_API_BASE + (path if path.startswith("/") else "/" + path)
+    headers = {"Authorization": "Bearer " + token}
+    try:
+        resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        log.warning("WHOOP API GET %s failed: %s", path, e)
+        return None
+
+
+def whoop_recovery_recent(limit=10):
+    cached = _cache_get("whoop:recovery", WHOOP_CACHE_TTL)
+    if cached is not None:
+        return cached
+    data = _whoop_get("/recovery", params={"limit": limit})
+    records = (data or {}).get("records") or []
+    _cache_set("whoop:recovery", records)
+    return records
+
+
+def whoop_sleep_recent(limit=10):
+    cached = _cache_get("whoop:sleep", WHOOP_CACHE_TTL)
+    if cached is not None:
+        return cached
+    data = _whoop_get("/activity/sleep", params={"limit": limit})
+    records = (data or {}).get("records") or []
+    _cache_set("whoop:sleep", records)
+    return records
+
+
+def whoop_cycles_recent(limit=10):
+    cached = _cache_get("whoop:cycles", WHOOP_CACHE_TTL)
+    if cached is not None:
+        return cached
+    data = _whoop_get("/cycle", params={"limit": limit})
+    records = (data or {}).get("records") or []
+    _cache_set("whoop:cycles", records)
+    return records
+
+
+def whoop_daily_summary(days=7):
+    """Merge recovery/sleep/strain records into one row per calendar day, newest first."""
+    if not _whoop_connected():
+        return []
+    limit = days + 3
+    recovery = whoop_recovery_recent(limit=limit)
+    sleep = whoop_sleep_recent(limit=limit)
+    cycles = whoop_cycles_recent(limit=limit)
+
+    def day_key(iso):
+        return iso[:10] if iso else None
+
+    by_date = {}
+    for c in cycles:
+        d = day_key(c.get("start"))
+        if not d:
+            continue
+        score = c.get("score") or {}
+        by_date.setdefault(d, {})["strain"] = score.get("strain")
+
+    for r in recovery:
+        d = day_key(r.get("created_at"))
+        if not d:
+            continue
+        score = r.get("score") or {}
+        entry = by_date.setdefault(d, {})
+        entry["recovery_score"] = score.get("recovery_score")
+        entry["hrv_ms"] = score.get("hrv_rmssd_milli")
+        entry["rhr"] = score.get("resting_heart_rate")
+
+    for s in sleep:
+        d = day_key(s.get("end") or s.get("start"))
+        if not d:
+            continue
+        score = s.get("score") or {}
+        entry = by_date.setdefault(d, {})
+        entry["sleep_performance"] = score.get("sleep_performance_percentage")
+        sleep_ms = (score.get("stage_summary") or {}).get("total_sleep_time_milli")
+        entry["sleep_hours"] = round(sleep_ms / 3600000, 1) if sleep_ms else None
+
+    ordered = sorted(by_date.items(), key=lambda kv: kv[0], reverse=True)[:days]
+    return [{"date": d, **vals} for d, vals in ordered]
+
+
+def whoop_context_line():
+    """One-line snapshot of the most recent day's WHOOP data for AI prompts, or None."""
+    days = whoop_daily_summary(days=1)
+    if not days:
+        return None
+    d = days[0]
+    parts = []
+    if d.get("recovery_score") is not None:
+        parts.append("recovery %s%%" % d["recovery_score"])
+    if d.get("sleep_hours") is not None:
+        if d.get("sleep_performance") is not None:
+            parts.append("sleep %sh (%s%% performance)" % (d["sleep_hours"], d["sleep_performance"]))
+        else:
+            parts.append("sleep %sh" % d["sleep_hours"])
+    if d.get("strain") is not None:
+        parts.append("strain %.1f" % d["strain"])
+    if d.get("hrv_ms") is not None:
+        parts.append("HRV %.0fms" % d["hrv_ms"])
+    if d.get("rhr") is not None:
+        parts.append("RHR %sbpm" % d["rhr"])
+    if not parts:
+        return None
+    return "WHOOP (%s): %s." % (d["date"], ", ".join(parts))
 
 
 # ── PowerSchool Scraper (Playwright + Claude Vision) ──────────────────────────
@@ -3399,10 +3576,17 @@ def generate_briefing(force=False):
         else:
             schedule_note = "No school today."
 
+        whoop_line = None
+        try:
+            whoop_line = whoop_context_line()
+        except Exception:
+            log.warning("briefing: could not load WHOOP data")
+
         prompt = (
             jarvis_persona("%s", "serving") + "\n\n"
             "Current time: %s\n"
-            "School schedule note: %s\n\n"
+            "School schedule note: %s\n"
+            "Recovery snapshot (WHOOP, optional — never fabricate if absent): %s\n\n"
             "REFERENCE — Overdue work (NOT quiz/test — never put quizzes/tests in Needs section):\n%s\n\n"
             "REFERENCE — Due today work (NOT quiz/test):\n%s\n\n"
             "REFERENCE — Quizzes/tests (for Schedule section ONLY, use EXACT warning lines below as bullets):\n%s\n\n"
@@ -3423,7 +3607,8 @@ def generate_briefing(force=False):
             "recommending **preparation or review** for it today (e.g. \"A focused review of **Class** materials would be prudent before the quiz\"). "
             "Sooner due dates warrant more emphasis. For a quiz **today**, suggest a brief, focused review if time permits — retain the ⚠️ indicator under Schedule.\n"
             "• If the only items would be study bullets and you added those, you may omit filler text. "
-            "If there are no secondary items and no upcoming quizzes, one bullet: All secondary objectives completed or not applicable.\n\n"
+            "If there are no secondary items and no upcoming quizzes, one bullet: All secondary objectives completed or not applicable.\n"
+            "• If a recovery snapshot is present and recovery is low, you may add one brief bullet suggesting a lighter secondary load today; otherwise ignore the snapshot entirely.\n\n"
             "## Schedule:\n"
             "• First bullets: today's calendar events (paraphrase from Today's calendar events) with appropriate context.\n"
             "• Then add EVERY line from REFERENCE Quizzes/tests exactly as given (each ⚠️ line is its own bullet).\n"
@@ -3437,7 +3622,7 @@ def generate_briefing(force=False):
             "bullets for assessments within the next 7 days — never misrepresent these as homework to submit. "
             "Use **bold** for assignment names where helpful. Maintain a professional tone throughout. No introductory paragraph. Deliver these four sections only."
         ) % (
-            name, now_str, schedule_note,
+            name, now_str, schedule_note, whoop_line or "No WHOOP data available.",
             lines_overdue_work, lines_today_work, quiz_test_block,
             lines_qt_study,
             lines_good_time, lines_big,
@@ -3560,6 +3745,12 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         tasks_text = "\n".join(["- [%s] %s" % (t["urgency"], t["title"]) for t in pending_tasks]) or "None."
         now_str = datetime.now(TZ).strftime("%A, %-m/%-d at %-I:%M %p")
 
+        whoop_line = None
+        try:
+            whoop_line = whoop_context_line()
+        except Exception:
+            log.warning("debrief: could not load WHOOP data")
+
         prompt = (
             jarvis_persona("%s", "delivering the evening debrief for") + "\n\n"
             "Current time: %s (evening debrief)\n\n"
@@ -3568,13 +3759,15 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
             "TIME BREAKDOWN BY CLASS:\n%s\n\n"
             "STILL DUE (not completed):\n%s\n\n"
             "PENDING TASKS:\n%s\n\n"
+            "RECOVERY SNAPSHOT (WHOOP, optional — never fabricate if absent): %s\n\n"
             "Deliver a sophisticated evening debrief using ONLY bullet points (commence each with •). Structure as follows:\n"
             "- A concise synthesis of today's accomplishments (reference items and metrics above with analytical perspective)\n"
             "- Remaining obligations requiring attention\n"
-            "- Strategic Outlook for Tomorrow (a measured forecast of forthcoming priorities and opportunities)\n\n"
+            "- Strategic Outlook for Tomorrow (a measured forecast of forthcoming priorities and opportunities; "
+            "if the recovery snapshot is present, you may factor it into the pacing suggestion, e.g. recommending rest if recovery is low)\n\n"
             "Maintain a refined, insightful tone. Offer constructive observations balanced with professional encouragement. "
             "Dispense with introductory pleasantries—proceed directly to substance."
-        ) % (name, now_str, done_text, metrics_text, time_breakdown, remaining_text, tasks_text)
+        ) % (name, now_str, done_text, metrics_text, time_breakdown, remaining_text, tasks_text, whoop_line or "No WHOOP data available.")
 
         if MEM0_API_KEY:
             try:
@@ -10304,6 +10497,14 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
         except Exception:
             log.warning("/api/chat could not load PowerSchool grades for context")
 
+        # Inject WHOOP recovery/sleep/strain data
+        try:
+            whoop_line = whoop_context_line()
+            if whoop_line:
+                system_dynamic += "\n\n" + whoop_line + " Factor this into pacing/workload advice when relevant, but don't force it into every reply."
+        except Exception:
+            log.warning("/api/chat could not load WHOOP data for context")
+
         # Inject prior-conversation recall + recent messages from current conversation
         try:
             summaries = _chat_recent_summaries(conversation_id, limit=5, user_id=chat_user_id)
@@ -11941,6 +12142,101 @@ def google_disconnect():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
     set_config({"google_refresh_token": ""})
+    return jsonify({"status": "disconnected"})
+
+
+# ── WHOOP OAuth2 routes ────────────────────────────────────────────────────────
+
+@app.route("/whoop-auth/start")
+def whoop_auth_start():
+    if not session.get("authenticated"):
+        return redirect("/login")
+    if not _whoop_configured():
+        return "Set WHOOP_CLIENT_ID and WHOOP_CLIENT_SECRET environment variables first.", 400
+    redirect_uri = WHOOP_REDIRECT_URI or request.url_root.rstrip("/") + "/whoop-auth/callback"
+    state = secrets.token_urlsafe(24)
+    session["whoop_oauth_state"] = state
+    set_config({"whoop_oauth_pending_state": state})
+    params = {
+        "response_type": "code",
+        "client_id": WHOOP_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "scope": WHOOP_SCOPES,
+        "state": state,
+    }
+    return redirect(WHOOP_AUTH_URL + "?" + urlencode(params))
+
+
+@app.route("/whoop-auth/callback")
+def whoop_auth_callback():
+    if not session.get("authenticated"):
+        return redirect("/login")
+    incoming_state = request.args.get("state")
+    state = session.pop("whoop_oauth_state", None) or get_config().get("whoop_oauth_pending_state", "")
+    set_config({"whoop_oauth_pending_state": ""})
+    if not state or state != incoming_state:
+        return "OAuth state mismatch — please try the connection again from /whoop-auth/start.", 400
+    code = request.args.get("code")
+    if not code:
+        return redirect("/?whoop_error=no_code")
+    redirect_uri = WHOOP_REDIRECT_URI or request.url_root.rstrip("/") + "/whoop-auth/callback"
+    try:
+        resp = requests.post(WHOOP_TOKEN_URL, data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": WHOOP_CLIENT_ID,
+            "client_secret": WHOOP_CLIENT_SECRET,
+        }, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+        refresh_token = data.get("refresh_token")
+        if not refresh_token:
+            log.error("WHOOP OAuth callback: no refresh_token returned — authorization incomplete")
+            return redirect("/?whoop_error=no_refresh_token")
+        set_config({
+            "whoop_refresh_token": refresh_token,
+            "whoop_access_token": data.get("access_token", ""),
+            "whoop_token_expires_at": str(time.time() + float(data.get("expires_in", 3600))),
+        })
+        log.info("WHOOP refresh token stored successfully")
+        return redirect("/?whoop_connected=1")
+    except Exception as e:
+        log.error("whoop_auth_callback error: %s", e)
+        return f"WHOOP OAuth error: {e}", 500
+
+
+@app.route("/api/whoop/status")
+def whoop_auth_status():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    configured = _whoop_configured()
+    has_token = bool(configured and get_config().get("whoop_refresh_token", "").strip())
+    authorized = bool(has_token and _get_whoop_access_token())
+    return jsonify({
+        "configured": configured,
+        "has_token": has_token,
+        "authorized": authorized,
+        "auth_url": "/whoop-auth/start" if configured and not authorized else None,
+    })
+
+
+@app.route("/api/whoop/summary")
+def api_whoop_summary():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    if not _whoop_configured():
+        return jsonify({"configured": False, "connected": False, "days": []})
+    connected = _whoop_connected()
+    days = whoop_daily_summary(7) if connected else []
+    return jsonify({"configured": True, "connected": connected, "days": days})
+
+
+@app.route("/api/whoop/disconnect", methods=["POST"])
+def whoop_disconnect():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    set_config({"whoop_refresh_token": "", "whoop_access_token": "", "whoop_token_expires_at": ""})
     return jsonify({"status": "disconnected"})
 
 

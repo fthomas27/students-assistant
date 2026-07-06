@@ -3487,6 +3487,15 @@ margin: 8px 2px 10px;
           <input type="url" id="cfgJobIcal" class="field" placeholder="https://...ics">
         </div>
       </div>
+      <div class="settings-section" id="whoopSettingsSection" style="display:none;">
+        <h3>WHOOP</h3>
+        <p style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">Connect your WHOOP account to bring recovery, sleep, and strain data into your dashboard and into Jarvis's context.</p>
+        <div class="settings-item" style="display:block;">
+          <div id="whoopStatusText" style="font-size:13px;color:var(--text2);margin-bottom:10px;">Checking status&hellip;</div>
+          <button class="btn-accent" id="whoopConnectBtn" style="display:none;" onclick="location.href='/whoop-auth/start'">Connect WHOOP</button>
+          <button class="btn-danger-outline" id="whoopDisconnectBtn" style="display:none;" onclick="disconnectWhoop()">Disconnect WHOOP</button>
+        </div>
+      </div>
       <div class="settings-section">
         <div style="display: flex; gap: 8px;">
           <button class="logout-btn" onclick="confirmLogout()" style="flex: 1;">Log Out</button>
@@ -3620,6 +3629,23 @@ margin: 8px 2px 10px;
         <div class="stat-num" id="dashStatProjects">&ndash;</div>
         <div class="stat-meta" id="dashStatProjectsMeta"></div>
       </section>
+
+      <!-- WHOOP recovery/strain -->
+      <div id="dashWhoopSection" style="display:none;grid-column:span 12;">
+        <div class="dash-grid" style="margin:0;">
+          <section class="widget dash-span7">
+            <div class="widget-head">
+              <span class="widget-title">Recovery &middot; Last 7 Days</span>
+              <span class="widget-chip" id="dashWhoopTotal">&ndash;</span>
+            </div>
+            <div class="dash-chart" id="dashWhoopChart"><div class="widget-empty">Loading&hellip;</div></div>
+          </section>
+          <section class="widget dash-span5">
+            <div class="widget-head"><span class="widget-title">Today's Vitals</span></div>
+            <div id="dashWhoopVitals" class="widget-list"><div class="widget-empty">Loading&hellip;</div></div>
+          </section>
+        </div>
+      </div>
 
       <!-- Today's plan -->
       <section class="widget dash-span7">
@@ -4202,10 +4228,11 @@ async function loadDashboard() {
     const h = new Date().getHours();
     greet.textContent = h < 5 ? 'Burning the midnight oil' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
   }
-  const [aR, tR, pR] = await Promise.allSettled([
+  const [aR, tR, pR, wR] = await Promise.allSettled([
     fetchWithTimeout('/api/assignments', {}, 15000).then(r => r.json()),
     fetchWithTimeout('/api/tasks', {}, 15000).then(r => r.json()),
-    fetchWithTimeout('/api/projects', {}, 15000).then(r => r.json())
+    fetchWithTimeout('/api/projects', {}, 15000).then(r => r.json()),
+    fetchWithTimeout('/api/whoop/summary', {}, 15000).then(r => r.json())
   ]);
   _dashData = {
     assignments: aR.status === 'fulfilled' ? (aR.value.assignments || []) : [],
@@ -4213,7 +4240,10 @@ async function loadDashboard() {
     projects:    pR.status === 'fulfilled' ? (pR.value.projects || []) : []
   };
   renderDashboard();
+  _dashWhoopData = wR.status === 'fulfilled' ? wR.value : null;
+  renderWhoopWidget(_dashWhoopData);
 }
+let _dashWhoopData = null;
 
 function renderDashboard() {
   if (!_dashData) return;
@@ -4396,12 +4426,109 @@ function _renderUpNext(list, now) {
   }).join('');
 }
 
+function _whoopBandColor(score) {
+  if (score == null) return 'var(--surface3)';
+  return score >= 67 ? 'var(--accent)' : score >= 34 ? 'var(--amber)' : 'var(--red)';
+}
+
+function renderWhoopWidget(data) {
+  const section = document.getElementById('dashWhoopSection');
+  if (!section) return;
+  if (!data || !data.configured) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+  const totalEl = document.getElementById('dashWhoopTotal');
+  const chartEl = document.getElementById('dashWhoopChart');
+  const vitalsEl = document.getElementById('dashWhoopVitals');
+  if (!data.connected) {
+    if (totalEl) totalEl.textContent = 'Not connected';
+    if (chartEl) chartEl.innerHTML = '<div class="widget-empty">Connect WHOOP to see recovery trends here.</div>';
+    if (vitalsEl) vitalsEl.innerHTML = '<div class="widget-empty" style="padding:12px 8px;">'
+      + '<button class="btn-accent" onclick="location.href=\'/whoop-auth/start\'">Connect WHOOP</button></div>';
+    return;
+  }
+  const days = (data.days || []).slice().reverse(); // oldest -> newest for the chart
+  if (!days.length) {
+    if (totalEl) totalEl.textContent = 'No data yet';
+    if (chartEl) chartEl.innerHTML = '<div class="widget-empty">No WHOOP data synced yet.</div>';
+    if (vitalsEl) vitalsEl.innerHTML = '<div class="widget-empty">No data yet.</div>';
+    return;
+  }
+  const withScore = days.filter(d => d.recovery_score != null);
+  const avg = withScore.length ? Math.round(withScore.reduce((s, d) => s + d.recovery_score, 0) / withScore.length) : null;
+  if (totalEl) totalEl.textContent = avg != null ? avg + '% avg' : '–';
+  _renderWhoopChart(days);
+  _renderWhoopVitals(days[days.length - 1]);
+}
+
+function _renderWhoopChart(days) {
+  const wrap = document.getElementById('dashWhoopChart');
+  if (!wrap) return;
+  const W = Math.max(wrap.clientWidth || 0, 260);
+  const H = Math.max(wrap.clientHeight || 0, 165);
+  const padX = 6, labelH = 22, topPad = 18;
+  const plotH = H - labelH - topPad;
+  const n = days.length;
+  const slot = (W - padX * 2) / n;
+  const barW = Math.min(34, slot - 8);
+
+  let svg = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="WHOOP recovery score, last 7 days">';
+  svg += '<line x1="' + padX + '" y1="' + (topPad + plotH) + '" x2="' + (W - padX) + '" y2="' + (topPad + plotH) + '" stroke="var(--border2)" stroke-width="1"/>';
+  days.forEach((d, i) => {
+    const score = d.recovery_score;
+    const cx = padX + slot * i + slot / 2;
+    const x = cx - barW / 2;
+    const h = score == null ? 3 : Math.max(6, (score / 100) * plotH);
+    const y = topPad + plotH - h;
+    const fill = _whoopBandColor(score);
+    const r = Math.min(4, barW / 2, h);
+    svg += '<path d="M' + x + ',' + (topPad + plotH)
+        + ' L' + x + ',' + (y + r)
+        + ' Q' + x + ',' + y + ' ' + (x + r) + ',' + y
+        + ' L' + (x + barW - r) + ',' + y
+        + ' Q' + (x + barW) + ',' + y + ' ' + (x + barW) + ',' + (y + r)
+        + ' L' + (x + barW) + ',' + (topPad + plotH) + ' Z" fill="' + fill + '"/>';
+    if (score != null) {
+      svg += '<text x="' + cx + '" y="' + (y - 6) + '" text-anchor="middle" font-size="10.5" font-weight="600" fill="var(--text2)" font-family="Space Grotesk, sans-serif">' + score + '</text>';
+    }
+    const dateObj = new Date(d.date + 'T00:00:00');
+    const label = dateObj.toLocaleDateString('en-US', { weekday: 'short' });
+    const isLast = i === days.length - 1;
+    svg += '<text x="' + cx + '" y="' + (H - 6) + '" text-anchor="middle" font-size="10" fill="' + (isLast ? 'var(--accent)' : 'var(--text3)') + '" font-weight="' + (isLast ? '600' : '400') + '" font-family="Space Grotesk, sans-serif">' + label + '</text>';
+  });
+  svg += '</svg>';
+  wrap.innerHTML = svg;
+}
+
+function _renderWhoopVitals(day) {
+  const wrap = document.getElementById('dashWhoopVitals');
+  if (!wrap) return;
+  if (!day) { wrap.innerHTML = '<div class="widget-empty">No data yet.</div>'; return; }
+  const rows = [];
+  if (day.recovery_score != null) rows.push(['Recovery', day.recovery_score + '%', _whoopBandColor(day.recovery_score)]);
+  if (day.sleep_hours != null) rows.push(['Sleep', day.sleep_hours + 'h' + (day.sleep_performance != null ? ' (' + day.sleep_performance + '%)' : ''), 'var(--blue)']);
+  if (day.strain != null) rows.push(['Strain', day.strain.toFixed(1), 'var(--blue)']);
+  if (day.hrv_ms != null) rows.push(['HRV', Math.round(day.hrv_ms) + 'ms', 'var(--text2)']);
+  if (day.rhr != null) rows.push(['Resting HR', day.rhr + ' bpm', 'var(--text2)']);
+  if (!rows.length) { wrap.innerHTML = '<div class="widget-empty">No data yet.</div>'; return; }
+  wrap.innerHTML = rows.map(function(r) {
+    return '<div class="upnext-row" style="cursor:default;">'
+      + '<span class="upnext-dot" style="background:' + r[2] + ';color:' + r[2] + ';"></span>'
+      + '<div class="upnext-main"><div class="upnext-title">' + r[0] + '</div></div>'
+      + '<span class="upnext-due">' + r[1] + '</span>'
+      + '</div>';
+  }).join('');
+}
+
 let _dashResizeT = null;
 window.addEventListener('resize', function() {
   clearTimeout(_dashResizeT);
   _dashResizeT = setTimeout(function() {
     const home = document.getElementById('page-home');
     if (_dashData && home && home.classList.contains('active')) renderDashboard();
+    if (_dashWhoopData && _dashWhoopData.connected && home && home.classList.contains('active')) renderWhoopWidget(_dashWhoopData);
   }, 150);
 });
 
@@ -4494,7 +4621,57 @@ function openSettings() {
     if (document.getElementById('cfgSportsIcal'))    document.getElementById('cfgSportsIcal').value    = cfg.sports_ical_url || '';
     if (document.getElementById('cfgJobIcal'))       document.getElementById('cfgJobIcal').value       = cfg.job_schedule_ical_url || '';
   }).catch(() => {});
+
+  loadWhoopStatus();
 }
+
+function loadWhoopStatus() {
+  fetch('/api/whoop/status').then(r => r.json()).then(status => {
+    const section = document.getElementById('whoopSettingsSection');
+    const text = document.getElementById('whoopStatusText');
+    const connectBtn = document.getElementById('whoopConnectBtn');
+    const disconnectBtn = document.getElementById('whoopDisconnectBtn');
+    if (!section || !status || !status.configured) {
+      if (section) section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    if (status.authorized) {
+      text.textContent = 'Connected — recovery, sleep, and strain data are syncing.';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = '';
+    } else {
+      text.textContent = 'Not connected.';
+      connectBtn.style.display = '';
+      disconnectBtn.style.display = 'none';
+    }
+  }).catch(() => {
+    const section = document.getElementById('whoopSettingsSection');
+    if (section) section.style.display = 'none';
+  });
+}
+
+function disconnectWhoop() {
+  fetch('/api/whoop/disconnect', { method: 'POST' }).then(() => {
+    loadWhoopStatus();
+    if (typeof loadDashboard === 'function') loadDashboard();
+  }).catch(() => {});
+}
+
+(function handleWhoopOAuthRedirect() {
+  const params = new URLSearchParams(location.search);
+  if (params.has('whoop_connected')) {
+    if (typeof showToast === 'function') showToast('WHOOP connected!', 'success', 2500);
+  } else if (params.has('whoop_error')) {
+    if (typeof showToast === 'function') showToast('Could not connect WHOOP — please try again.', 'error');
+  } else {
+    return;
+  }
+  params.delete('whoop_connected');
+  params.delete('whoop_error');
+  const qs = params.toString();
+  history.replaceState({}, '', location.pathname + (qs ? '?' + qs : ''));
+})();
 
 function closeSettingsModal() {
   const modal = document.getElementById('settingsModal');
