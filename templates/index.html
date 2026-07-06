@@ -4315,6 +4315,7 @@ document.addEventListener('click', function(e) {
 
 function navigateTo(pageName) {
   closeCalendarModal();
+  if (pageName !== 'health') stopHealthPolling();
   document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
   document.querySelectorAll('.circle-btn').forEach(function(b) { b.classList.remove('active'); });
   var page = document.getElementById('page-' + pageName);
@@ -4329,7 +4330,7 @@ function navigateTo(pageName) {
     if (_currentAppMode === 'summer') refreshSummerHome(); else loadHomePage();
   }
   else if (pageName === 'school') loadSchoolPage().catch(function(e) { console.error('School dashboard load failed:', e); });
-  else if (pageName === 'health') loadHealthPage().catch(function(e) { console.error('Health dashboard load failed:', e); });
+  else if (pageName === 'health') { loadHealthPage().catch(function(e) { console.error('Health dashboard load failed:', e); }); startHealthPolling(); }
   else if (pageName === 'tasks') loadSidebarData();
   else if (pageName === 'assignments') loadAssignments();
   else if (pageName === 'projects') loadProjectsPage().catch(function(e) { console.error('Projects dashboard load failed:', e); });
@@ -4757,6 +4758,50 @@ async function loadHealthPage() {
   renderHealthDash();
 }
 
+// Heart rate is the one metric on this page that's actually time-sensitive
+// minute to minute, so it's the only thing the once-a-minute poll touches —
+// everything else (recovery/strain/sleep/workouts) only changes when WHOOP
+// syncs, which is not on a per-minute cadence, so refetching it would just
+// be wasted movement on the page.
+function _renderHRWidget(hr) {
+  _setText('healthStatHR', hr && hr.current_bpm ? hr.current_bpm : '–');
+  _setText('healthStatHRMeta', hr ? (hr.source === 'mock' ? 'bpm · sample data' : 'bpm · recent') : '');
+  if (hr) {
+    const chip = document.getElementById('healthHRChip');
+    if (chip) chip.textContent = hr.current_bpm + ' bpm now';
+    _renderHRSparkline(hr.samples || []);
+  }
+}
+
+let _healthPollTimer = null;
+
+function startHealthPolling() {
+  stopHealthPolling();
+  _healthPollTimer = setInterval(() => {
+    if (!document.hidden) _refreshHeartRate();
+  }, 60000);
+}
+
+function stopHealthPolling() {
+  if (_healthPollTimer) { clearInterval(_healthPollTimer); _healthPollTimer = null; }
+}
+
+async function _refreshHeartRate() {
+  try {
+    const hr = await dashGet('/api/whoop/heart-rate', 30000);
+    if (_healthData) _healthData.hr = hr;
+    _renderHRWidget(hr);
+  } catch (e) {
+    console.error('Heart-rate refresh failed:', e);
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  const health = document.getElementById('page-health');
+  if (health && health.classList.contains('active')) _refreshHeartRate();
+});
+
 function renderHealthDash() {
   if (!_healthData) return;
   const { summary, workouts, hr, prs, planned } = _healthData;
@@ -4768,20 +4813,13 @@ function renderHealthDash() {
   _setText('healthStatStrainMeta', day ? 'today’s cardiovascular load' : 'not connected');
   _setText('healthStatSleep', day && day.sleep_hours != null ? day.sleep_hours + 'h' : '–');
   _setText('healthStatSleepMeta', day && day.sleep_performance != null ? day.sleep_performance + '% performance' : (day ? 'last night' : 'not connected'));
-  _setText('healthStatHR', hr && hr.current_bpm ? hr.current_bpm : '–');
-  _setText('healthStatHRMeta', hr ? (hr.source === 'mock' ? 'bpm · sample data' : 'bpm · recent') : '');
+  _renderHRWidget(hr);
 
   const sub = document.getElementById('healthSub');
   if (sub && workouts) {
     sub.textContent = workouts.mock
       ? 'Sample data pipeline active — connect WHOOP in Settings to go live.'
       : 'Live WHOOP data — metrics, workouts, records, and planning.';
-  }
-
-  if (hr) {
-    const chip = document.getElementById('healthHRChip');
-    if (chip) chip.textContent = hr.current_bpm + ' bpm now';
-    _renderHRSparkline(hr.samples || []);
   }
 
   const woWrap = document.getElementById('healthWorkouts');
@@ -5023,7 +5061,7 @@ function updateNavBadges() {
     return new Date(a.due_iso) < now;
   });
 
-  const projectsNeedCheckin = (projectsCache || []).some(p => p.needs_checkin);
+  const projectsNeedCheckin = (projectsCache || []).some(p => p.status === 'active' && p.needs_checkin);
 
   const setBadge = (key, on) => {
     const el = document.querySelector('[data-badge="' + key + '"]');
