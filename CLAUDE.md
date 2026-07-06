@@ -69,7 +69,7 @@ This Flask-based web application provides a comprehensive student management sys
 The UI is four dense, above-the-fold grid dashboards (each widget scrolls internally; the page itself does not scroll on desktop):
 - **Home** — master aggregated view of *everything*: all calendar items (with category chips), upcoming tasks, health metrics, and project statuses
 - **School** — academics only: active assignments, school tasks, and club/student-org tasks (`tasks.category` = `school` / `club`)
-- **Health & Fitness** — WHOOP metrics (recovery/strain/sleep), recent heart rate, recent workouts, personal records tracker (longest run, fastest mile, longest swim), and an interactive workout planner
+- **Health & Fitness** — WHOOP metrics (recovery/strain/sleep), recent heart rate, recent workouts, personal records tracker (longest run, fastest mile, longest swim, highest strain), and an interactive workout planner
 - **Current Projects** — grid of project cards, each with its granular action items inline (complete/add tasks in place), plus project deadlines/milestones
 
 **AI Calendar Categorization Engine** (`categorize_events` in app.py): every calendar item is routed to exactly one category — `school`, `health`, `projects`, or `general` — via persistent cache → deterministic source/keyword rules → Claude Haiku batch classification → `general` fallback. No item is ever dropped; Home shows everything regardless of category, sub-dashboards filter by it. Tasks are routed the same way via `categorize_task` (school/club/health/general), with manual override through `POST/PATCH /api/tasks` `category`.
@@ -81,7 +81,7 @@ Key tables include:
 - `tasks` - Pending user tasks with urgency, due dates, and dashboard `category`
 - `calendar_categories` - Persistent cache for the calendar categorization engine
 - `planned_workouts` - Workout planner entries (Health dashboard)
-- `personal_records` - Manual PR overrides (longest run, fastest mile, longest swim)
+- `personal_records` - Manual PR overrides (longest run, fastest mile, longest swim, highest strain)
 - `completions` - Logged task/assignment completions with time tracking
 - `projects` - Active projects with status tracking
 - `project_tasks` - Tasks within projects

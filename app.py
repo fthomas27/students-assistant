@@ -1911,14 +1911,18 @@ def fitness_workouts(limit=25):
 
 def _mock_heart_rate_samples():
     """Plausible last-30-minute HR series (WHOOP's REST API has no live HR
-    stream — broadcast HR is BLE-only — so this seat-fills the display slot)."""
+    stream — broadcast HR is BLE-only — so this seat-fills the display slot).
+    Phase is driven by each sample's actual clock time (not its position in
+    the loop), so the series actually moves between polls instead of
+    replaying the same frozen 30 values with relabeled timestamps."""
     import math
     now = datetime.now(TZ)
     base = 62
     samples = []
     for i in range(30):
         t = now - timedelta(minutes=29 - i)
-        bpm = base + round(6 * math.sin(i / 4.0) + (3 if i % 7 == 0 else 0))
+        minute_of_day = t.hour * 60 + t.minute
+        bpm = base + round(6 * math.sin(minute_of_day / 4.0)) + (3 if minute_of_day % 7 == 0 else 0)
         samples.append({"t": t.strftime("%H:%M"), "bpm": bpm})
     return samples
 
@@ -1943,6 +1947,13 @@ def fitness_heart_rate():
 
 
 _MILE_M = 1609.34
+
+PR_LABELS = {
+    "longest_run": "Longest Run",
+    "fastest_mile": "Fastest Mile",
+    "longest_swim": "Longest Swim",
+    "highest_strain": "Highest Strain",
+}
 
 
 def _fmt_pace(seconds):
@@ -1982,6 +1993,18 @@ def compute_personal_records(workouts):
             "label": "Longest Swim",
             "value_display": "%d m" % round(best["distance_m"]),
             "value_numeric": best["distance_m"],
+            "achieved_on": best["date"],
+        }
+    # Unlike the run/swim records above, strain is logged on every workout
+    # type (lifting, functional fitness, etc.), so this is the one PR that
+    # reflects the full training mix rather than just endurance sports.
+    strain_workouts = [w for w in workouts if w.get("strain") is not None]
+    if strain_workouts:
+        best = max(strain_workouts, key=lambda w: w["strain"])
+        prs["highest_strain"] = {
+            "label": "Highest Strain",
+            "value_display": "%.1f" % best["strain"],
+            "value_numeric": best["strain"],
             "achieved_on": best["date"],
         }
     return prs
@@ -12709,9 +12732,7 @@ def api_fitness_prs():
         conn.close()
     except Exception as e:
         log.warning("/api/fitness/prs: override lookup failed: %s", e)
-    for key, label in (("longest_run", "Longest Run"),
-                       ("fastest_mile", "Fastest Mile"),
-                       ("longest_swim", "Longest Swim")):
+    for key, label in PR_LABELS.items():
         prs.setdefault(key, {"label": label, "value_display": "—", "value_numeric": None, "achieved_on": None})
     return jsonify({"records": prs, "mock": is_mock})
 
@@ -12722,9 +12743,9 @@ def api_fitness_prs_set():
         return jsonify({"error": "Not authenticated"}), 401
     data = request.get_json(force=True) or {}
     key = str(data.get("record_key", "")).strip()
-    if key not in ("longest_run", "fastest_mile", "longest_swim"):
+    if key not in PR_LABELS:
         return jsonify({"error": "invalid record_key"}), 400
-    label = {"longest_run": "Longest Run", "fastest_mile": "Fastest Mile", "longest_swim": "Longest Swim"}[key]
+    label = PR_LABELS[key]
     value_display = str(data.get("value_display", "")).strip()[:60]
     if not value_display:
         return jsonify({"error": "value_display required"}), 400
