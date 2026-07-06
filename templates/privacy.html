@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — Jarvis Student Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #070B10;
+  --surface: #0D141C;
+  --surface2: #131C26;
+  --border: rgba(140,178,190,0.10);
+  --border2: rgba(140,178,190,0.18);
+  --text: #EDF5F1;
+  --text2: #A9BBB4;
+  --text3: #64766F;
+  --accent: #55E6A5;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+}
+
+.wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 56px 24px 96px;
+}
+
+h1 {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.updated {
+  color: var(--text3);
+  font-size: 13px;
+  margin-bottom: 32px;
+}
+
+h2 {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--accent);
+  margin: 32px 0 10px;
+}
+
+p, li {
+  color: var(--text2);
+  font-size: 14.5px;
+}
+
+ul { margin: 8px 0 0 20px; }
+li { margin-bottom: 6px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px 28px;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.back {
+  display: inline-block;
+  margin-bottom: 24px;
+  color: var(--text3);
+  font-size: 13px;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/">&larr; Back to app</a>
+  <h1>Privacy Policy</h1>
+  <div class="updated">Jarvis Student Assistant &middot; a personal/family-use application</div>
+
+  <div class="card">
+    <p>This application is a personal student-productivity assistant built for private, family use — not a public product. This page exists so that connected third-party services (such as WHOOP) have somewhere to point users regarding data handling.</p>
+
+    <h2>What data this app stores</h2>
+    <ul>
+      <li><strong>Account credentials</strong> — a login password for the app itself, stored as a salted hash.</li>
+      <li><strong>Calendar data</strong> — assignment, personal, sports, and job-schedule calendar feeds you provide (iCal URLs), fetched to build schedules and briefings.</li>
+      <li><strong>Canvas data</strong> — if you provide a Canvas API token, course names, grades, and assignment details are fetched to give the assistant fuller context.</li>
+      <li><strong>WHOOP data</strong> — if you connect a WHOOP account, recovery score, sleep, strain, HRV, and resting heart rate are fetched via WHOOP's API and cached briefly to display on the dashboard and inform the assistant's advice.</li>
+      <li><strong>Tasks, projects, and notes</strong> — anything you type into the app's task, project, or notes features.</li>
+      <li><strong>Chat history</strong> — conversations with the assistant, stored so it can recall prior context.</li>
+    </ul>
+
+    <h2>How this data is used</h2>
+    <p>All of the above is used solely to power this application's own features — daily briefings, evening debriefs, chat, dashboards, and scheduling. Relevant snapshots of this data (e.g. today's assignments, recent WHOOP recovery) are sent to the Anthropic Claude API to generate responses. Data is not sold, shared with advertisers, or used for any purpose beyond operating this application.</p>
+
+    <h2>Third-party services</h2>
+    <p>Depending on which integrations you configure, data flows to and from:</p>
+    <ul>
+      <li>Anthropic (Claude API) — to generate chat responses and briefings</li>
+      <li>WHOOP — to fetch recovery/sleep/strain data via OAuth2, if connected</li>
+      <li>Canvas / your school's LMS — to fetch assignments and grades, if configured</li>
+      <li>Calendar providers (Google, etc.) — to read calendar feeds you provide</li>
+    </ul>
+    <p>Each integration is opt-in and can be disconnected at any time from the app's Settings page.</p>
+
+    <h2>Data storage &amp; retention</h2>
+    <p>Data is stored in a private PostgreSQL database associated with this application's hosting environment. OAuth tokens (e.g. for WHOOP) are stored server-side and never exposed to the browser. You can disconnect an integration at any time, which removes its stored tokens; deleting other stored data can be requested from the site administrator.</p>
+
+    <h2>Contact</h2>
+    <p>This application has a single administrator/owner. Questions about data handling can be directed to whoever provided you access to this app.</p>
+  </div>
+</div>
+</body>
+</html>

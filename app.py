@@ -302,7 +302,7 @@ def require_csrf():
 @app.before_request
 def require_auth():
     path = request.path.rstrip('/')
-    if path in ('/login', '/logout', '/admin', '/parent', '/manifest.json', '/sw.js'):
+    if path in ('/login', '/logout', '/admin', '/parent', '/manifest.json', '/sw.js', '/privacy'):
         return None
     if path.startswith('/signup'):
         return None
@@ -5458,6 +5458,11 @@ def api_pomodoro_stop():
     finally:
         conn.close()
     return jsonify(_pomodoro_state_payload(_pomodoro_row()))
+
+
+@app.route("/privacy")
+def privacy_policy():
+    return render_template("privacy.html")
 
 
 @app.route("/manifest.json")
