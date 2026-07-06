@@ -5061,7 +5061,7 @@ function updateNavBadges() {
     return new Date(a.due_iso) < now;
   });
 
-  const projectsNeedCheckin = (projectsCache || []).some(p => p.needs_checkin);
+  const projectsNeedCheckin = (projectsCache || []).some(p => p.status === 'active' && p.needs_checkin);
 
   const setBadge = (key, on) => {
     const el = document.querySelector('[data-badge="' + key + '"]');
