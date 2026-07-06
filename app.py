@@ -952,6 +952,71 @@ ON CONFLICT (ip_address) DO NOTHING""")
         conn = get_db()
         cur = conn.cursor()
 
+    # ── Multi-dashboard architecture: categories + fitness tables ────────────────
+    # tasks.category routes tasks to sub-dashboards: school | club | health | general
+    try:
+        cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    # Persistent cache for the AI/rules calendar categorization engine, keyed by a
+    # stable hash of (title, source). Every calendar item gets exactly one category.
+    try:
+        cur.execute("""CREATE TABLE IF NOT EXISTS calendar_categories (
+            event_key TEXT PRIMARY KEY,
+            category TEXT NOT NULL DEFAULT 'general',
+            method TEXT NOT NULL DEFAULT 'rules',
+            title TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    # Workout planner entries (Health & Fitness dashboard)
+    try:
+        cur.execute("""CREATE TABLE IF NOT EXISTS planned_workouts (
+            id SERIAL PRIMARY KEY,
+            user_id UUID,
+            title TEXT NOT NULL,
+            sport TEXT NOT NULL DEFAULT 'other',
+            planned_date DATE NOT NULL,
+            planned_time TIME,
+            duration_min INT NOT NULL DEFAULT 45,
+            notes TEXT NOT NULL DEFAULT '',
+            completed BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    # Personal records tracker — manual overrides layered on top of values
+    # computed from the WHOOP workout pipeline.
+    try:
+        cur.execute("""CREATE TABLE IF NOT EXISTS personal_records (
+            record_key TEXT PRIMARY KEY,
+            user_id UUID,
+            label TEXT NOT NULL DEFAULT '',
+            value_display TEXT NOT NULL DEFAULT '',
+            value_numeric REAL,
+            achieved_on DATE,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
     # ── SaaS: add user_id column to all per-user data tables ──────────────────────
     _user_id_tables = [
         "tasks", "recurring_tasks", "completions", "assignment_estimates",
@@ -1746,6 +1811,182 @@ def whoop_cycles_recent(limit=10):
     return records
 
 
+def whoop_workouts_recent(limit=25):
+    cached = _cache_get("whoop:workouts", WHOOP_CACHE_TTL)
+    if cached is not None:
+        return cached
+    data = _whoop_get("/activity/workout", params={"limit": limit})
+    records = (data or {}).get("records") or []
+    _cache_set("whoop:workouts", records)
+    return records
+
+
+# Partial WHOOP sport_id → name map (v2 records usually carry sport_name; this
+# is the fallback for older records).
+_WHOOP_SPORT_IDS = {
+    -1: "Activity", 0: "Running", 1: "Cycling", 16: "Baseball", 17: "Basketball",
+    18: "Rowing", 22: "Golf", 24: "Ice Hockey", 27: "Lacrosse", 30: "Soccer",
+    33: "Swimming", 34: "Tennis", 36: "Volleyball", 42: "Skiing", 43: "Snowboarding",
+    44: "Softball", 45: "Weightlifting", 48: "Functional Fitness", 52: "Hiking",
+    57: "Pilates", 59: "Spin", 63: "Walking", 66: "Yoga", 71: "Track & Field",
+    97: "Swim Practice", 98: "Climbing",
+}
+
+
+def _normalize_whoop_workout(rec):
+    """Flatten a WHOOP v2 workout record into the shape the dashboard consumes."""
+    score = rec.get("score") or {}
+    start = rec.get("start") or ""
+    end = rec.get("end") or ""
+    duration_min = None
+    try:
+        s = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        e = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        duration_min = round((e - s).total_seconds() / 60)
+    except Exception:
+        pass
+    sport = rec.get("sport_name") or _WHOOP_SPORT_IDS.get(rec.get("sport_id"), "Workout")
+    kj = score.get("kilojoule")
+    return {
+        "id": str(rec.get("id", "")),
+        "sport": sport,
+        "start": start,
+        "end": end,
+        "date": start[:10],
+        "duration_min": duration_min,
+        "strain": score.get("strain"),
+        "avg_hr": score.get("average_heart_rate"),
+        "max_hr": score.get("max_heart_rate"),
+        "calories": round(kj * 0.239006) if kj else None,
+        "distance_m": score.get("distance_meter"),
+    }
+
+
+def _mock_whoop_workouts(days=14):
+    """Deterministic sample workouts so the Health dashboard pipeline works
+    end-to-end before a WHOOP account is connected. Same shape as the
+    normalized real records — swapping in live data changes nothing downstream."""
+    plan = [  # rotating weekly pattern seeded off the weekday
+        ("Running",       45, 6200,  148, 176, 14.2),
+        ("Weightlifting", 60, None,  118, 152, 10.1),
+        ("Swimming",      50, 1800,  132, 158, 11.6),
+        ("Running",       35, 5000,  152, 181, 12.8),
+        (None,) * 6,  # rest day
+        ("Running",       80, 12100, 145, 172, 16.9),
+        ("Functional Fitness", 40, None, 126, 160, 9.4),
+    ]
+    out = []
+    today = datetime.now(TZ).date()
+    for d in range(days):
+        day = today - timedelta(days=d)
+        sport, mins, dist, avg, mx, strain = plan[day.weekday() % 7]
+        if not sport:
+            continue
+        start_dt = datetime(day.year, day.month, day.day, 16, 30, tzinfo=TZ)
+        out.append({
+            "id": "mock-%s" % day.isoformat(),
+            "sport": sport,
+            "start": start_dt.isoformat(),
+            "end": (start_dt + timedelta(minutes=mins)).isoformat(),
+            "date": day.isoformat(),
+            "duration_min": mins,
+            "strain": strain,
+            "avg_hr": avg,
+            "max_hr": mx,
+            "calories": round(mins * 9.5),
+            "distance_m": dist,
+        })
+    return out
+
+
+def fitness_workouts(limit=25):
+    """Recent workouts for the Health dashboard: live WHOOP data when the
+    account is connected, otherwise the mock pipeline. Returns (workouts, is_mock)."""
+    if _whoop_connected():
+        records = whoop_workouts_recent(limit=limit)
+        if records:
+            return [_normalize_whoop_workout(r) for r in records], False
+    return _mock_whoop_workouts(), True
+
+
+def _mock_heart_rate_samples():
+    """Plausible last-30-minute HR series (WHOOP's REST API has no live HR
+    stream — broadcast HR is BLE-only — so this seat-fills the display slot)."""
+    import math
+    now = datetime.now(TZ)
+    base = 62
+    samples = []
+    for i in range(30):
+        t = now - timedelta(minutes=29 - i)
+        bpm = base + round(6 * math.sin(i / 4.0) + (3 if i % 7 == 0 else 0))
+        samples.append({"t": t.strftime("%H:%M"), "bpm": bpm})
+    return samples
+
+
+def fitness_heart_rate():
+    """Recent/current heart-rate payload. Uses the latest WHOOP recovery (RHR)
+    and workout HR to anchor the numbers when connected; mock otherwise."""
+    samples = _mock_heart_rate_samples()
+    source = "mock"
+    if _whoop_connected():
+        try:
+            days = whoop_daily_summary(days=1)
+            rhr = days[0].get("rhr") if days else None
+            if rhr:
+                delta = rhr + 4 - samples[-1]["bpm"]
+                for s in samples:
+                    s["bpm"] = max(40, s["bpm"] + delta)
+                source = "derived"  # anchored to live WHOOP resting HR
+        except Exception as e:
+            log.warning("fitness_heart_rate: %s", e)
+    return {"current_bpm": samples[-1]["bpm"], "samples": samples, "source": source}
+
+
+_MILE_M = 1609.34
+
+
+def _fmt_pace(seconds):
+    m, s = divmod(int(round(seconds)), 60)
+    return "%d:%02d" % (m, s)
+
+
+def compute_personal_records(workouts):
+    """Historical bests derived from the workout pipeline (real or mock)."""
+    runs = [w for w in workouts if "run" in (w["sport"] or "").lower()]
+    swims = [w for w in workouts if "swim" in (w["sport"] or "").lower()]
+
+    prs = {}
+    dist_runs = [w for w in runs if w.get("distance_m")]
+    if dist_runs:
+        best = max(dist_runs, key=lambda w: w["distance_m"])
+        prs["longest_run"] = {
+            "label": "Longest Run",
+            "value_display": "%.1f mi" % (best["distance_m"] / _MILE_M),
+            "value_numeric": best["distance_m"],
+            "achieved_on": best["date"],
+        }
+    pace_runs = [w for w in dist_runs if w.get("duration_min") and w["distance_m"] >= _MILE_M]
+    if pace_runs:
+        best = min(pace_runs, key=lambda w: w["duration_min"] * 60 / (w["distance_m"] / _MILE_M))
+        secs = best["duration_min"] * 60 / (best["distance_m"] / _MILE_M)
+        prs["fastest_mile"] = {
+            "label": "Fastest Mile",
+            "value_display": _fmt_pace(secs) + " /mi",
+            "value_numeric": secs,
+            "achieved_on": best["date"],
+        }
+    dist_swims = [w for w in swims if w.get("distance_m")]
+    if dist_swims:
+        best = max(dist_swims, key=lambda w: w["distance_m"])
+        prs["longest_swim"] = {
+            "label": "Longest Swim",
+            "value_display": "%d m" % round(best["distance_m"]),
+            "value_numeric": best["distance_m"],
+            "achieved_on": best["date"],
+        }
+    return prs
+
+
 def whoop_daily_summary(days=7):
     """Merge recovery/sleep/strain records into one row per calendar day, newest first."""
     if not _whoop_connected():
@@ -1813,6 +2054,190 @@ def whoop_context_line():
     if not parts:
         return None
     return "WHOOP (%s): %s." % (d["date"], ", ".join(parts))
+
+
+# ── AI Calendar Categorization Engine ─────────────────────────────────────────
+# Routes every calendar item to a sub-dashboard. Hard rule: NO item is ever
+# dropped — anything that can't be confidently classified stays "general"
+# (Home-dashboard-only). Resolution order per item:
+#   1. persistent cache (calendar_categories table)
+#   2. deterministic rules on source/title/class metadata
+#   3. AI batch classification (Claude Haiku) for leftovers
+#   4. fallback "general" on any error
+DASHBOARD_CATEGORIES = ("school", "health", "projects", "general")
+
+_CAT_HEALTH_RE = re.compile(
+    r"\b(workout|gym|lift(ing)?|run(ning)?|jog|swim(ming)?|bike|cycling|spin|"
+    r"practice|game|match|meet|race|scrimmage|tournament|training|conditioning|"
+    r"yoga|pilates|climb(ing)?|ski(ing)?|snowboard(ing)?|soccer|lacrosse|basketball|"
+    r"football|baseball|volleyball|tennis|golf|track|cross country|xc|wrestling|"
+    r"hockey|physical therapy|pt session|cardio|5k|10k|half marathon|marathon)\b", re.I)
+
+_CAT_SCHOOL_RE = re.compile(
+    r"\b(class|period|school|homework|hw|quiz|test|exam|midterm|final|essay|lab|"
+    r"assignment|study|tutor(ing)?|lecture|ap |a\.p\.|counselor|club|robotics|deca|"
+    r"nhs|hosa|fbla|debate|student (council|gov)|yearbook|band|orchestra|choir|"
+    r"theater|theatre|drama|mun|model un|key club|volunteer club)\b", re.I)
+
+_CAT_PROJECT_RE = re.compile(
+    r"\b(project|milestone|deadline|deliverable|sprint|prototype|demo day|"
+    r"launch|ship|release|kickoff|check-?in|standup|retro(spective)?)\b", re.I)
+
+
+def _event_category_key(title, source):
+    return hashlib.sha1(("%s|%s" % (title or "", source or "")).encode("utf-8")).hexdigest()
+
+
+def _rule_categorize_event(ev):
+    """Deterministic first-pass categorization. Returns a category or None."""
+    source = (ev.get("source") or "").lower()
+    title = ev.get("title") or ""
+    # Source metadata is the strongest signal
+    if source == "canvas" or ev.get("class_name"):
+        return "school"
+    if source == "sports":
+        return "health"
+    if source in ("red_day", "white_day", "school_day", "day"):
+        return "school"
+    if source == "job":
+        return "general"
+    if _CAT_PROJECT_RE.search(title):
+        return "projects"
+    if _CAT_HEALTH_RE.search(title):
+        return "health"
+    if _CAT_SCHOOL_RE.search(title):
+        return "school"
+    return None
+
+
+def _ai_categorize_titles(titles):
+    """Classify leftover event titles with Claude Haiku. Returns {title: category}.
+    Any parse/API failure returns {} so callers fall back to 'general'."""
+    if not titles:
+        return {}
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return {}
+    try:
+        client = anthropic.Anthropic(api_key=api_key, max_retries=1, timeout=20.0)
+        numbered = "\n".join("%d. %s" % (i + 1, t[:140]) for i, t in enumerate(titles))
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=800,
+            messages=[{"role": "user", "content":
+                "Classify each calendar event title for a high school student's dashboard router. "
+                "Categories: school (classes, homework, clubs, student orgs), "
+                "health (workouts, sports, fitness), "
+                "projects (project deadlines/milestones), "
+                "general (anything else or unclear). "
+                "Reply with ONLY a JSON array of category strings, one per line item, same order.\n\n"
+                + numbered}],
+        )
+        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        m = re.search(r"\[.*\]", text, re.S)
+        cats = json.loads(m.group(0) if m else text)
+        out = {}
+        for t, c in zip(titles, cats):
+            c = str(c).strip().lower()
+            out[t] = c if c in DASHBOARD_CATEGORIES else "general"
+        return out
+    except Exception as e:
+        log.warning("AI categorization failed (falling back to general): %s", e)
+        return {}
+
+
+def categorize_events(events):
+    """Attach a 'category' to every event in-place and return the list.
+    Never drops or reorders items; never raises."""
+    if not events:
+        return events
+    try:
+        # 1. Cached categories
+        keys = {}
+        for ev in events:
+            keys[id(ev)] = _event_category_key(ev.get("title"), ev.get("source"))
+        cached = {}
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT event_key, category FROM calendar_categories WHERE event_key = ANY(%s)",
+                        (list(set(keys.values())),))
+            cached = {r["event_key"]: r["category"] for r in cur.fetchall()}
+            cur.close()
+            conn.close()
+        except Exception as e:
+            log.warning("categorize_events: cache lookup failed: %s", e)
+
+        pending_ai = {}  # title -> list of events awaiting AI
+        new_rows = []    # (key, category, method, title, source)
+        for ev in events:
+            key = keys[id(ev)]
+            if key in cached:
+                ev["category"] = cached[key] if cached[key] in DASHBOARD_CATEGORIES else "general"
+                continue
+            cat = _rule_categorize_event(ev)
+            if cat:
+                ev["category"] = cat
+                cached[key] = cat
+                new_rows.append((key, cat, "rules", ev.get("title") or "", ev.get("source") or ""))
+            else:
+                pending_ai.setdefault(ev.get("title") or "", []).append(ev)
+
+        # 3. AI pass for whatever the rules couldn't place (bounded batch)
+        if pending_ai:
+            titles = list(pending_ai.keys())[:60]
+            ai_map = _ai_categorize_titles(titles)
+            for title, evs in pending_ai.items():
+                cat = ai_map.get(title, "general")
+                method = "ai" if title in ai_map else "fallback"
+                for ev in evs:
+                    ev["category"] = cat
+                key = keys[id(evs[0])]
+                if key not in cached:
+                    cached[key] = cat
+                    # Only persist decisive answers; retry fallbacks next time
+                    if method == "ai":
+                        new_rows.append((key, cat, method, title, evs[0].get("source") or ""))
+
+        if new_rows:
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.executemany("""
+INSERT INTO calendar_categories (event_key, category, method, title, source)
+VALUES (%s, %s, %s, %s, %s) ON CONFLICT (event_key) DO NOTHING""", new_rows)
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                log.warning("categorize_events: cache write failed: %s", e)
+    except Exception as e:
+        log.warning("categorize_events failed entirely: %s", e)
+    # Safety net: absolutely every item leaves with a category
+    for ev in events:
+        if ev.get("category") not in DASHBOARD_CATEGORIES:
+            ev["category"] = "general"
+    return events
+
+
+_TASK_CLUB_RE = re.compile(
+    r"\b(club|robotics|deca|nhs|hosa|fbla|debate|student (council|gov)|yearbook|"
+    r"mun|model un|key club|officer|fundraiser|bake sale)\b", re.I)
+
+
+def categorize_task(title, notes=""):
+    """Rules-based category for a task: school | club | health | general."""
+    text = "%s %s" % (title or "", notes or "")
+    if _TASK_CLUB_RE.search(text):
+        return "club"
+    if _CAT_SCHOOL_RE.search(text):
+        return "school"
+    if _CAT_HEALTH_RE.search(text):
+        return "health"
+    return "general"
+
+
+TASK_CATEGORIES = ("school", "club", "health", "general")
 
 
 # ── PowerSchool Scraper (Playwright + Claude Vision) ──────────────────────────
@@ -5671,6 +6096,8 @@ def api_calendar():
         log.warning(f"/api/calendar: day calendar failed: {e}")
 
     events.sort(key=lambda x: x.get("start_iso", ""))
+    # Route every event to a dashboard — no item is ever dropped.
+    categorize_events(events)
     log.info(f"/api/calendar: total took {time.time()-start:.2f}s with {len(events)} events")
     return jsonify({"events": events})
 
@@ -6276,14 +6703,14 @@ def api_tasks_get():
         if uid:
             cur.execute("""
 SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
-       NULL as project_id, NULL as project_title, hidden_from_parent
+       NULL as project_id, NULL as project_title, hidden_from_parent, category
 FROM tasks WHERE user_id = %s ORDER BY completed ASC,
     CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
     created_at ASC""", (uid,))
         else:
             cur.execute("""
 SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
-       NULL as project_id, NULL as project_title, hidden_from_parent
+       NULL as project_id, NULL as project_title, hidden_from_parent, category
 FROM tasks ORDER BY completed ASC,
     CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
     created_at ASC""")
@@ -6319,11 +6746,14 @@ ORDER BY pt.created_at ASC""")
                 r["due_date"] = str(r["due_date"])
             r["created_at"] = r["created_at"].isoformat()
             r["source"] = "task"
+            if not r.get("category"):
+                r["category"] = categorize_task(r.get("title"), r.get("notes"))
         for r in proj_rows:
             if r["due_date"]:
                 r["due_date"] = str(r["due_date"])
             r["created_at"] = r["created_at"].isoformat()
             r["source"] = "project_task"
+            r["category"] = "project"
         log.info(f"/api/tasks: returned {len(rows)} tasks + {len(proj_rows)} project tasks in {time.time()-start:.2f}s")
         return jsonify({"tasks": rows + proj_rows})
     except Exception as e:
@@ -6349,6 +6779,10 @@ def api_tasks_create():
     due_date = data.get("due_date") or None
     recurrence = str(data.get("recurrence", "")).lower() or None
 
+    category = str(data.get("category", "")).lower().strip()
+    if category not in TASK_CATEGORIES:
+        category = categorize_task(title, notes)
+
     uid = _uid()
     conn = get_db()
     cur = conn.cursor()
@@ -6362,14 +6796,14 @@ VALUES (%s, %s, %s, %s, TRUE, %s) RETURNING id""",
 
         calc_due_date = _calculate_next_due_date(recurrence)
         cur.execute("""
-INSERT INTO tasks (title, notes, urgency, due_date, user_id)
-VALUES (%s, %s, %s, %s, %s)""",
-                    (title, f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]", urgency, calc_due_date, uid))
+INSERT INTO tasks (title, notes, urgency, due_date, user_id, category)
+VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (title, f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]", urgency, calc_due_date, uid, category))
         cur.execute("UPDATE recurring_tasks SET last_created_at = NOW() WHERE id = %s", (task_id,))
     else:
         cur.execute("""
-INSERT INTO tasks (title, notes, urgency, due_date, user_id) VALUES (%s, %s, %s, %s, %s) RETURNING id""",
-                    (title, notes, urgency, due_date, uid))
+INSERT INTO tasks (title, notes, urgency, due_date, user_id, category) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (title, notes, urgency, due_date, uid, category))
         task_id = cur.fetchone()["id"]
 
     conn.commit()
@@ -6419,6 +6853,10 @@ WHERE plan_date = %s""", (today,))
         if "hidden_from_parent" in data:
             cur.execute(f"UPDATE tasks SET hidden_from_parent=%s WHERE id=%s{uid_clause}",
                         (bool(data["hidden_from_parent"]), task_id) + uid_params)
+        if "category" in data:
+            category = str(data["category"]).lower().strip()
+            if category in TASK_CATEGORIES:
+                cur.execute(f"UPDATE tasks SET category=%s WHERE id=%s{uid_clause}", (category, task_id) + uid_params)
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -12238,6 +12676,174 @@ def whoop_disconnect():
         return jsonify({"error": "Not authenticated"}), 401
     set_config({"whoop_refresh_token": "", "whoop_access_token": "", "whoop_token_expires_at": ""})
     return jsonify({"status": "disconnected"})
+
+
+# ── Health & Fitness dashboard API ────────────────────────────────────────────
+
+@app.route("/api/whoop/workouts")
+def api_whoop_workouts():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    workouts, is_mock = fitness_workouts(limit=25)
+    return jsonify({
+        "configured": _whoop_configured(),
+        "connected": _whoop_connected(),
+        "mock": is_mock,
+        "workouts": workouts,
+    })
+
+
+@app.route("/api/whoop/heart-rate")
+def api_whoop_heart_rate():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    return jsonify(fitness_heart_rate())
+
+
+@app.route("/api/fitness/prs", methods=["GET"])
+def api_fitness_prs():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    workouts, is_mock = fitness_workouts(limit=25)
+    prs = compute_personal_records(workouts)
+    # Manual overrides (or records predating the WHOOP history) win.
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT record_key, label, value_display, value_numeric, achieved_on FROM personal_records")
+        for r in cur.fetchall():
+            prs[r["record_key"]] = {
+                "label": r["label"],
+                "value_display": r["value_display"],
+                "value_numeric": r["value_numeric"],
+                "achieved_on": str(r["achieved_on"]) if r["achieved_on"] else None,
+                "manual": True,
+            }
+        cur.close()
+        conn.close()
+    except Exception as e:
+        log.warning("/api/fitness/prs: override lookup failed: %s", e)
+    for key, label in (("longest_run", "Longest Run"),
+                       ("fastest_mile", "Fastest Mile"),
+                       ("longest_swim", "Longest Swim")):
+        prs.setdefault(key, {"label": label, "value_display": "—", "value_numeric": None, "achieved_on": None})
+    return jsonify({"records": prs, "mock": is_mock})
+
+
+@app.route("/api/fitness/prs", methods=["POST"])
+def api_fitness_prs_set():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    data = request.get_json(force=True) or {}
+    key = str(data.get("record_key", "")).strip()
+    if key not in ("longest_run", "fastest_mile", "longest_swim"):
+        return jsonify({"error": "invalid record_key"}), 400
+    label = {"longest_run": "Longest Run", "fastest_mile": "Fastest Mile", "longest_swim": "Longest Swim"}[key]
+    value_display = str(data.get("value_display", "")).strip()[:60]
+    if not value_display:
+        return jsonify({"error": "value_display required"}), 400
+    achieved_on = data.get("achieved_on") or None
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+INSERT INTO personal_records (record_key, user_id, label, value_display, value_numeric, achieved_on, updated_at)
+VALUES (%s, %s, %s, %s, %s, %s, NOW())
+ON CONFLICT (record_key) DO UPDATE
+SET value_display = EXCLUDED.value_display, value_numeric = EXCLUDED.value_numeric,
+    achieved_on = EXCLUDED.achieved_on, updated_at = NOW()""",
+                (key, _uid(), label, value_display, data.get("value_numeric"), achieved_on))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/fitness/planned-workouts", methods=["GET"])
+def api_planned_workouts_get():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+SELECT id, title, sport, planned_date, planned_time, duration_min, notes, completed
+FROM planned_workouts
+WHERE completed = FALSE OR planned_date >= CURRENT_DATE - 7
+ORDER BY planned_date ASC, planned_time ASC NULLS LAST""")
+    rows = [dict(r) for r in cur.fetchall()]
+    cur.close()
+    conn.close()
+    for r in rows:
+        r["planned_date"] = str(r["planned_date"])
+        r["planned_time"] = r["planned_time"].strftime("%H:%M") if r["planned_time"] else None
+    return jsonify({"planned": rows})
+
+
+@app.route("/api/fitness/planned-workouts", methods=["POST"])
+def api_planned_workouts_create():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    data = request.get_json(force=True) or {}
+    title = str(data.get("title", "")).strip()[:200]
+    if not title:
+        return jsonify({"error": "title required"}), 400
+    sport = str(data.get("sport", "other")).strip().lower()[:40] or "other"
+    planned_date = data.get("planned_date")
+    try:
+        planned_date = date.fromisoformat(planned_date) if planned_date else datetime.now(TZ).date()
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid planned_date"}), 400
+    planned_time = data.get("planned_time") or None
+    if planned_time:
+        try:
+            datetime.strptime(planned_time, "%H:%M")
+        except (ValueError, TypeError):
+            return jsonify({"error": "invalid planned_time"}), 400
+    try:
+        duration_min = max(5, min(int(data.get("duration_min", 45)), 600))
+    except (ValueError, TypeError):
+        duration_min = 45
+    notes = str(data.get("notes", ""))[:1000]
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+INSERT INTO planned_workouts (user_id, title, sport, planned_date, planned_time, duration_min, notes)
+VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (_uid(), title, sport, planned_date, planned_time, duration_min, notes))
+    workout_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"id": workout_id, "status": "ok"})
+
+
+@app.route("/api/fitness/planned-workouts/<int:workout_id>", methods=["PATCH"])
+def api_planned_workouts_update(workout_id):
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    data = request.get_json(force=True) or {}
+    conn = get_db()
+    cur = conn.cursor()
+    if "completed" in data:
+        cur.execute("UPDATE planned_workouts SET completed=%s WHERE id=%s", (bool(data["completed"]), workout_id))
+    if "title" in data and str(data["title"]).strip():
+        cur.execute("UPDATE planned_workouts SET title=%s WHERE id=%s", (str(data["title"]).strip()[:200], workout_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/fitness/planned-workouts/<int:workout_id>", methods=["DELETE"])
+def api_planned_workouts_delete(workout_id):
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM planned_workouts WHERE id=%s", (workout_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/google/gmail/drafts")
