@@ -7,28 +7,29 @@
 <title>Admin Panel -- Sign In</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
---bg: #0a0a0f;
---surface: #111118;
---surface2: #18181f;
---border: rgba(255,255,255,0.07);
---border2: rgba(255,255,255,0.12);
---text: #f0f0f5;
---text2: #8888a0;
---text3: #555568;
---accent: #FF7F50;
---accent2: #FF9966;
---red: #f05c5c;
---green: #4caf82;
---yellow: #ffc107;
+--bg: #070B10;
+--surface: #0D141C;
+--surface2: #131C26;
+--border: rgba(140,178,190,0.10);
+--border2: rgba(140,178,190,0.18);
+--text: #EDF5F1;
+--text2: #A9BBB4;
+--text3: #64766F;
+--accent: #55E6A5;
+--accent-ink: #04231A;
+--accent2: #7CF0BC;
+--red: #FF7A7A;
+--green: #55E6A5;
+--yellow: #FFC46B;
 }
 
 body {
-font-family: 'DM Sans', sans-serif;
+font-family: 'Inter', sans-serif;
 background: var(--bg);
 color: var(--text);
 height: 100dvh;
@@ -45,8 +46,8 @@ content: '';
 position: fixed;
 inset: 0;
 background:
-radial-gradient(ellipse 60% 50% at 20% 20%, rgba(124,106,247,0.06) 0%, transparent 70%),
-radial-gradient(ellipse 50% 40% at 80% 80%, rgba(124,106,247,0.04) 0%, transparent 70%);
+radial-gradient(ellipse 60% 50% at 20% 20%, rgba(185,167,255,0.06) 0%, transparent 70%),
+radial-gradient(ellipse 50% 40% at 80% 80%, rgba(185,167,255,0.04) 0%, transparent 70%);
 pointer-events: none;
 }
 
@@ -69,16 +70,18 @@ to { opacity: 1; transform: translateY(0); }
 .logo-ring {
 width: 56px; height: 56px;
 border-radius: 50%;
-background: linear-gradient(135deg, rgba(124,106,247,0.25), rgba(124,106,247,0.08));
-border: 1px solid rgba(124,106,247,0.3);
+background: linear-gradient(135deg, rgba(185,167,255,0.25), rgba(185,167,255,0.08));
+border: 1px solid rgba(185,167,255,0.3);
 display: flex; align-items: center; justify-content: center;
 font-size: 24px;
 margin: 0 auto 20px;
 }
 
 .login-title {
-font-family: 'DM Serif Display', serif;
-font-size: 28px;
+font-family: 'Space Grotesk', sans-serif;
+font-weight: 700;
+letter-spacing: -0.02em;
+font-size: 27px;
 text-align: center;
 margin-bottom: 6px;
 line-height: 1.1;
@@ -113,7 +116,7 @@ border: 1px solid var(--border2);
 border-radius: 12px;
 padding: 14px 46px 14px 16px;
 font-size: 17px;
-font-family: 'DM Sans', sans-serif;
+font-family: 'Inter', sans-serif;
 color: var(--text);
 outline: none;
 transition: border-color 0.2s, box-shadow 0.2s;
@@ -122,12 +125,12 @@ letter-spacing: 0.12em;
 
 .field-input:focus {
 border-color: var(--accent);
-box-shadow: 0 0 0 3px rgba(124,106,247,0.12);
+box-shadow: 0 0 0 3px rgba(185,167,255,0.12);
 }
 
 .field-input.error {
 border-color: var(--red);
-box-shadow: 0 0 0 3px rgba(240,92,92,0.1);
+box-shadow: 0 0 0 3px rgba(255,122,122,0.1);
 animation: shake 0.35s ease;
 }
 
@@ -149,13 +152,13 @@ transition: color 0.15s;
 .submit-btn {
 width: 100%;
 background: var(--accent);
-color: #fff;
+color: var(--accent-ink);
 border: none;
-border-radius: 12px;
+border-radius: 999px;
 padding: 15px;
 font-size: 16px;
 font-weight: 600;
-font-family: 'DM Sans', sans-serif;
+font-family: 'Space Grotesk', sans-serif;
 cursor: pointer;
 transition: opacity 0.15s, transform 0.1s;
 -webkit-tap-highlight-color: transparent;
@@ -175,7 +178,7 @@ transition: opacity 0.2s;
 }
 
 .error-msg.lockout {
-color: #ff6b6b;
+color: #FF7A7A;
 font-weight: 600;
 height: auto;
 }
@@ -193,12 +196,12 @@ border-left: 3px solid var(--accent);
 
 .security-info.warning {
 border-left-color: var(--red);
-background: rgba(240, 92, 92, 0.05);
+background: rgba(255, 122, 122, 0.05);
 }
 
 .system-status {
-background: rgba(255, 193, 7, 0.1);
-border: 1px solid rgba(255, 193, 7, 0.3);
+background: rgba(255, 196, 107, 0.1);
+border: 1px solid rgba(255, 196, 107, 0.3);
 border-left: 3px solid var(--yellow);
 border-radius: 8px;
 padding: 12px;

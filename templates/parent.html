@@ -6,27 +6,28 @@
 <title>Parent Portal - Jarvis</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #0f0f0f;
-  --surface: #1a1a1a;
-  --surface2: #262626;
-  --border: rgba(255,255,255,0.1);
-  --text: #ffffff;
-  --text2: #d0d0d0;
-  --text3: #999999;
-  --accent: #FF7F50;
-  --green: #5cb85c;
-  --red: #ff6b6b;
-  --purple: #b197fc;
+  --bg: #070B10;
+  --surface: #0D141C;
+  --surface2: #131C26;
+  --border: rgba(140,178,190,0.10);
+  --text: #EDF5F1;
+  --text2: #A9BBB4;
+  --text3: #64766F;
+  --accent: #55E6A5;
+--accent-ink: #04231A;
+  --green: #55E6A5;
+  --red: #FF7A7A;
+  --purple: #B9A7FF;
   --r: 16px;
 }
 
 body {
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
@@ -48,7 +49,7 @@ body {
 }
 
 .title {
-  font-family: 'DM Serif Display', serif;
+  font-family: 'Space Grotesk', sans-serif;
   font-size: 32px;
   margin: 0;
 }
@@ -60,18 +61,18 @@ body {
 }
 
 .logout-btn {
-  background: var(--red);
-  color: white;
-  border: none;
+  background: transparent;
+  color: var(--red);
+  border: 1px solid rgba(255,122,122,0.5);
   padding: 10px 20px;
-  border-radius: 8px;
+  border-radius: 999px;
   cursor: pointer;
   font-weight: 600;
   transition: background 0.2s;
 }
 
 .logout-btn:hover {
-  background: #d32f2f;
+  background: rgba(255,122,122,0.12);
 }
 
 .form-section {
@@ -115,7 +116,7 @@ input, textarea, select {
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   font-size: 14px;
   transition: border-color 0.2s;
 }
@@ -123,7 +124,7 @@ input, textarea, select {
 input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(255, 127, 80, 0.1);
+  box-shadow: 0 0 0 3px rgba(85, 230, 165, 0.1);
 }
 
 textarea {
@@ -145,10 +146,10 @@ textarea {
 
 .submit-btn {
   background: var(--accent);
-  color: white;
+  color: var(--accent-ink);
   border: none;
   padding: 12px 24px;
-  border-radius: 8px;
+  border-radius: 999px;
   cursor: pointer;
   font-weight: 600;
   font-size: 14px;
@@ -229,17 +230,17 @@ textarea {
 
 .task-urgency.high {
   background: rgba(255, 107, 107, 0.2);
-  color: #ff6b6b;
+  color: #FF7A7A;
 }
 
 .task-urgency.medium {
-  background: rgba(255, 193, 7, 0.2);
-  color: #ffc107;
+  background: rgba(255, 196, 107, 0.2);
+  color: #FFC46B;
 }
 
 .task-urgency.low {
   background: rgba(92, 184, 92, 0.2);
-  color: #5cb85c;
+  color: #55E6A5;
 }
 
 .task-meta {
@@ -274,7 +275,7 @@ textarea {
   padding: 8px 12px;
   border: 1px solid var(--border);
   background: none;
-  border-radius: 6px;
+  border-radius: 999px;
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
@@ -347,7 +348,7 @@ textarea {
   padding: 8px 16px;
   border: 1px solid var(--border);
   background: transparent;
-  border-radius: 6px;
+  border-radius: 999px;
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
@@ -358,7 +359,7 @@ textarea {
 .filter-btn.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: white;
+  color: var(--accent-ink);
 }
 
 .filter-btn:hover:not(.active) {
@@ -406,7 +407,7 @@ textarea {
 }
 
 .message.info {
-  background: rgba(255, 127, 80, 0.15);
+  background: rgba(85, 230, 165, 0.15);
   border: 1px solid var(--accent);
   color: var(--accent);
 }
@@ -480,9 +481,9 @@ textarea {
   font-weight: 600;
   text-transform: uppercase;
 }
-.badge-calendar { background: rgba(79,179,246,0.2); color: #4fb3f6; }
-.badge-assignment { background: rgba(255,127,80,0.2); color: var(--accent); }
-.badge-task { background: rgba(92,184,92,0.2); color: var(--green); }
+.badge-calendar { background: rgba(79,179,246,0.2); color: #6FC7F2; }
+.badge-assignment { background: rgba(85,230,165,0.2); color: var(--accent); }
+.badge-task { background: rgba(85,230,165,0.2); color: var(--green); }
 .badge-private { background: rgba(153,153,153,0.15); color: var(--text3); }
 
 /* ── iPhone / small-screen compaction ────────────────────────────── */
