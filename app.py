@@ -1911,14 +1911,18 @@ def fitness_workouts(limit=25):
 
 def _mock_heart_rate_samples():
     """Plausible last-30-minute HR series (WHOOP's REST API has no live HR
-    stream — broadcast HR is BLE-only — so this seat-fills the display slot)."""
+    stream — broadcast HR is BLE-only — so this seat-fills the display slot).
+    Phase is driven by each sample's actual clock time (not its position in
+    the loop), so the series actually moves between polls instead of
+    replaying the same frozen 30 values with relabeled timestamps."""
     import math
     now = datetime.now(TZ)
     base = 62
     samples = []
     for i in range(30):
         t = now - timedelta(minutes=29 - i)
-        bpm = base + round(6 * math.sin(i / 4.0) + (3 if i % 7 == 0 else 0))
+        minute_of_day = t.hour * 60 + t.minute
+        bpm = base + round(6 * math.sin(minute_of_day / 4.0)) + (3 if minute_of_day % 7 == 0 else 0)
         samples.append({"t": t.strftime("%H:%M"), "bpm": bpm})
     return samples
 

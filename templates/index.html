@@ -4768,7 +4768,11 @@ function _renderHRWidget(hr) {
   _setText('healthStatHRMeta', hr ? (hr.source === 'mock' ? 'bpm · sample data' : 'bpm · recent') : '');
   if (hr) {
     const chip = document.getElementById('healthHRChip');
-    if (chip) chip.textContent = hr.current_bpm + ' bpm now';
+    if (chip) {
+      const samples = hr.samples || [];
+      const lastT = samples.length ? samples[samples.length - 1].t : null;
+      chip.textContent = hr.current_bpm + ' bpm' + (lastT ? ' as of ' + to12Hour(lastT) : '');
+    }
     _renderHRSparkline(hr.samples || []);
   }
 }
