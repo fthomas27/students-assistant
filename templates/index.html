@@ -3002,6 +3002,346 @@ margin-bottom: 0;
   /* Prevent iOS Safari from auto-zooming when an input is focused. */
   input, select, textarea { font-size: 16px; }
 }
+/* ══ TOP NAV: brand + labeled pills + Ask AI ══ */
+.top-nav-brand {
+display: flex;
+align-items: center;
+gap: 9px;
+min-width: 220px;
+}
+.brand-mark {
+width: 30px; height: 30px;
+display: inline-flex; align-items: center; justify-content: center;
+border-radius: 10px;
+background: var(--accent-dim);
+border: 1px solid rgba(85,230,165,0.3);
+color: var(--accent);
+font-size: 14px;
+}
+.brand-name {
+font-family: var(--font-display);
+font-size: 16px;
+font-weight: 700;
+letter-spacing: -0.01em;
+color: var(--text);
+}
+.top-nav .top-nav-date {
+min-width: 0;
+font-size: 11.5px;
+color: var(--text3);
+padding-left: 12px;
+border-left: 1px solid var(--border);
+margin-left: 4px;
+white-space: nowrap;
+}
+
+.circle-btn {
+width: auto;
+height: 40px;
+padding: 0 15px;
+gap: 7px;
+font-size: 13px;
+}
+.nav-pill-icon { font-size: 12px; opacity: 0.85; line-height: 1; }
+.nav-pill-label {
+font-family: var(--font-display);
+font-size: 12.5px;
+font-weight: 500;
+letter-spacing: 0.01em;
+line-height: 1;
+}
+.circle-btn.active .nav-pill-label { font-weight: 600; }
+.circle-btn-badge { top: 5px; right: 8px; }
+
+.ask-ai-btn {
+background: var(--accent);
+border: 1px solid var(--accent);
+color: var(--accent-ink);
+font-family: var(--font-display);
+font-weight: 600;
+padding: 0 17px;
+box-shadow: 0 4px 18px rgba(85,230,165,0.2);
+}
+.ask-ai-btn:hover:not(.active) {
+background: var(--accent2);
+color: var(--accent-ink);
+transform: translateY(-1px);
+box-shadow: 0 6px 24px var(--accent-glow);
+}
+.ask-ai-btn.active {
+box-shadow: 0 0 0 4px rgba(85,230,165,0.18), 0 6px 24px var(--accent-glow);
+}
+
+@media (max-width: 1240px) {
+.top-nav .top-nav-date { display: none; }
+.top-nav-brand { min-width: 0; }
+.top-nav-actions { min-width: 0; }
+}
+@media (max-width: 1080px) {
+.circle-btn:not(.active):not(.ask-ai-btn) .nav-pill-label { display: none; }
+.circle-btn { padding: 0 13px; }
+}
+
+/* ══ DASHBOARD ══ */
+.dash-head {
+display: flex;
+align-items: flex-end;
+justify-content: space-between;
+gap: 12px;
+margin: 4px 2px 18px;
+}
+.dash-eyebrow {
+font-family: var(--font-display);
+font-size: 10.5px;
+font-weight: 600;
+color: var(--text3);
+text-transform: uppercase;
+letter-spacing: 0.14em;
+margin-bottom: 6px;
+}
+.dash-greeting {
+font-family: var(--font-display);
+font-size: 27px;
+font-weight: 700;
+letter-spacing: -0.02em;
+color: var(--text);
+line-height: 1.1;
+margin: 0 0 4px;
+}
+.dash-sub { font-size: 13px; color: var(--text2); }
+
+.dash-grid {
+display: grid;
+grid-template-columns: repeat(12, 1fr);
+gap: 14px;
+align-items: stretch;
+}
+.dash-span3  { grid-column: span 3; min-width: 0; }
+.dash-span4  { grid-column: span 4; min-width: 0; }
+.dash-span5  { grid-column: span 5; min-width: 0; }
+.dash-span7  { grid-column: span 7; min-width: 0; }
+.dash-span12 { grid-column: span 12; min-width: 0; }
+
+.widget {
+background: var(--surface);
+border: 1px solid var(--border);
+border-radius: var(--r);
+padding: 16px 18px;
+display: flex;
+flex-direction: column;
+min-height: 0;
+transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+.widget:hover { border-color: var(--border2); }
+
+.widget-head {
+display: flex;
+align-items: center;
+justify-content: space-between;
+gap: 8px;
+margin-bottom: 10px;
+}
+.widget-title {
+font-family: var(--font-display);
+font-size: 10.5px;
+font-weight: 600;
+color: var(--text3);
+text-transform: uppercase;
+letter-spacing: 0.12em;
+}
+.widget-chip {
+font-family: var(--font-display);
+font-size: 11px;
+font-weight: 600;
+color: var(--text2);
+background: var(--surface2);
+border: 1px solid var(--border);
+border-radius: 999px;
+padding: 4px 11px;
+white-space: nowrap;
+}
+.widget-chip-btn { cursor: pointer; transition: color 0.15s, border-color 0.15s; }
+.widget-chip-btn:hover { color: var(--accent); border-color: rgba(85,230,165,0.35); }
+.widget-empty { color: var(--text3); font-size: 12.5px; text-align: center; padding: 24px 8px; }
+.widget-list { max-height: 330px; overflow-y: auto; }
+.widget-list .plan-chat-card:last-child { margin-bottom: 0; }
+
+/* Hero (mint) */
+.hero-widget {
+background: linear-gradient(135deg, #58E9A8 0%, #7CF0BC 100%);
+border: none;
+box-shadow: 0 14px 44px rgba(85,230,165,0.18);
+color: var(--accent-ink);
+min-height: 190px;
+}
+.hero-widget:hover { box-shadow: 0 18px 54px rgba(85,230,165,0.26); }
+.hero-widget .widget-title { color: rgba(4,35,26,0.62); }
+.hero-arrow {
+width: 34px; height: 34px;
+border: none;
+border-radius: 50%;
+background: rgba(4,35,26,0.14);
+color: var(--accent-ink);
+font-size: 15px;
+cursor: pointer;
+display: inline-flex; align-items: center; justify-content: center;
+transition: background 0.2s, transform 0.2s;
+}
+.hero-arrow:hover { background: rgba(4,35,26,0.24); transform: rotate(45deg); }
+.hero-num {
+font-family: var(--font-display);
+font-size: 58px;
+font-weight: 700;
+letter-spacing: -0.03em;
+line-height: 1;
+margin: 6px 0 4px;
+}
+.hero-sub { font-size: 13px; font-weight: 500; color: rgba(4,35,26,0.72); }
+.hero-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 14px; }
+.hero-chip {
+font-family: var(--font-display);
+font-size: 11px;
+font-weight: 600;
+background: rgba(4,35,26,0.14);
+color: var(--accent-ink);
+border-radius: 999px;
+padding: 5px 12px;
+}
+
+/* Stat tiles */
+.stat-widget { cursor: pointer; }
+.stat-widget:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(0,0,0,0.3); }
+.stat-num {
+font-family: var(--font-display);
+font-size: 36px;
+font-weight: 700;
+letter-spacing: -0.02em;
+color: var(--text);
+line-height: 1.05;
+}
+.stat-meta { font-size: 11.5px; color: var(--text3); margin-top: 4px; }
+
+/* Bar chart */
+.dash-chart { position: relative; flex: 1; min-height: 165px; }
+.dash-chart svg { display: block; }
+.chart-tip {
+position: absolute;
+background: #F2FBF6;
+color: #07130D;
+font-family: var(--font-display);
+font-size: 11.5px;
+font-weight: 600;
+padding: 6px 10px;
+border-radius: 9px;
+box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+pointer-events: none;
+white-space: nowrap;
+opacity: 0;
+transform: translate(-50%, -115%);
+transition: opacity 0.12s;
+z-index: 5;
+}
+.chart-tip::after {
+content: '';
+position: absolute;
+left: 50%; top: 100%;
+transform: translateX(-50%);
+border: 5px solid transparent;
+border-top-color: #F2FBF6;
+}
+
+/* Gauge */
+.gauge-wrap {
+position: relative;
+flex: 1;
+display: flex;
+align-items: center;
+justify-content: center;
+min-height: 165px;
+}
+.gauge-center {
+position: absolute;
+inset: 0;
+display: flex;
+flex-direction: column;
+align-items: center;
+justify-content: center;
+text-align: center;
+pointer-events: none;
+}
+.gauge-num {
+font-family: var(--font-display);
+font-size: 34px;
+font-weight: 700;
+letter-spacing: -0.02em;
+color: var(--text);
+line-height: 1;
+}
+.gauge-sub { font-size: 10.5px; color: var(--text3); margin-top: 5px; max-width: 110px; }
+
+/* Up next list */
+.upnext-row {
+display: flex;
+align-items: center;
+gap: 11px;
+padding: 10px 2px;
+border-bottom: 1px solid var(--border);
+cursor: pointer;
+transition: background 0.15s;
+border-radius: 8px;
+}
+.upnext-row:hover { background: var(--surface2); }
+.upnext-row:last-child { border-bottom: none; }
+.upnext-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 8px currentColor; }
+.upnext-main { flex: 1; min-width: 0; }
+.upnext-title {
+font-size: 13px; font-weight: 500; color: var(--text);
+overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.upnext-meta { font-size: 11px; color: var(--text3); margin-top: 1px; }
+.upnext-due {
+font-family: var(--font-display);
+font-size: 11.5px;
+font-weight: 600;
+color: var(--text2);
+white-space: nowrap;
+flex-shrink: 0;
+}
+.upnext-due.overdue { color: var(--red); }
+.upnext-due.today { color: var(--accent); }
+
+.dash-section-label {
+font-family: var(--font-display);
+font-size: 10.5px;
+font-weight: 600;
+color: var(--text3);
+text-transform: uppercase;
+letter-spacing: 0.14em;
+margin: 8px 2px 10px;
+}
+
+/* Weekly insight inside the grid: no double padding */
+.home-insight-section.widget { padding: 0; display: block; }
+
+/* Dashboard responsive */
+@media (max-width: 1100px) {
+.dash-span3 { grid-column: span 6; }
+.dash-span4 { grid-column: span 6; }
+.dash-span5 { grid-column: span 6; }
+.dash-span7 { grid-column: span 12; }
+.hero-widget.dash-span4 { grid-column: span 6; }
+}
+@media (max-width: 700px) {
+.dash-span3, .dash-span4, .dash-span5, .dash-span7,
+.hero-widget.dash-span4 { grid-column: span 12; }
+.stat-widget.dash-span4 { grid-column: span 6; }
+.hero-num { font-size: 48px; }
+.dash-greeting { font-size: 22px; }
+.dash-grid { gap: 10px; }
+}
+@media (max-width: 420px) {
+.stat-widget.dash-span4 { grid-column: span 12; }
+}
 </style>
 </head>
 <body>
@@ -3012,19 +3352,22 @@ margin-bottom: 0;
 </div>
 
 <header class="top-nav">
-  <div class="top-nav-date" id="topNavDate">Loading...</div>
+  <div class="top-nav-brand">
+    <span class="brand-mark">✦</span>
+    <span class="brand-name">Jarvis_</span>
+    <span class="top-nav-date" id="topNavDate">Loading...</span>
+  </div>
   <nav class="top-nav-circles" id="topNavCircles">
+    <button class="circle-btn active"     data-page="home"           onclick="navigateTo('home')"           title="Dashboard"><span class="nav-pill-icon">&#9632;</span><span class="nav-pill-label">Dashboard</span></button>
     <!-- School-only -->
-    <button class="circle-btn school-only-nav" data-page="assignments" onclick="navigateTo('assignments')" title="Assignments">&#128203;<span class="circle-btn-badge" data-badge="assignments"></span></button>
-    <button class="circle-btn school-only-nav" data-page="plan"        onclick="navigateTo('plan')"        title="Plan">&#127919;</button>
+    <button class="circle-btn school-only-nav" data-page="assignments" onclick="navigateTo('assignments')" title="Assignments"><span class="nav-pill-icon">&#9776;</span><span class="nav-pill-label">Assignments</span><span class="circle-btn-badge" data-badge="assignments"></span></button>
     <!-- Always-visible -->
-    <button class="circle-btn"            data-page="tasks"          onclick="navigateTo('tasks')"          title="Tasks">&#10003;<span class="circle-btn-badge" data-badge="tasks"></span></button>
-    <button class="circle-btn"            id="calendarNavBtn"        onclick="openCalendarModal()"          title="Calendar">&#128197;</button>
-    <button class="circle-btn active"     data-page="home"           onclick="navigateTo('home')"           title="Home">&#8962;</button>
-    <button class="circle-btn"            data-page="chat"           onclick="navigateTo('chat')"           title="Chat">&#128172;</button>
-    <button class="circle-btn"            data-page="projects"       onclick="navigateTo('projects')"       title="Projects">&#128230;<span class="circle-btn-badge" data-badge="projects"></span></button>
+    <button class="circle-btn"            data-page="tasks"          onclick="navigateTo('tasks')"          title="Tasks"><span class="nav-pill-icon">&#10003;</span><span class="nav-pill-label">Tasks</span><span class="circle-btn-badge" data-badge="tasks"></span></button>
+    <button class="circle-btn school-only-nav" data-page="plan"      onclick="navigateTo('plan')"        title="Plan"><span class="nav-pill-icon">&#9678;</span><span class="nav-pill-label">Plan</span></button>
+    <button class="circle-btn"            data-page="projects"       onclick="navigateTo('projects')"       title="Projects"><span class="nav-pill-icon">&#9707;</span><span class="nav-pill-label">Projects</span><span class="circle-btn-badge" data-badge="projects"></span></button>
+    <button class="circle-btn"            id="calendarNavBtn"        onclick="openCalendarModal()"          title="Calendar"><span class="nav-pill-icon">&#9634;</span><span class="nav-pill-label">Calendar</span></button>
     <!-- Summer-only -->
-    <button class="circle-btn summer-nav" data-page="summer-bucket"  onclick="navigateTo('summer-bucket')" title="Bucket List" style="display:none;">&#127774;</button>
+    <button class="circle-btn summer-nav" data-page="summer-bucket"  onclick="navigateTo('summer-bucket')" title="Bucket List" style="display:none;"><span class="nav-pill-icon">&#9728;</span><span class="nav-pill-label">Bucket List</span></button>
   </nav>
   <div class="top-nav-mobile">
     <button class="nav-menu-toggle" id="navMenuToggle" onclick="toggleNavMenu(event)" aria-haspopup="true" aria-expanded="false">
@@ -3051,6 +3394,7 @@ margin-bottom: 0;
     </div>
   </div>
   <div class="top-nav-actions">
+    <button class="circle-btn ask-ai-btn" data-page="chat" onclick="navigateTo('chat')" title="Chat with Jarvis">✦ Ask AI</button>
     <button class="icon-btn" id="pomodoroOpen" type="button" title="Focus Timer">&#9201;</button>
     <button class="icon-btn" onclick="openChatHistory()" title="History">&#128336;</button>
     <button class="icon-btn" onclick="openSettings()"    title="Settings">&#9881;</button>
@@ -3215,32 +3559,104 @@ margin-bottom: 0;
 <main class="page-area">
 
 <div class="page active" id="page-home">
-  <div class="sidebar-header" id="homePageHeader">Home</div>
 
   <!-- UV / Weather Alert (summer only) -->
   <div id="uvAlertArea" style="margin:0 0 12px;"></div>
 
-  <!-- School mode: Morning Outlook + Weekly Insight (hidden in summer) -->
+  <!-- School mode: widget dashboard (hidden in summer) -->
   <div id="schoolHomeContent">
-    <section class="home-section home-insight-section collapsed" id="homeWeeklyInsightSection" style="margin-bottom: 16px;">
-      <div class="home-insight-header" onclick="toggleWeeklyInsight()">
-        <span>📊 Weekly Insight</span>
-        <button class="insight-regen-btn" onclick="event.stopPropagation(); regenerateWeeklyInsight()" title="Regenerate">↻</button>
-        <span class="chev">▾</span>
+
+    <div class="dash-head">
+      <div>
+        <div class="dash-eyebrow" id="homePageHeader">Dashboard</div>
+        <h1 class="dash-greeting" id="dashGreeting">Hello</h1>
+        <div class="dash-sub" id="dashSub">Here's your day at a glance.</div>
       </div>
-      <div class="home-insight-body" id="homeWeeklyInsightContent">
-        <p style="color:var(--text2)">Loading...</p>
-      </div>
-    </section>
-    <div class="home-grid">
-      <section class="home-section">
-        <h2 class="section-title">Morning Outlook</h2>
+    </div>
+
+    <div class="dash-grid">
+
+      <!-- Hero: due today (mint card) -->
+      <section class="widget hero-widget dash-span4">
+        <div class="widget-head">
+          <span class="widget-title">Due Today</span>
+          <button class="hero-arrow" onclick="navigateTo('assignments')" title="Open assignments">&#8599;</button>
+        </div>
+        <div class="hero-num" id="dashDueToday">&ndash;</div>
+        <div class="hero-sub" id="dashDueTodaySub">Loading&hellip;</div>
+        <div class="hero-chips" id="dashHeroChips"></div>
+      </section>
+
+      <!-- Workload bar chart -->
+      <section class="widget dash-span5">
+        <div class="widget-head">
+          <span class="widget-title">Workload &middot; Next 7 Days</span>
+          <span class="widget-chip" id="dashWorkloadTotal">&ndash;</span>
+        </div>
+        <div class="dash-chart" id="dashWorkloadChart"><div class="widget-empty">Loading&hellip;</div></div>
+      </section>
+
+      <!-- Today's progress gauge -->
+      <section class="widget dash-span3">
+        <div class="widget-head">
+          <span class="widget-title">Today's Progress</span>
+        </div>
+        <div class="gauge-wrap" id="dashGauge"><div class="widget-empty">Loading&hellip;</div></div>
+      </section>
+
+      <!-- Stat tiles -->
+      <section class="widget stat-widget dash-span4" onclick="navigateTo('tasks')">
+        <div class="widget-head"><span class="widget-title">Open Tasks</span><span class="stat-spark" id="dashStatTasksSpark"></span></div>
+        <div class="stat-num" id="dashStatTasks">&ndash;</div>
+        <div class="stat-meta" id="dashStatTasksMeta"></div>
+      </section>
+      <section class="widget stat-widget dash-span4" onclick="navigateTo('assignments')">
+        <div class="widget-head"><span class="widget-title">Overdue</span></div>
+        <div class="stat-num" id="dashStatOverdue">&ndash;</div>
+        <div class="stat-meta" id="dashStatOverdueMeta"></div>
+      </section>
+      <section class="widget stat-widget dash-span4" onclick="navigateTo('projects')">
+        <div class="widget-head"><span class="widget-title">Active Projects</span></div>
+        <div class="stat-num" id="dashStatProjects">&ndash;</div>
+        <div class="stat-meta" id="dashStatProjectsMeta"></div>
+      </section>
+
+      <!-- Today's plan -->
+      <section class="widget dash-span7">
+        <div class="widget-head">
+          <span class="widget-title">Today's Plan</span>
+          <button class="widget-chip widget-chip-btn" onclick="navigateTo('plan')">Plan my day &#8599;</button>
+        </div>
+        <div id="homePlanContent" class="widget-list"><p style="color:var(--text2)">Loading...</p></div>
+      </section>
+
+      <!-- Up next assignments -->
+      <section class="widget dash-span5">
+        <div class="widget-head">
+          <span class="widget-title">Up Next</span>
+          <button class="widget-chip widget-chip-btn" onclick="navigateTo('assignments')">All &#8599;</button>
+        </div>
+        <div id="dashUpNext" class="widget-list"><div class="widget-empty">Loading&hellip;</div></div>
+      </section>
+
+      <!-- Weekly insight -->
+      <section class="widget dash-span12 home-insight-section collapsed" id="homeWeeklyInsightSection">
+        <div class="home-insight-header" onclick="toggleWeeklyInsight()">
+          <span>Weekly Insight</span>
+          <button class="insight-regen-btn" onclick="event.stopPropagation(); regenerateWeeklyInsight()" title="Regenerate">↻</button>
+          <span class="chev">▾</span>
+        </div>
+        <div class="home-insight-body" id="homeWeeklyInsightContent">
+          <p style="color:var(--text2)">Loading...</p>
+        </div>
+      </section>
+
+      <!-- Morning briefing (outlook cards) -->
+      <section class="dash-span12">
+        <div class="dash-section-label">Morning Briefing</div>
         <div id="homeOutlookContent"><p style="color:var(--text2)">Loading...</p></div>
       </section>
-      <section class="home-section">
-        <h2 class="section-title">Today's Plan</h2>
-        <div id="homePlanContent"><p style="color:var(--text2)">Loading...</p></div>
-      </section>
+
     </div>
   </div>
 
@@ -3680,6 +4096,7 @@ async function regenerateWeeklyInsight() {
 
 function loadHomePage() {
   updateTopNavDate();
+  loadDashboard().catch(function(e) { console.error('Dashboard load failed:', e); });
 
   var wkSection = document.getElementById('homeWeeklyInsightSection');
   var wkBody    = document.getElementById('homeWeeklyInsightContent');
@@ -3763,6 +4180,230 @@ function loadHomePage() {
     });
   }
 }
+
+// ── Dashboard widgets ─────────────────────────────────────────────────────────
+
+let _dashData = null;
+
+function _parseDue(d) {
+  if (!d) return null;
+  // assignments carry full ISO strings; tasks may carry bare YYYY-MM-DD dates
+  const dt = new Date(String(d).length <= 10 ? d + 'T23:59:00' : d);
+  return isNaN(dt.getTime()) ? null : dt;
+}
+
+function _sameDay(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+async function loadDashboard() {
+  const greet = document.getElementById('dashGreeting');
+  if (greet) {
+    const h = new Date().getHours();
+    greet.textContent = h < 5 ? 'Burning the midnight oil' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+  }
+  const [aR, tR, pR] = await Promise.allSettled([
+    fetchWithTimeout('/api/assignments', {}, 15000).then(r => r.json()),
+    fetchWithTimeout('/api/tasks', {}, 15000).then(r => r.json()),
+    fetchWithTimeout('/api/projects', {}, 15000).then(r => r.json())
+  ]);
+  _dashData = {
+    assignments: aR.status === 'fulfilled' ? (aR.value.assignments || []) : [],
+    tasks:       tR.status === 'fulfilled' ? (tR.value.tasks || []) : [],
+    projects:    pR.status === 'fulfilled' ? (pR.value.projects || []) : []
+  };
+  renderDashboard();
+}
+
+function renderDashboard() {
+  if (!_dashData) return;
+  const { assignments, tasks, projects } = _dashData;
+  const now = new Date();
+
+  const items = [];
+  assignments.forEach(a => items.push({
+    kind: 'assignment', done: !!a.done, due: _parseDue(a.due_iso),
+    title: a.title || '', cls: (a.class_name || '').trim()
+  }));
+  tasks.forEach(t => items.push({
+    kind: 'task', done: !!t.completed, due: _parseDue(t.due_date),
+    title: t.title || '', urgency: t.urgency || ''
+  }));
+
+  const dueToday     = items.filter(i => i.due && _sameDay(i.due, now));
+  const dueTodayOpen = dueToday.filter(i => !i.done);
+  const doneToday    = dueToday.filter(i => i.done);
+  const weekEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 7, 23, 59, 59);
+  const weekOpen = items.filter(i => !i.done && i.due && i.due >= now && i.due <= weekEnd);
+  const overdue  = items.filter(i => !i.done && i.due && i.due < now && !_sameDay(i.due, now));
+
+  // Hero
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('dashDueToday', dueTodayOpen.length);
+  set('dashDueTodaySub', dueTodayOpen.length === 0
+    ? (doneToday.length ? 'All done for today — nice work.' : 'Nothing due today.')
+    : (dueTodayOpen.filter(i => i.kind === 'assignment').length + ' assignments · '
+       + dueTodayOpen.filter(i => i.kind === 'task').length + ' tasks'));
+  const chipsEl = document.getElementById('dashHeroChips');
+  if (chipsEl) {
+    const chips = ['<span class="hero-chip">' + weekOpen.length + ' this week</span>'];
+    if (doneToday.length) chips.push('<span class="hero-chip">✓ ' + doneToday.length + ' done today</span>');
+    if (overdue.length)   chips.push('<span class="hero-chip">⚠ ' + overdue.length + ' overdue</span>');
+    chipsEl.innerHTML = chips.join('');
+  }
+
+  // Stat tiles
+  const openTasks = tasks.filter(t => !t.completed);
+  const urgent = openTasks.filter(t => ['critical', 'high'].includes(t.urgency)).length;
+  set('dashStatTasks', openTasks.length);
+  set('dashStatTasksMeta', urgent ? urgent + ' high priority' : 'nothing urgent');
+  set('dashStatOverdue', overdue.length);
+  set('dashStatOverdueMeta', overdue.length
+    ? overdue.filter(i => i.kind === 'assignment').length + ' assignments · ' + overdue.filter(i => i.kind === 'task').length + ' tasks'
+    : 'all caught up');
+  const activeProjects = projects.filter(p => p.status === 'active');
+  const needCheckin = activeProjects.filter(p => p.needs_checkin).length;
+  set('dashStatProjects', activeProjects.length);
+  set('dashStatProjectsMeta', needCheckin ? needCheckin + ' need a check-in' : 'all on track');
+
+  // Workload chart: open items due per day, next 7 days
+  const days = [];
+  for (let d = 0; d < 7; d++) {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + d);
+    const count = items.filter(i => !i.done && i.due && _sameDay(i.due, date)).length;
+    days.push({ date, count, label: d === 0 ? 'Today' : date.toLocaleDateString('en-US', { weekday: 'short' }) });
+  }
+  set('dashWorkloadTotal', days.reduce((s, d) => s + d.count, 0) + ' due');
+  _renderWorkloadChart(days);
+
+  // Gauge: share of today's items completed
+  _renderGauge(doneToday.length, dueToday.length);
+
+  // Up next: soonest open items
+  _renderUpNext(items.filter(i => !i.done && i.due).sort((a, b) => a.due - b.due).slice(0, 6), now);
+}
+
+function _renderWorkloadChart(days) {
+  const wrap = document.getElementById('dashWorkloadChart');
+  if (!wrap) return;
+  const W = Math.max(wrap.clientWidth || 0, 260);
+  const H = Math.max(wrap.clientHeight || 0, 165);
+  const padX = 6, labelH = 22, topPad = 18;
+  const plotH = H - labelH - topPad;
+  const n = days.length;
+  const slot = (W - padX * 2) / n;
+  const barW = Math.min(34, slot - 8);
+  const maxV = Math.max(4, Math.max.apply(null, days.map(d => d.count)));
+  const maxCount = Math.max.apply(null, days.map(d => d.count));
+
+  let svg = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Open items due per day, next 7 days">';
+  svg += '<line x1="' + padX + '" y1="' + (topPad + plotH) + '" x2="' + (W - padX) + '" y2="' + (topPad + plotH) + '" stroke="var(--border2)" stroke-width="1"/>';
+  days.forEach((d, i) => {
+    const cx = padX + slot * i + slot / 2;
+    const x = cx - barW / 2;
+    const h = d.count === 0 ? 3 : Math.max(6, (d.count / maxV) * plotH);
+    const y = topPad + plotH - h;
+    const fill = d.count === 0 ? 'var(--surface3)' : 'var(--accent)';
+    const r = Math.min(4, barW / 2, h);
+    svg += '<path d="M' + x + ',' + (topPad + plotH)
+        + ' L' + x + ',' + (y + r)
+        + ' Q' + x + ',' + y + ' ' + (x + r) + ',' + y
+        + ' L' + (x + barW - r) + ',' + y
+        + ' Q' + (x + barW) + ',' + y + ' ' + (x + barW) + ',' + (y + r)
+        + ' L' + (x + barW) + ',' + (topPad + plotH) + ' Z" fill="' + fill + '"/>';
+    // selective direct labels: today and the max day only
+    if (d.count > 0 && (i === 0 || (d.count === maxCount && maxCount > 0))) {
+      svg += '<text x="' + cx + '" y="' + (y - 6) + '" text-anchor="middle" font-size="10.5" font-weight="600" fill="var(--text2)" font-family="Space Grotesk, sans-serif">' + d.count + '</text>';
+    }
+    svg += '<text x="' + cx + '" y="' + (H - 6) + '" text-anchor="middle" font-size="10" fill="' + (i === 0 ? 'var(--accent)' : 'var(--text3)') + '" font-weight="' + (i === 0 ? '600' : '400') + '" font-family="Space Grotesk, sans-serif">' + d.label + '</text>';
+    // hover hit target (wider than the bar)
+    svg += '<rect data-di="' + i + '" x="' + (padX + slot * i) + '" y="0" width="' + slot + '" height="' + H + '" fill="transparent"/>';
+  });
+  svg += '</svg>';
+  wrap.innerHTML = svg + '<div class="chart-tip" id="dashChartTip"></div>';
+
+  const tip = document.getElementById('dashChartTip');
+  wrap.querySelectorAll('rect[data-di]').forEach(rect => {
+    rect.addEventListener('mouseenter', () => {
+      const d = days[parseInt(rect.dataset.di, 10)];
+      const dateStr = d.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+      tip.textContent = dateStr + ' · ' + d.count + ' due';
+      const cx = padX + slot * parseInt(rect.dataset.di, 10) + slot / 2;
+      const h = d.count === 0 ? 3 : Math.max(6, (d.count / maxV) * plotH);
+      tip.style.left = cx + 'px';
+      tip.style.top = (topPad + plotH - h) + 'px';
+      tip.style.opacity = '1';
+    });
+    rect.addEventListener('mouseleave', () => { tip.style.opacity = '0'; });
+  });
+}
+
+function _renderGauge(done, total) {
+  const wrap = document.getElementById('dashGauge');
+  if (!wrap) return;
+  const size = 150, cx = size / 2, cy = size / 2;
+  const segs = 22, sweep = 260, startAngle = 140;
+  const r1 = 52, r2 = 66;
+  const pct = total > 0 ? done / total : 0;
+  const filled = Math.round(pct * segs);
+
+  let svg = '<svg width="' + size + '" height="' + size + '" role="img" aria-label="' + done + ' of ' + total + ' items due today completed">';
+  for (let i = 0; i < segs; i++) {
+    const a = (startAngle + (sweep / (segs - 1)) * i) * Math.PI / 180;
+    const x1 = cx + r1 * Math.cos(a), y1 = cy + r1 * Math.sin(a);
+    const x2 = cx + r2 * Math.cos(a), y2 = cy + r2 * Math.sin(a);
+    const on = total > 0 && i < filled;
+    svg += '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1) + '" y2="' + y2.toFixed(1)
+        + '" stroke="' + (on ? 'var(--accent)' : 'var(--surface3)') + '" stroke-width="6" stroke-linecap="round"/>';
+  }
+  svg += '</svg>';
+
+  const num = total === 0 ? '—' : Math.round(pct * 100) + '%';
+  const sub = total === 0 ? 'Nothing due today' : done + ' of ' + total + ' done today';
+  wrap.innerHTML = svg + '<div class="gauge-center"><div class="gauge-num">' + num + '</div><div class="gauge-sub">' + sub + '</div></div>';
+}
+
+function _dashRelDue(due, now) {
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dayDiff = Math.floor((due - startToday) / 86400000);
+  if (due < now && dayDiff < 0) return { text: 'Overdue', cls: 'overdue' };
+  if (dayDiff === 0) return { text: due < now ? 'Overdue' : 'Today', cls: due < now ? 'overdue' : 'today' };
+  if (dayDiff === 1) return { text: 'Tomorrow', cls: '' };
+  if (dayDiff < 7) return { text: due.toLocaleDateString('en-US', { weekday: 'short' }), cls: '' };
+  return { text: due.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), cls: '' };
+}
+
+function _renderUpNext(list, now) {
+  const wrap = document.getElementById('dashUpNext');
+  if (!wrap) return;
+  if (!list.length) {
+    wrap.innerHTML = '<div class="widget-empty">Nothing coming up. Enjoy the quiet.</div>';
+    return;
+  }
+  wrap.innerHTML = list.map(i => {
+    const rel = _dashRelDue(i.due, now);
+    const color = i.kind === 'assignment' ? classColor((i.cls || 'Uncategorized')) : 'var(--blue)';
+    const meta = i.kind === 'assignment' ? (i.cls || 'Assignment') : 'Task';
+    const target = i.kind === 'assignment' ? 'assignments' : 'tasks';
+    return '<div class="upnext-row" onclick="navigateTo(\'' + target + '\')">'
+      + '<span class="upnext-dot" style="background:' + color + ';color:' + color + ';"></span>'
+      + '<div class="upnext-main">'
+      +   '<div class="upnext-title">' + escapeHtml(i.title) + '</div>'
+      +   '<div class="upnext-meta">' + escapeHtml(meta) + '</div>'
+      + '</div>'
+      + '<span class="upnext-due ' + rel.cls + '">' + rel.text + '</span>'
+      + '</div>';
+  }).join('');
+}
+
+let _dashResizeT = null;
+window.addEventListener('resize', function() {
+  clearTimeout(_dashResizeT);
+  _dashResizeT = setTimeout(function() {
+    const home = document.getElementById('page-home');
+    if (_dashData && home && home.classList.contains('active')) renderDashboard();
+  }, 150);
+});
 
 function toggleSection(sectionId) {
   const section = document.getElementById(sectionId);
@@ -4003,7 +4644,7 @@ function applyAppMode(mode, cfg) {
   const homeHeader   = document.getElementById('homePageHeader');
   if (schoolContent) schoolContent.style.display = isSummer ? 'none' : '';
   if (summerContent) summerContent.style.display = isSummer ? '' : 'none';
-  if (homeHeader) homeHeader.textContent = isSummer ? '☀️ Summer' : '⌂ Home';
+  if (homeHeader) homeHeader.textContent = isSummer ? '☀️ Summer' : 'Dashboard';
 
   // If on a now-hidden page, redirect to home
   const hiddenInSummer = ['plan'].concat(isSummerSchool ? [] : ['assignments']);
