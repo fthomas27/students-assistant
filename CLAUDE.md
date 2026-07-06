@@ -12,6 +12,7 @@ This Flask-based web application provides a comprehensive student management sys
 - **Task Management** - Smart task creation, prioritization, and tracking
 - **Schedule Optimization** - Automated daily schedule generation using available time windows
 - **Calendar Integration** - Syncs with Canvas (assignments), personal calendars, and school events
+- **WHOOP Integration** - Connects a WHOOP account (OAuth2) to surface recovery, sleep, and strain on the home dashboard and in Jarvis's chat/briefing context
 
 ## Tech Stack
 
@@ -59,6 +60,11 @@ This Flask-based web application provides a comprehensive student management sys
 - **Smart Prioritization**: MUST-include assignments > critical tasks > medium tasks > projects
 - **JSON-Based Scheduling**: Returns structured schedule items with exact time blocks
 
+### 6. WHOOP Integration
+- **OAuth2 Connect**: Student links their WHOOP account from Settings (`/whoop-auth/start` → `/whoop-auth/callback`); the refresh token is stored server-side and access tokens are refreshed automatically
+- **Home Dashboard Widget**: 7-day recovery chart + today's vitals (recovery, sleep, strain, HRV, resting heart rate) on the home page
+- **AI Context**: The latest recovery/sleep/strain snapshot is injected into `/api/chat`, the morning briefing, and the evening debrief so Jarvis can factor recovery into pacing advice
+
 ## Database Schema
 
 Key tables include:
@@ -91,6 +97,8 @@ Optional:
 - `CANVAS_ICAL_URL` - Canvas/LMS assignment calendar (titles + due dates only)
 - `CANVAS_API_TOKEN` - Canvas personal access token; unlocks live grades, course names, and full assignment descriptions/rubrics for Jarvis
 - `CANVAS_BASE_URL` - Canvas instance root, e.g. `https://parkcityschools.instructure.com` (no trailing slash)
+- `WHOOP_CLIENT_ID` / `WHOOP_CLIENT_SECRET` - WHOOP developer app credentials (from developer.whoop.com); required to show the "Connect WHOOP" flow
+- `WHOOP_REDIRECT_URI` - Override for the OAuth callback URL; defaults to `<app root>/whoop-auth/callback`
 - `SPORTS_ICAL_URL` - Sports/activities calendar
 - `RED_DAY_ICAL_URL` - Park City Schools Red Day schedule
 - `WHITE_DAY_ICAL_URL` - Park City Schools White Day schedule
