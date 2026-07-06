@@ -1719,14 +1719,22 @@ WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 WHOOP_API_BASE = "https://api.prod.whoop.com/developer/v2"
 WHOOP_SCOPES = "read:recovery read:cycles read:sleep read:workout read:profile read:body_measurement offline"
 WHOOP_CACHE_TTL = 900  # 15 minutes
+# Failed WHOOP requests are remembered briefly so the once-a-minute heart-rate
+# poll doesn't re-run full network timeouts on every tick while WHOOP is down
+# (which held /api/whoop/heart-rate past the frontend's 15s abort and froze
+# the widget). Short enough that recovery is quick; connect/disconnect clears
+# it explicitly so reconnects still take effect immediately.
+WHOOP_FAIL_TTL = 120  # 2 minutes
 
 
 def _whoop_clear_cache():
-    """Drop cached WHOOP records so a fresh connect/disconnect takes effect
-    immediately instead of waiting out the 15-minute cache TTL."""
+    """Drop cached WHOOP records (and remembered failures) so a fresh
+    connect/disconnect takes effect immediately instead of waiting out a TTL."""
     with _simple_cache_lock:
         for key in ("whoop:recovery", "whoop:sleep", "whoop:cycles", "whoop:workouts"):
             _simple_cache.pop(key, None)
+            _simple_cache.pop(key + ":fail", None)
+        _simple_cache.pop("whoop:token_fail", None)
 
 
 def _whoop_configured():
@@ -1752,13 +1760,19 @@ def _get_whoop_access_token():
         expires_at = 0
     if access_token and expires_at - 60 > time.time():
         return access_token
+    if _cache_get("whoop:token_fail", WHOOP_FAIL_TTL):
+        return None
     try:
+        # Refresh grants may only request scopes from the original consent, so
+        # ask for "offline" (needed for the rotating refresh token) rather than
+        # WHOOP_SCOPES — tokens granted before a scope was added to that list
+        # would otherwise fail every refresh until the user reconnects.
         resp = requests.post(WHOOP_TOKEN_URL, data={
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "client_id": WHOOP_CLIENT_ID,
             "client_secret": WHOOP_CLIENT_SECRET,
-            "scope": WHOOP_SCOPES,
+            "scope": "offline",
         }, timeout=12)
         resp.raise_for_status()
         data = resp.json()
@@ -1771,6 +1785,7 @@ def _get_whoop_access_token():
         return new_access or None
     except Exception as e:
         log.warning("WHOOP token refresh failed: %s", e)
+        _cache_set("whoop:token_fail", True)
         return None
 
 
@@ -1789,52 +1804,40 @@ def _whoop_get(path, params=None, timeout=12):
         return None
 
 
-def whoop_recovery_recent(limit=10):
-    cached = _cache_get("whoop:recovery", WHOOP_CACHE_TTL)
+def _whoop_records(cache_key, path, limit):
+    """Fetch a WHOOP record list with success caching (WHOOP_CACHE_TTL) and
+    short failure caching (WHOOP_FAIL_TTL). Failures must be remembered:
+    with no failure cache, every minute-poll re-runs the full stack of
+    network timeouts and the request outlives the frontend's abort deadline.
+    Connect/disconnect clears both caches, so reconnects retry immediately."""
+    cached = _cache_get(cache_key, WHOOP_CACHE_TTL)
     if cached is not None:
         return cached
-    data = _whoop_get("/recovery", params={"limit": limit})
+    if _cache_get(cache_key + ":fail", WHOOP_FAIL_TTL):
+        return []
+    data = _whoop_get(path, params={"limit": limit})
     if data is None:
-        return []  # request failed — don't cache the failure, so a token fix retries immediately
+        _cache_set(cache_key + ":fail", True)
+        return []
     records = data.get("records") or []
-    _cache_set("whoop:recovery", records)
+    _cache_set(cache_key, records)
     return records
+
+
+def whoop_recovery_recent(limit=10):
+    return _whoop_records("whoop:recovery", "/recovery", limit)
 
 
 def whoop_sleep_recent(limit=10):
-    cached = _cache_get("whoop:sleep", WHOOP_CACHE_TTL)
-    if cached is not None:
-        return cached
-    data = _whoop_get("/activity/sleep", params={"limit": limit})
-    if data is None:
-        return []
-    records = data.get("records") or []
-    _cache_set("whoop:sleep", records)
-    return records
+    return _whoop_records("whoop:sleep", "/activity/sleep", limit)
 
 
 def whoop_cycles_recent(limit=10):
-    cached = _cache_get("whoop:cycles", WHOOP_CACHE_TTL)
-    if cached is not None:
-        return cached
-    data = _whoop_get("/cycle", params={"limit": limit})
-    if data is None:
-        return []
-    records = data.get("records") or []
-    _cache_set("whoop:cycles", records)
-    return records
+    return _whoop_records("whoop:cycles", "/cycle", limit)
 
 
 def whoop_workouts_recent(limit=25):
-    cached = _cache_get("whoop:workouts", WHOOP_CACHE_TTL)
-    if cached is not None:
-        return cached
-    data = _whoop_get("/activity/workout", params={"limit": limit})
-    if data is None:
-        return []
-    records = data.get("records") or []
-    _cache_set("whoop:workouts", records)
-    return records
+    return _whoop_records("whoop:workouts", "/activity/workout", limit)
 
 
 # Partial WHOOP sport_id → name map (v2 records usually carry sport_name; this
@@ -1945,13 +1948,17 @@ def _mock_heart_rate_samples():
 
 def fitness_heart_rate():
     """Recent/current heart-rate payload. Uses the latest WHOOP recovery (RHR)
-    and workout HR to anchor the numbers when connected; mock otherwise."""
+    to anchor the numbers when connected; mock otherwise. This is polled every
+    minute by the Health dashboard, so it only touches the recovery feed (one
+    upstream call, usually cached) — not the full daily summary, whose three
+    upstream calls could outlast the frontend's fetch timeout when WHOOP is slow."""
     samples = _mock_heart_rate_samples()
     source = "mock"
     if _whoop_connected():
         try:
-            days = whoop_daily_summary(days=1)
-            rhr = days[0].get("rhr") if days else None
+            scores = ((r.get("score") or {}) for r in whoop_recovery_recent())
+            rhr = next((s.get("resting_heart_rate") for s in scores
+                        if s.get("resting_heart_rate")), None)
             if rhr:
                 delta = rhr + 4 - samples[-1]["bpm"]
                 for s in samples:
