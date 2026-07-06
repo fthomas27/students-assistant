@@ -660,12 +660,6 @@ async function loadSchedule() {
     el.innerHTML = data.items.map(item => {
       const start = to12Hour(item.scheduled_start_time);
       const end = to12Hour(item.scheduled_end_time);
-      const isPrivate = item.item_type === 'private';
-      if (isPrivate) {
-        return `<div class="schedule-item">
-          <span class="schedule-time">${start} – ${end}</span>
-        </div>`;
-      }
       return `<div class="schedule-item">
         <span class="schedule-time">${start} – ${end}</span>
         <span class="schedule-title${item.completed ? ' schedule-done' : ''}">${escapeHtml(item.item_title)}</span>

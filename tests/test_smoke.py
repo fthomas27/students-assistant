@@ -188,7 +188,7 @@ def test_tasks_get_includes_all_project_tasks(client, monkeypatch):
                         "urgency": "low", "completed": False,
                         "completed_at": None, "due_date": None,
                         "created_at": now, "project_id": None,
-                        "project_title": None, "hidden_from_parent": False,
+                        "project_title": None,
                     },
                 ]
             elif "from project_tasks" in sql_l:
@@ -199,7 +199,6 @@ def test_tasks_get_includes_all_project_tasks(client, monkeypatch):
                         "completed_at": None, "due_date": None,
                         "created_at": now, "project_id": 7,
                         "assignee": "me", "project_title": "Science Fair",
-                        "hidden_from_parent": False,
                     },
                     {
                         "id": 11, "title": "Linked PT (assignee=teammate)",
@@ -207,7 +206,6 @@ def test_tasks_get_includes_all_project_tasks(client, monkeypatch):
                         "completed_at": None, "due_date": None,
                         "created_at": now, "project_id": 7,
                         "assignee": "Alex", "project_title": "Science Fair",
-                        "hidden_from_parent": False,
                     },
                     {
                         "id": 12, "title": "Linked PT (no assignee)",
@@ -215,7 +213,6 @@ def test_tasks_get_includes_all_project_tasks(client, monkeypatch):
                         "completed_at": None, "due_date": None,
                         "created_at": now, "project_id": 7,
                         "assignee": "", "project_title": "Science Fair",
-                        "hidden_from_parent": False,
                     },
                 ]
             else:

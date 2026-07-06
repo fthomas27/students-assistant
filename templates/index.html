@@ -4832,19 +4832,72 @@ function _renderHRSparkline(samples) {
   if (!wrap || !samples.length) return;
   const W = Math.max(wrap.clientWidth || 0, 240);
   const H = Math.max(wrap.clientHeight || 0, 90);
-  const pad = 8;
+  const padL = 30, padR = 8, padT = 10, padB = 16;
+  const plotW = Math.max(1, W - padL - padR), plotH = Math.max(1, H - padT - padB);
   const vals = samples.map(s => s.bpm);
   const min = Math.min.apply(null, vals) - 4, max = Math.max.apply(null, vals) + 4;
-  const pts = samples.map((s, i) => {
-    const x = pad + (W - pad * 2) * (i / (samples.length - 1));
-    const y = pad + (H - pad * 2) * (1 - (s.bpm - min) / (max - min));
-    return x.toFixed(1) + ',' + y.toFixed(1);
-  });
+  const n = samples.length;
+  const xAt = i => padL + (n > 1 ? plotW * (i / (n - 1)) : plotW / 2);
+  const yAt = v => padT + plotH * (1 - (v - min) / (max - min));
+
+  const pts = samples.map((s, i) => xAt(i).toFixed(1) + ',' + yAt(s.bpm).toFixed(1));
   const last = pts[pts.length - 1].split(',');
-  wrap.innerHTML = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Heart rate, last 30 minutes">'
+
+  // Recessive gridlines + bpm labels (max/mid/min)
+  const gridVals = [max, (max + min) / 2, min];
+  const gridSvg = gridVals.map(v => {
+    const y = yAt(v).toFixed(1);
+    return '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="var(--border)" stroke-width="1"/>'
+      + '<text x="' + (padL - 6) + '" y="' + y + '" text-anchor="end" dominant-baseline="middle" font-size="9.5" fill="var(--text3)">' + Math.round(v) + '</text>';
+  }).join('');
+
+  // Time-of-day ticks: start / middle / end of the sampled window
+  const tickIdx = n > 2 ? [0, Math.floor((n - 1) / 2), n - 1] : [0, n - 1];
+  const xLabelsSvg = tickIdx.map(i => {
+    const x = xAt(i).toFixed(1);
+    const anchor = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle');
+    return '<text x="' + x + '" y="' + (H - 4) + '" text-anchor="' + anchor + '" font-size="9.5" fill="var(--text3)">' + escapeHtml(samples[i].t || '') + '</text>';
+  }).join('');
+
+  wrap.innerHTML = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Heart rate over the last 30 minutes" style="overflow:visible;display:block;">'
+    + gridSvg
     + '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--red)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
     + '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="3.5" fill="var(--red)"/>'
-    + '</svg>';
+    + xLabelsSvg
+    + '<line id="hrCrosshair" x1="0" y1="' + padT + '" x2="0" y2="' + (H - padB) + '" stroke="var(--text3)" stroke-width="1" stroke-dasharray="2,2" opacity="0"/>'
+    + '<circle id="hrCrosshairDot" r="4" fill="var(--red)" stroke="var(--bg)" stroke-width="1.5" opacity="0"/>'
+    + '</svg>'
+    + '<div class="chart-tip" id="hrChartTip"></div>';
+
+  if (n < 2) return;
+
+  const svg = wrap.querySelector('svg');
+  const crosshair = wrap.querySelector('#hrCrosshair');
+  const dot = wrap.querySelector('#hrCrosshairDot');
+  const tip = wrap.querySelector('#hrChartTip');
+
+  function showAt(i) {
+    const x = xAt(i), y = yAt(samples[i].bpm);
+    crosshair.setAttribute('x1', x); crosshair.setAttribute('x2', x); crosshair.setAttribute('opacity', '1');
+    dot.setAttribute('cx', x); dot.setAttribute('cy', y); dot.setAttribute('opacity', '1');
+    tip.textContent = (samples[i].t || '') + ' · ' + samples[i].bpm + ' bpm';
+    tip.style.left = x + 'px';
+    tip.style.top = y + 'px';
+    tip.style.opacity = '1';
+  }
+  function hide() {
+    crosshair.setAttribute('opacity', '0');
+    dot.setAttribute('opacity', '0');
+    tip.style.opacity = '0';
+  }
+  svg.addEventListener('pointermove', function(e) {
+    const rect = svg.getBoundingClientRect();
+    const relX = (e.clientX - rect.left) * (W / rect.width);
+    let i = Math.round((relX - padL) / plotW * (n - 1));
+    i = Math.max(0, Math.min(n - 1, i));
+    showAt(i);
+  });
+  svg.addEventListener('pointerleave', hide);
 }
 
 function renderPlannedWorkouts(planned) {
@@ -5771,7 +5824,10 @@ function renderProjectsDash() {
       return '<div class="project-card">'
         + '<div class="project-card-head" onclick="openProjectDetailsModal(' + p.id + ')">'
         +   '<span class="project-card-title">' + escapeHtml(p.title || '') + '</span>'
-        +   '<span class="project-status-chip st-' + p.status + '">' + (p.needs_checkin ? 'check-in' : p.status) + '</span>'
+        +   '<span style="display:flex;align-items:center;gap:6px;flex-shrink:0;">'
+        +     '<span class="project-status-chip st-' + p.status + '">' + (p.needs_checkin ? 'check-in' : p.status) + '</span>'
+        +     '<button onclick="event.stopPropagation();deleteProject(' + p.id + ')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:13px;padding:2px 4px;line-height:1;" title="Delete project">✕</button>'
+        +   '</span>'
         + '</div>'
         + (p.description ? '<div class="project-card-desc">' + escapeHtml(p.description) + '</div>' : '')
         + '<div class="project-card-tasks">'
@@ -5911,10 +5967,6 @@ function renderTasks() {
   container.innerHTML = sorted.map(t => {
     const urgencyClass = ['critical', 'high'].includes(t.urgency) ? 'urgent' : t.urgency === 'medium' ? 'high' : '';
     const safeUrgency = ['critical','high','medium','low'].includes(t.urgency) ? t.urgency : 'low';
-    const isHidden = t.hidden_from_parent;
-    const eyeIcon = isHidden ? '🙈' : '👁';
-    const eyeTitle = isHidden ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide';
-    const eyeStyle = isHidden ? 'opacity:0.65;' : 'opacity:1;';
     const projectBadge = t.source === 'project_task' && t.project_title
       ? `<span style="display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;background:rgba(255,127,80,0.12);color:var(--accent);padding:1px 6px;border-radius:4px;margin-right:6px;">${escapeHtml(t.project_title)}</span>`
       : '';
@@ -5928,7 +5980,6 @@ function renderTasks() {
           <div class="sidebar-item-meta">[${t.urgency}]${t.notes ? ' — ' + t.notes.substring(0, 40) : ''}</div>
         </div>
         <div style="display:flex;gap:2px;flex-shrink:0;align-items:center;margin-top:2px;">
-          ${t.source !== 'project_task' ? `<button class="vis-toggle" onclick="toggleTaskHidden(event,${t.id},${!isHidden})" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;${eyeStyle}transition:transform 0.15s, opacity 0.15s;" title="${eyeTitle}">${eyeIcon}</button>` : ''}
           <button class="complete-btn" onclick="completeTask(event, ${t.id})" style="background: none; border: none; color: var(--text2); cursor: pointer; font-size: 16px; padding: 2px 6px;" title="Mark as done">✓</button>
         </div>
       </div>
@@ -8997,33 +9048,6 @@ async function saveEditProject(projectId) {
   }
 }
 
-function _flipVisToggle(btn, hide) {
-  if (!btn) return;
-  btn.textContent = hide ? '🙈' : '👁';
-  btn.style.opacity = hide ? '0.65' : '1';
-  btn.title = hide ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide';
-  btn.style.transform = 'scale(1.25)';
-  setTimeout(() => { if (btn) btn.style.transform = ''; }, 180);
-}
-
-async function toggleProjectHidden(projectId, hide) {
-  const btn = (window.event && window.event.target && window.event.target.closest('.vis-toggle')) || null;
-  _flipVisToggle(btn, hide);
-  try {
-    const res = await fetch(`/api/projects/${projectId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hidden_from_parent: hide })
-    });
-    if (!res.ok) throw new Error('toggle failed');
-    await loadProjects();
-  } catch (e) {
-    console.error('toggleProjectHidden failed', e);
-    _flipVisToggle(btn, !hide); // revert
-    if (typeof showToast === 'function') showToast('Could not update visibility', 'error');
-  }
-}
-
 async function checkInProject(projectId) {
   try {
     const res = await fetch(`/api/projects/${projectId}`, {
@@ -9041,25 +9065,6 @@ async function checkInProject(projectId) {
   } catch (e) {
     console.error('checkInProject failed', e);
     if (typeof showToast === 'function') showToast('Check-in failed', 'error');
-  }
-}
-
-async function toggleTaskHidden(event, taskId, hide) {
-  event.stopPropagation();
-  const btn = event.currentTarget && event.currentTarget.closest('.vis-toggle');
-  _flipVisToggle(btn, hide);
-  try {
-    const res = await fetch(`/api/tasks/${taskId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hidden_from_parent: hide })
-    });
-    if (!res.ok) throw new Error('toggle failed');
-    await loadSidebarData();
-  } catch (e) {
-    console.error('toggleTaskHidden failed', e);
-    _flipVisToggle(btn, !hide); // revert
-    if (typeof showToast === 'function') showToast('Could not update visibility', 'error');
   }
 }
 
