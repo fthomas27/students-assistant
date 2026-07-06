@@ -1869,6 +1869,16 @@ margin-top: 4px;
 
 .calendar-modal-body { display: block; }
 
+/* The aspect-ratio + min-height on .calendar-day give each cell a content-based
+   minimum width, which blows past a narrow viewport since 1fr tracks won't
+   shrink below that floor. minmax(0, 1fr) lets the 7-day grid actually fit. */
+@media (max-width: 639px) {
+.calendar-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.calendar-day { min-height: 40px; padding: 6px 2px 14px; }
+.calendar-day-header { padding: 6px 2px; font-size: 9.5px; }
+.calendar-day-num { font-size: 12px; }
+}
+
 /* Desktop: calendar takes the full viewport with calendar-left / schedule-right.
    Mobile (≤639px) keeps the centered popup defined above. */
 @media (min-width: 640px) {
