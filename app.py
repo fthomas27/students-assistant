@@ -1717,8 +1717,16 @@ def canvas_search_assignment(title_query):
 WHOOP_AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 WHOOP_API_BASE = "https://api.prod.whoop.com/developer/v2"
-WHOOP_SCOPES = "read:recovery read:cycles read:sleep read:profile read:body_measurement offline"
+WHOOP_SCOPES = "read:recovery read:cycles read:sleep read:workout read:profile read:body_measurement offline"
 WHOOP_CACHE_TTL = 900  # 15 minutes
+
+
+def _whoop_clear_cache():
+    """Drop cached WHOOP records so a fresh connect/disconnect takes effect
+    immediately instead of waiting out the 15-minute cache TTL."""
+    with _simple_cache_lock:
+        for key in ("whoop:recovery", "whoop:sleep", "whoop:cycles", "whoop:workouts"):
+            _simple_cache.pop(key, None)
 
 
 def _whoop_configured():
@@ -1786,7 +1794,9 @@ def whoop_recovery_recent(limit=10):
     if cached is not None:
         return cached
     data = _whoop_get("/recovery", params={"limit": limit})
-    records = (data or {}).get("records") or []
+    if data is None:
+        return []  # request failed — don't cache the failure, so a token fix retries immediately
+    records = data.get("records") or []
     _cache_set("whoop:recovery", records)
     return records
 
@@ -1796,7 +1806,9 @@ def whoop_sleep_recent(limit=10):
     if cached is not None:
         return cached
     data = _whoop_get("/activity/sleep", params={"limit": limit})
-    records = (data or {}).get("records") or []
+    if data is None:
+        return []
+    records = data.get("records") or []
     _cache_set("whoop:sleep", records)
     return records
 
@@ -1806,7 +1818,9 @@ def whoop_cycles_recent(limit=10):
     if cached is not None:
         return cached
     data = _whoop_get("/cycle", params={"limit": limit})
-    records = (data or {}).get("records") or []
+    if data is None:
+        return []
+    records = data.get("records") or []
     _cache_set("whoop:cycles", records)
     return records
 
@@ -1816,7 +1830,9 @@ def whoop_workouts_recent(limit=25):
     if cached is not None:
         return cached
     data = _whoop_get("/activity/workout", params={"limit": limit})
-    records = (data or {}).get("records") or []
+    if data is None:
+        return []
+    records = data.get("records") or []
     _cache_set("whoop:workouts", records)
     return records
 
@@ -12646,6 +12662,7 @@ def whoop_auth_callback():
             "whoop_access_token": data.get("access_token", ""),
             "whoop_token_expires_at": str(time.time() + float(data.get("expires_in", 3600))),
         })
+        _whoop_clear_cache()
         log.info("WHOOP refresh token stored successfully")
         return redirect("/?whoop_connected=1")
     except Exception as e:
@@ -12684,6 +12701,7 @@ def whoop_disconnect():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
     set_config({"whoop_refresh_token": "", "whoop_access_token": "", "whoop_token_expires_at": ""})
+    _whoop_clear_cache()
     return jsonify({"status": "disconnected"})
 
 
