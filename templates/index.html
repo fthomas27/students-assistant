@@ -3116,6 +3116,194 @@ grid-template-columns: repeat(12, 1fr);
 gap: 14px;
 align-items: stretch;
 }
+
+/* ══ Above-the-fold dashboard system (Home / School / Health / Projects) ══
+   The page never scrolls on desktop: the grid fills the viewport and each
+   widget's list scrolls internally. */
+.page.dash-fit { overflow: hidden; padding: 16px 24px 18px; }
+.dashx {
+flex: 1;
+min-height: 0;
+display: flex;
+flex-direction: column;
+gap: 12px;
+}
+.dashx-head {
+display: flex;
+align-items: flex-end;
+justify-content: space-between;
+gap: 14px;
+flex-shrink: 0;
+}
+.dashx-greeting {
+font-family: var(--font-display);
+font-size: 24px;
+font-weight: 700;
+letter-spacing: -0.02em;
+color: var(--text);
+line-height: 1.1;
+margin: 2px 0 0;
+}
+.dashx-tiles {
+display: grid;
+grid-template-columns: repeat(6, 1fr);
+gap: 12px;
+flex-shrink: 0;
+}
+.dashx-tiles-4 { grid-template-columns: repeat(4, 1fr); }
+.tile {
+background: var(--surface);
+border: 1px solid var(--border);
+border-radius: var(--r);
+padding: 12px 16px;
+cursor: pointer;
+min-width: 0;
+transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+}
+.tile:hover { border-color: var(--border2); transform: translateY(-2px); box-shadow: 0 10px 26px rgba(0,0,0,0.28); }
+.tile-label {
+font-family: var(--font-display);
+font-size: 10px;
+font-weight: 600;
+color: var(--text3);
+text-transform: uppercase;
+letter-spacing: 0.12em;
+}
+.tile-num {
+font-family: var(--font-display);
+font-size: 28px;
+font-weight: 700;
+letter-spacing: -0.02em;
+color: var(--text);
+line-height: 1.1;
+margin-top: 2px;
+}
+.tile-meta { font-size: 10.5px; color: var(--text3); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-accent { background: linear-gradient(135deg, #58E9A8 0%, #7CF0BC 100%); border: none; }
+.tile-accent .tile-label { color: rgba(4,35,26,0.62); }
+.tile-accent .tile-num { color: var(--accent-ink); }
+.tile-accent .tile-meta { color: rgba(4,35,26,0.72); }
+
+.dashx-main {
+flex: 1;
+min-height: 0;
+display: grid;
+grid-template-columns: repeat(12, 1fr);
+gap: 12px;
+align-items: stretch;
+}
+.dashx-span3 { grid-column: span 3; min-width: 0; min-height: 0; }
+.dashx-span4 { grid-column: span 4; min-width: 0; min-height: 0; }
+.dashx-span5 { grid-column: span 5; min-width: 0; min-height: 0; }
+.dashx-span9 { grid-column: span 9; min-width: 0; min-height: 0; }
+.dashx-main .widget { min-height: 0; overflow: hidden; }
+.dashx-stack { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.dashx-stack .widget { flex: 1; min-height: 0; }
+.dashx-list { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* Category chips for the routing engine */
+.cat-chip {
+display: inline-block;
+font-family: var(--font-display);
+font-size: 9px;
+font-weight: 700;
+text-transform: uppercase;
+letter-spacing: 0.08em;
+padding: 2px 7px;
+border-radius: 999px;
+flex-shrink: 0;
+}
+.cat-chip.cat-school   { background: rgba(111,199,242,0.14); color: var(--blue); }
+.cat-chip.cat-health   { background: rgba(255,122,122,0.14); color: var(--red); }
+.cat-chip.cat-projects { background: rgba(185,167,255,0.16); color: var(--purple); }
+.cat-chip.cat-general  { background: var(--surface2); color: var(--text3); }
+
+/* Compact agenda rows */
+.agenda-row {
+display: flex;
+align-items: center;
+gap: 9px;
+padding: 7px 6px;
+border-bottom: 1px solid var(--border);
+min-width: 0;
+}
+.agenda-row:last-child { border-bottom: none; }
+.agenda-day {
+font-family: var(--font-display);
+font-size: 10px;
+font-weight: 700;
+color: var(--text3);
+text-transform: uppercase;
+letter-spacing: 0.1em;
+padding: 8px 6px 3px;
+}
+.agenda-time { font-family: var(--font-display); font-size: 10.5px; color: var(--text3); width: 58px; flex-shrink: 0; }
+.agenda-title { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Workout planner */
+.planner-form { display: flex; flex-direction: column; gap: 7px; margin-bottom: 10px; flex-shrink: 0; }
+.planner-form .field { margin: 0; font-size: 12px; padding: 8px 10px; }
+.planner-row { display: grid; grid-template-columns: 1.2fr 1.2fr 0.7fr; gap: 7px; }
+
+/* Projects dashboard grid */
+.projects-grid-wrap { overflow-y: auto; }
+.projects-grid {
+display: grid;
+grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+gap: 12px;
+align-items: start;
+}
+.project-card {
+background: var(--surface);
+border: 1px solid var(--border);
+border-radius: var(--r);
+padding: 14px 16px;
+min-width: 0;
+transition: border-color 0.2s;
+}
+.project-card:hover { border-color: var(--border2); }
+.project-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
+.project-card-title { font-family: var(--font-display); font-size: 14px; font-weight: 700; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-card-desc { font-size: 11.5px; color: var(--text2); margin-top: 3px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.project-status-chip {
+font-family: var(--font-display);
+font-size: 9px; font-weight: 700;
+text-transform: uppercase; letter-spacing: 0.08em;
+padding: 2px 8px; border-radius: 999px; flex-shrink: 0;
+}
+.project-status-chip.st-active { background: var(--accent-dim); color: var(--accent); }
+.project-status-chip.st-paused { background: rgba(255,196,107,0.14); color: var(--amber); }
+.project-status-chip.st-done   { background: var(--surface2); color: var(--text3); }
+.project-card-tasks { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; max-height: 190px; overflow-y: auto; }
+.ptask-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.ptask-check {
+width: 15px; height: 15px; border-radius: 4px;
+border: 1.5px solid var(--border2); cursor: pointer; flex-shrink: 0;
+display: inline-flex; align-items: center; justify-content: center;
+transition: background 0.15s, border-color 0.15s;
+}
+.ptask-check.done { background: var(--accent); border-color: var(--accent); }
+.ptask-label { flex: 1; min-width: 0; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ptask-label.done { color: var(--text3); text-decoration: line-through; }
+.ptask-add { display: flex; gap: 6px; margin-top: 8px; }
+.ptask-add input { flex: 1; min-width: 0; font-size: 11.5px; padding: 6px 9px; margin: 0; }
+
+/* Fold breakpoints: below desktop the fit constraint relaxes and pages scroll */
+@media (max-width: 1150px) {
+.page.dash-fit { overflow-y: auto; }
+.dashx-main { grid-template-columns: repeat(2, 1fr); }
+.dashx-span3, .dashx-span4, .dashx-span5, .dashx-span9 { grid-column: span 1; }
+.dashx-span5, .dashx-span9 { grid-column: span 2; }
+.dashx-tiles { grid-template-columns: repeat(3, 1fr); }
+.dashx-tiles-4 { grid-template-columns: repeat(2, 1fr); }
+.dashx-list { max-height: 300px; }
+}
+@media (max-width: 640px) {
+.dashx-main { grid-template-columns: 1fr; }
+.dashx-span3, .dashx-span4, .dashx-span5, .dashx-span9 { grid-column: span 1; }
+.dashx-tiles { grid-template-columns: repeat(2, 1fr); }
+.dashx-head { flex-direction: column; align-items: flex-start; gap: 4px; }
+}
 .dash-span3  { grid-column: span 3; min-width: 0; }
 .dash-span4  { grid-column: span 4; min-width: 0; }
 .dash-span5  { grid-column: span 5; min-width: 0; }
@@ -3358,14 +3546,14 @@ margin: 8px 2px 10px;
     <span class="top-nav-date" id="topNavDate">Loading...</span>
   </div>
   <nav class="top-nav-circles" id="topNavCircles">
-    <button class="circle-btn active"     data-page="home"           onclick="navigateTo('home')"           title="Dashboard"><span class="nav-pill-icon">&#9632;</span><span class="nav-pill-label">Dashboard</span></button>
+    <button class="circle-btn active"     data-page="home"     onclick="navigateTo('home')"     title="Home"><span class="nav-pill-icon">&#9632;</span><span class="nav-pill-label">Home</span></button>
     <!-- School-only -->
-    <button class="circle-btn school-only-nav" data-page="assignments" onclick="navigateTo('assignments')" title="Assignments"><span class="nav-pill-icon">&#9776;</span><span class="nav-pill-label">Assignments</span><span class="circle-btn-badge" data-badge="assignments"></span></button>
+    <button class="circle-btn school-only-nav" data-page="school" onclick="navigateTo('school')" title="School"><span class="nav-pill-icon">&#9776;</span><span class="nav-pill-label">School</span><span class="circle-btn-badge" data-badge="assignments"></span></button>
     <!-- Always-visible -->
-    <button class="circle-btn"            data-page="tasks"          onclick="navigateTo('tasks')"          title="Tasks"><span class="nav-pill-icon">&#10003;</span><span class="nav-pill-label">Tasks</span><span class="circle-btn-badge" data-badge="tasks"></span></button>
-    <button class="circle-btn school-only-nav" data-page="plan"      onclick="navigateTo('plan')"        title="Plan"><span class="nav-pill-icon">&#9678;</span><span class="nav-pill-label">Plan</span></button>
-    <button class="circle-btn"            data-page="projects"       onclick="navigateTo('projects')"       title="Projects"><span class="nav-pill-icon">&#9707;</span><span class="nav-pill-label">Projects</span><span class="circle-btn-badge" data-badge="projects"></span></button>
-    <button class="circle-btn"            id="calendarNavBtn"        onclick="openCalendarModal()"          title="Calendar"><span class="nav-pill-icon">&#9634;</span><span class="nav-pill-label">Calendar</span></button>
+    <button class="circle-btn"            data-page="health"   onclick="navigateTo('health')"   title="Health &amp; Fitness"><span class="nav-pill-icon">&#10084;</span><span class="nav-pill-label">Health</span></button>
+    <button class="circle-btn"            data-page="projects" onclick="navigateTo('projects')" title="Projects"><span class="nav-pill-icon">&#9707;</span><span class="nav-pill-label">Projects</span><span class="circle-btn-badge" data-badge="projects"></span></button>
+    <button class="circle-btn"            data-page="tasks"    onclick="navigateTo('tasks')"    title="Tasks"><span class="nav-pill-icon">&#10003;</span><span class="nav-pill-label">Tasks</span><span class="circle-btn-badge" data-badge="tasks"></span></button>
+    <button class="circle-btn"            id="calendarNavBtn"  onclick="openCalendarModal()"    title="Calendar"><span class="nav-pill-icon">&#9634;</span><span class="nav-pill-label">Calendar</span></button>
     <!-- Summer-only -->
     <button class="circle-btn summer-nav" data-page="summer-bucket"  onclick="navigateTo('summer-bucket')" title="Bucket List" style="display:none;"><span class="nav-pill-icon">&#9728;</span><span class="nav-pill-label">Bucket List</span></button>
   </nav>
@@ -3377,13 +3565,13 @@ margin: 8px 2px 10px;
     </button>
     <div class="nav-menu-dropdown" id="navMenuDropdown" role="menu">
       <button class="nav-menu-item" data-page="home"           onclick="navigateTo('home'); closeNavMenu();"          role="menuitem"><span class="nav-menu-item-icon">&#8962;</span>Home</button>
+      <!-- School-only -->
+      <button class="nav-menu-item school-only-nav" data-page="school" onclick="navigateTo('school'); closeNavMenu();" role="menuitem"><span class="nav-menu-item-icon">&#128203;</span>School</button>
       <!-- Always visible -->
+      <button class="nav-menu-item" data-page="health"       onclick="navigateTo('health'); closeNavMenu();"        role="menuitem"><span class="nav-menu-item-icon">&#10084;</span>Health</button>
+      <button class="nav-menu-item" data-page="projects"     onclick="navigateTo('projects'); closeNavMenu();"      role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
       <button class="nav-menu-item" data-page="tasks"        onclick="navigateTo('tasks'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#10003;</span>Tasks</button>
       <button class="nav-menu-item" data-page="chat"         onclick="navigateTo('chat'); closeNavMenu();"          role="menuitem"><span class="nav-menu-item-icon">&#128172;</span>Chat</button>
-      <button class="nav-menu-item" data-page="projects"     onclick="navigateTo('projects'); closeNavMenu();"      role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
-      <!-- School-only -->
-      <button class="nav-menu-item school-only-nav" data-page="assignments" onclick="navigateTo('assignments'); closeNavMenu();"  role="menuitem"><span class="nav-menu-item-icon">&#128203;</span>Assignments</button>
-      <button class="nav-menu-item school-only-nav" data-page="plan"        onclick="navigateTo('plan'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#127919;</span>Plan</button>
       <!-- Summer-only -->
       <button class="nav-menu-item summer-nav" data-page="summer-bucket" onclick="navigateTo('summer-bucket'); closeNavMenu();" role="menuitem" style="display:none;"><span class="nav-menu-item-icon">&#127774;</span>Bucket List</button>
       <div class="nav-menu-divider"></div>
@@ -3572,117 +3760,85 @@ margin: 8px 2px 10px;
   <!-- UV / Weather Alert (summer only) -->
   <div id="uvAlertArea" style="margin:0 0 12px;"></div>
 
-  <!-- School mode: widget dashboard (hidden in summer) -->
-  <div id="schoolHomeContent">
+  <!-- School mode: unified above-the-fold dashboard (hidden in summer) -->
+  <div id="schoolHomeContent" class="dashx">
 
-    <div class="dash-head">
+    <div class="dashx-head">
       <div>
-        <div class="dash-eyebrow" id="homePageHeader">Dashboard</div>
-        <h1 class="dash-greeting" id="dashGreeting">Hello</h1>
-        <div class="dash-sub" id="dashSub">Here's your day at a glance.</div>
+        <span class="dash-eyebrow" id="homePageHeader">Home &middot; Everything</span>
+        <h1 class="dashx-greeting" id="dashGreeting">Hello</h1>
       </div>
+      <div class="dash-sub" id="dashSub">Master view — every calendar item, task, metric, and project.</div>
     </div>
 
-    <div class="dash-grid">
+    <!-- Stat tile row -->
+    <div class="dashx-tiles">
+      <section class="tile tile-accent" onclick="navigateTo('school')">
+        <div class="tile-label">Due Today</div>
+        <div class="tile-num" id="dashDueToday">&ndash;</div>
+        <div class="tile-meta" id="dashDueTodaySub"></div>
+      </section>
+      <section class="tile" onclick="openCalendarModal()">
+        <div class="tile-label">Events Today</div>
+        <div class="tile-num" id="dashEventsToday">&ndash;</div>
+        <div class="tile-meta" id="dashEventsTodayMeta"></div>
+      </section>
+      <section class="tile" onclick="navigateTo('tasks')">
+        <div class="tile-label">Open Tasks</div>
+        <div class="tile-num" id="dashStatTasks">&ndash;</div>
+        <div class="tile-meta" id="dashStatTasksMeta"></div>
+      </section>
+      <section class="tile" onclick="navigateTo('school')">
+        <div class="tile-label">Overdue</div>
+        <div class="tile-num" id="dashStatOverdue">&ndash;</div>
+        <div class="tile-meta" id="dashStatOverdueMeta"></div>
+      </section>
+      <section class="tile" onclick="navigateTo('projects')">
+        <div class="tile-label">Projects</div>
+        <div class="tile-num" id="dashStatProjects">&ndash;</div>
+        <div class="tile-meta" id="dashStatProjectsMeta"></div>
+      </section>
+      <section class="tile" onclick="navigateTo('health')">
+        <div class="tile-label">Recovery</div>
+        <div class="tile-num" id="dashStatRecovery">&ndash;</div>
+        <div class="tile-meta" id="dashStatRecoveryMeta"></div>
+      </section>
+    </div>
 
-      <!-- Hero: due today (mint card) -->
-      <section class="widget hero-widget dash-span4">
+    <!-- Main grid -->
+    <div class="dashx-main">
+      <section class="widget dashx-span5">
         <div class="widget-head">
-          <span class="widget-title">Due Today</span>
-          <button class="hero-arrow" onclick="navigateTo('assignments')" title="Open assignments">&#8599;</button>
+          <span class="widget-title">Everything Coming Up</span>
+          <button class="widget-chip widget-chip-btn" onclick="openCalendarModal()">Calendar &#8599;</button>
         </div>
-        <div class="hero-num" id="dashDueToday">&ndash;</div>
-        <div class="hero-sub" id="dashDueTodaySub">Loading&hellip;</div>
-        <div class="hero-chips" id="dashHeroChips"></div>
+        <div id="homeAgenda" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
       </section>
 
-      <!-- Workload bar chart -->
-      <section class="widget dash-span5">
+      <section class="widget dashx-span4">
         <div class="widget-head">
-          <span class="widget-title">Workload &middot; Next 7 Days</span>
-          <span class="widget-chip" id="dashWorkloadTotal">&ndash;</span>
+          <span class="widget-title">Upcoming Tasks</span>
+          <button class="widget-chip widget-chip-btn" onclick="navigateTo('tasks')">All &#8599;</button>
         </div>
-        <div class="dash-chart" id="dashWorkloadChart"><div class="widget-empty">Loading&hellip;</div></div>
+        <div id="homeTasks" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
       </section>
 
-      <!-- Today's progress gauge -->
-      <section class="widget dash-span3">
-        <div class="widget-head">
-          <span class="widget-title">Today's Progress</span>
-        </div>
-        <div class="gauge-wrap" id="dashGauge"><div class="widget-empty">Loading&hellip;</div></div>
-      </section>
-
-      <!-- Stat tiles -->
-      <section class="widget stat-widget dash-span4" onclick="navigateTo('tasks')">
-        <div class="widget-head"><span class="widget-title">Open Tasks</span><span class="stat-spark" id="dashStatTasksSpark"></span></div>
-        <div class="stat-num" id="dashStatTasks">&ndash;</div>
-        <div class="stat-meta" id="dashStatTasksMeta"></div>
-      </section>
-      <section class="widget stat-widget dash-span4" onclick="navigateTo('assignments')">
-        <div class="widget-head"><span class="widget-title">Overdue</span></div>
-        <div class="stat-num" id="dashStatOverdue">&ndash;</div>
-        <div class="stat-meta" id="dashStatOverdueMeta"></div>
-      </section>
-      <section class="widget stat-widget dash-span4" onclick="navigateTo('projects')">
-        <div class="widget-head"><span class="widget-title">Active Projects</span></div>
-        <div class="stat-num" id="dashStatProjects">&ndash;</div>
-        <div class="stat-meta" id="dashStatProjectsMeta"></div>
-      </section>
-
-      <!-- WHOOP recovery/strain -->
-      <div id="dashWhoopSection" style="display:none;grid-column:span 12;">
-        <div class="dash-grid" style="margin:0;">
-          <section class="widget dash-span7">
-            <div class="widget-head">
-              <span class="widget-title">Recovery &middot; Last 7 Days</span>
-              <span class="widget-chip" id="dashWhoopTotal">&ndash;</span>
-            </div>
-            <div class="dash-chart" id="dashWhoopChart"><div class="widget-empty">Loading&hellip;</div></div>
-          </section>
-          <section class="widget dash-span5">
-            <div class="widget-head"><span class="widget-title">Today's Vitals</span></div>
-            <div id="dashWhoopVitals" class="widget-list"><div class="widget-empty">Loading&hellip;</div></div>
-          </section>
-        </div>
+      <div class="dashx-stack dashx-span3">
+        <section class="widget">
+          <div class="widget-head">
+            <span class="widget-title">Health</span>
+            <button class="widget-chip widget-chip-btn" onclick="navigateTo('health')">Open &#8599;</button>
+          </div>
+          <div id="homeHealth" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+        </section>
+        <section class="widget">
+          <div class="widget-head">
+            <span class="widget-title">Projects</span>
+            <button class="widget-chip widget-chip-btn" onclick="navigateTo('projects')">Open &#8599;</button>
+          </div>
+          <div id="homeProjects" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+        </section>
       </div>
-
-      <!-- Today's plan -->
-      <section class="widget dash-span7">
-        <div class="widget-head">
-          <span class="widget-title">Today's Plan</span>
-          <button class="widget-chip widget-chip-btn" onclick="navigateTo('plan')">Plan my day &#8599;</button>
-        </div>
-        <div id="homePlanContent" class="widget-list"><p style="color:var(--text2)">Loading...</p></div>
-      </section>
-
-      <!-- Up next assignments -->
-      <section class="widget dash-span5">
-        <div class="widget-head">
-          <span class="widget-title">Up Next</span>
-          <button class="widget-chip widget-chip-btn" onclick="navigateTo('assignments')">All &#8599;</button>
-        </div>
-        <div id="dashUpNext" class="widget-list"><div class="widget-empty">Loading&hellip;</div></div>
-      </section>
-
-      <!-- Weekly insight -->
-      <section class="widget dash-span12 home-insight-section collapsed" id="homeWeeklyInsightSection">
-        <div class="home-insight-header" onclick="toggleWeeklyInsight()">
-          <span>Weekly Insight</span>
-          <button class="insight-regen-btn" onclick="event.stopPropagation(); regenerateWeeklyInsight()" title="Regenerate">↻</button>
-          <span class="chev">▾</span>
-        </div>
-        <div class="home-insight-body" id="homeWeeklyInsightContent">
-          <p style="color:var(--text2)">Loading...</p>
-        </div>
-      </section>
-
-      <!-- Morning briefing (outlook cards) -->
-      <section class="dash-span12">
-        <div class="dash-section-label">Morning Briefing</div>
-        <div id="homeOutlookContent"><p style="color:var(--text2)">Loading...</p></div>
-      </section>
-
     </div>
   </div>
 
@@ -3771,47 +3927,197 @@ margin: 8px 2px 10px;
   </div>
 </div>
 
-<div class="page" id="page-plan">
-  <div class="sidebar-header">Plan My Day</div>
-  <div class="sidebar-section">
-    <div id="planSection" class="section-content">
-      <div id="planContent"></div>
-      <div style="display: flex; gap: 8px; margin-top: 10px;">
-        <button id="generatePlanBtn" class="btn-accent" onclick="generatePlan()" style="flex: 1; font-size: 12px;">Generate</button>
-        <button class="btn-ghost" onclick="deletePlan()" style="flex: 1; font-size: 12px;">Clear</button>
+<!-- ── School Dashboard ── -->
+<div class="page dash-fit" id="page-school">
+  <div class="dashx">
+    <div class="dashx-head">
+      <div>
+        <span class="dash-eyebrow">School</span>
+        <h1 class="dashx-greeting">Academics</h1>
+      </div>
+      <div class="dash-sub">Assignments, school tasks, and club work — nothing else.</div>
+    </div>
+
+    <div class="dashx-tiles dashx-tiles-4">
+      <section class="tile tile-accent" onclick="navigateTo('assignments')">
+        <div class="tile-label">Assignments Due</div>
+        <div class="tile-num" id="schoolStatDue">&ndash;</div>
+        <div class="tile-meta" id="schoolStatDueMeta"></div>
+      </section>
+      <section class="tile" onclick="navigateTo('assignments')">
+        <div class="tile-label">Overdue</div>
+        <div class="tile-num" id="schoolStatOverdue">&ndash;</div>
+        <div class="tile-meta" id="schoolStatOverdueMeta"></div>
+      </section>
+      <section class="tile" onclick="navigateTo('tasks')">
+        <div class="tile-label">School Tasks</div>
+        <div class="tile-num" id="schoolStatTasks">&ndash;</div>
+        <div class="tile-meta" id="schoolStatTasksMeta"></div>
+      </section>
+      <section class="tile" onclick="navigateTo('tasks')">
+        <div class="tile-label">Club Tasks</div>
+        <div class="tile-num" id="schoolStatClub">&ndash;</div>
+        <div class="tile-meta" id="schoolStatClubMeta"></div>
+      </section>
+    </div>
+
+    <div class="dashx-main">
+      <section class="widget dashx-span5">
+        <div class="widget-head">
+          <span class="widget-title">Active Assignments</span>
+          <button class="widget-chip widget-chip-btn" onclick="navigateTo('assignments')">All &#8599;</button>
+        </div>
+        <div id="schoolAssignments" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+      </section>
+
+      <section class="widget dashx-span4">
+        <div class="widget-head">
+          <span class="widget-title">School Tasks</span>
+          <button class="widget-chip widget-chip-btn" onclick="openAddTaskModal()">+ Add</button>
+        </div>
+        <div id="schoolTasks" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+      </section>
+
+      <div class="dashx-stack dashx-span3">
+        <section class="widget">
+          <div class="widget-head"><span class="widget-title">Club &amp; Org Tasks</span></div>
+          <div id="schoolClubTasks" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+        </section>
+        <section class="widget">
+          <div class="widget-head"><span class="widget-title">School Calendar</span></div>
+          <div id="schoolCalendar" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+        </section>
       </div>
     </div>
   </div>
-  <span id="planNeedsUpdate" class="notification-dot" style="display:none;"></span>
 </div>
 
-<div class="page" id="page-projects">
-  <div class="sidebar-header" style="display: flex; justify-content: space-between; align-items: center;">
-    <span>Projects</span>
-    <button class="add-btn" onclick="openAddProjectModal()" title="Add new project">+</button>
+<!-- ── Health & Fitness Dashboard ── -->
+<div class="page dash-fit" id="page-health">
+  <div class="dashx">
+    <div class="dashx-head">
+      <div>
+        <span class="dash-eyebrow">Health &amp; Fitness</span>
+        <h1 class="dashx-greeting">Training</h1>
+      </div>
+      <div class="dash-sub" id="healthSub">WHOOP metrics, workouts, records, and planning.</div>
+    </div>
+
+    <div class="dashx-tiles dashx-tiles-4">
+      <section class="tile tile-accent">
+        <div class="tile-label">Recovery</div>
+        <div class="tile-num" id="healthStatRecovery">&ndash;</div>
+        <div class="tile-meta" id="healthStatRecoveryMeta"></div>
+      </section>
+      <section class="tile">
+        <div class="tile-label">Strain</div>
+        <div class="tile-num" id="healthStatStrain">&ndash;</div>
+        <div class="tile-meta" id="healthStatStrainMeta"></div>
+      </section>
+      <section class="tile">
+        <div class="tile-label">Sleep</div>
+        <div class="tile-num" id="healthStatSleep">&ndash;</div>
+        <div class="tile-meta" id="healthStatSleepMeta"></div>
+      </section>
+      <section class="tile">
+        <div class="tile-label">Heart Rate</div>
+        <div class="tile-num" id="healthStatHR">&ndash;</div>
+        <div class="tile-meta" id="healthStatHRMeta"></div>
+      </section>
+    </div>
+
+    <div class="dashx-main">
+      <div class="dashx-stack dashx-span4">
+        <section class="widget">
+          <div class="widget-head">
+            <span class="widget-title">Recent Heart Rate</span>
+            <span class="widget-chip" id="healthHRChip">&ndash;</span>
+          </div>
+          <div class="dash-chart" id="healthHRChart" style="min-height:90px;"><div class="widget-empty">Loading&hellip;</div></div>
+        </section>
+        <section class="widget">
+          <div class="widget-head"><span class="widget-title">Personal Records</span></div>
+          <div id="healthPRs" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+        </section>
+      </div>
+
+      <section class="widget dashx-span4">
+        <div class="widget-head">
+          <span class="widget-title">Recent Workouts</span>
+          <span class="widget-chip" id="healthWorkoutsChip">&ndash;</span>
+        </div>
+        <div id="healthWorkouts" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+      </section>
+
+      <section class="widget dashx-span4">
+        <div class="widget-head"><span class="widget-title">Workout Planner</span></div>
+        <form id="workoutPlanForm" class="planner-form" onsubmit="return submitPlannedWorkout(event)">
+          <input type="text" id="plannerTitle" class="field" placeholder="Plan a workout — e.g. Tempo run" required>
+          <div class="planner-row">
+            <select id="plannerSport" class="field">
+              <option value="running">Running</option>
+              <option value="swimming">Swimming</option>
+              <option value="cycling">Cycling</option>
+              <option value="weightlifting">Weightlifting</option>
+              <option value="other">Other</option>
+            </select>
+            <input type="date" id="plannerDate" class="field">
+            <input type="number" id="plannerDuration" class="field" min="5" max="600" value="45" title="Duration (minutes)">
+          </div>
+          <button type="submit" class="btn-accent" style="width:100%;font-size:12px;">Add to Plan</button>
+        </form>
+        <div id="healthPlanned" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+      </section>
+    </div>
   </div>
-  <div class="kanban-board" id="kanbanBoard">
-    <section class="kanban-column" data-status="active">
-      <div class="kanban-column-header">
-        <span>Active</span>
-        <span class="kanban-count" id="kanbanCountActive">0</span>
+</div>
+
+<!-- ── Current Projects Dashboard ── -->
+<div class="page dash-fit" id="page-projects">
+  <div class="dashx">
+    <div class="dashx-head">
+      <div>
+        <span class="dash-eyebrow">Projects</span>
+        <h1 class="dashx-greeting">Current Projects</h1>
       </div>
-      <div class="kanban-column-body" id="kanbanColActive" data-status="active"></div>
-    </section>
-    <section class="kanban-column" data-status="paused">
-      <div class="kanban-column-header">
-        <span>Paused</span>
-        <span class="kanban-count" id="kanbanCountPaused">0</span>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div class="dash-sub">Every active project with its granular action items.</div>
+        <button class="add-btn" onclick="openAddProjectModal()" title="Add new project">+</button>
       </div>
-      <div class="kanban-column-body" id="kanbanColPaused" data-status="paused"></div>
-    </section>
-    <section class="kanban-column" data-status="done">
-      <div class="kanban-column-header">
-        <span>Done</span>
-        <span class="kanban-count" id="kanbanCountDone">0</span>
+    </div>
+
+    <div class="dashx-tiles dashx-tiles-4">
+      <section class="tile tile-accent">
+        <div class="tile-label">Active</div>
+        <div class="tile-num" id="projStatActive">&ndash;</div>
+        <div class="tile-meta" id="projStatActiveMeta"></div>
+      </section>
+      <section class="tile">
+        <div class="tile-label">Open Action Items</div>
+        <div class="tile-num" id="projStatTasks">&ndash;</div>
+        <div class="tile-meta" id="projStatTasksMeta"></div>
+      </section>
+      <section class="tile">
+        <div class="tile-label">Paused</div>
+        <div class="tile-num" id="projStatPaused">&ndash;</div>
+        <div class="tile-meta"></div>
+      </section>
+      <section class="tile">
+        <div class="tile-label">Done</div>
+        <div class="tile-num" id="projStatDone">&ndash;</div>
+        <div class="tile-meta"></div>
+      </section>
+    </div>
+
+    <div class="dashx-main">
+      <div class="dashx-span9 projects-grid-wrap">
+        <div class="projects-grid" id="projectsGrid"><div class="widget-empty">Loading&hellip;</div></div>
       </div>
-      <div class="kanban-column-body" id="kanbanColDone" data-status="done"></div>
-    </section>
+      <section class="widget dashx-span3">
+        <div class="widget-head"><span class="widget-title">Deadlines &amp; Milestones</span></div>
+        <div id="projectsCalendar" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+      </section>
+    </div>
   </div>
 </div>
 
@@ -3963,10 +4269,11 @@ async function fetchPlanMyDay(force) {
 
 var NAV_PAGE_META = {
   home:        { label: 'Home',        icon: '⌂' },
+  school:      { label: 'School',      icon: '📋' },
+  health:      { label: 'Health',      icon: '❤' },
   tasks:       { label: 'Tasks',       icon: '✓' },
   assignments: { label: 'Assignments', icon: '📋' },
   chat:        { label: 'Chat',        icon: '💬' },
-  plan:        { label: 'Plan',        icon: '🎯' },
   projects:    { label: 'Projects',    icon: '📦' }
 };
 
@@ -4015,13 +4322,17 @@ function navigateTo(pageName) {
   var btn = document.querySelector('.circle-btn[data-page="' + pageName + '"]');
   if (btn) btn.classList.add('active');
   updateNavMenuLabel(pageName);
+  // Home fits above the fold in school mode; summer mode keeps its scroll layout
+  var homePage = document.getElementById('page-home');
+  if (homePage) homePage.classList.toggle('dash-fit', _currentAppMode !== 'summer');
   if (pageName === 'home') {
     if (_currentAppMode === 'summer') refreshSummerHome(); else loadHomePage();
   }
+  else if (pageName === 'school') loadSchoolPage().catch(function(e) { console.error('School dashboard load failed:', e); });
+  else if (pageName === 'health') loadHealthPage().catch(function(e) { console.error('Health dashboard load failed:', e); });
   else if (pageName === 'tasks') loadSidebarData();
   else if (pageName === 'assignments') loadAssignments();
-  else if (pageName === 'plan') loadDailyPlan();
-  else if (pageName === 'projects') loadProjects();
+  else if (pageName === 'projects') loadProjectsPage().catch(function(e) { console.error('Projects dashboard load failed:', e); });
   else if (pageName === 'summer-bucket') loadBucketList();
   else if (pageName === 'chat') {
     var msgs = document.getElementById('chatMessages');
@@ -4088,10 +4399,6 @@ async function fetchAndShowWeeklyInsight(opts) {
   }
 }
 
-function loadDailyPlan() {
-  loadSidebarData();
-}
-
 function updateTopNavDate() {
   var el = document.getElementById('topNavDate');
   if (!el) return;
@@ -4099,117 +4406,43 @@ function updateTopNavDate() {
   el.textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'numeric', day: 'numeric', year: 'numeric' });
 }
 
-function toggleWeeklyInsight() {
-  var sec = document.getElementById('homeWeeklyInsightSection');
-  if (sec) sec.classList.toggle('collapsed');
-}
-
-async function regenerateWeeklyInsight() {
-  var wkBody = document.getElementById('homeWeeklyInsightContent');
-  var wkSection = document.getElementById('homeWeeklyInsightSection');
-  if (!wkBody) return;
-  if (wkSection) wkSection.classList.remove('collapsed');
-  wkBody.innerHTML = '<p style="color:var(--text2)">Generating insight…</p>';
-  try {
-    const resp = await fetch('/api/insight/weekly/generate', { method: 'POST' });
-    const data = await resp.json();
-    if (!data || !data.content) throw new Error('empty');
-    wkBody.innerHTML = '<div class="message-bubble" style="border-left:3px solid var(--purple);">' + formatMessage(data.content) + '</div>';
-  } catch (e) {
-    wkBody.innerHTML = '<p style="color:var(--text2)">Could not generate weekly insight.</p>';
-  }
-}
-
 function loadHomePage() {
   updateTopNavDate();
   loadDashboard().catch(function(e) { console.error('Dashboard load failed:', e); });
-
-  var wkSection = document.getElementById('homeWeeklyInsightSection');
-  var wkBody    = document.getElementById('homeWeeklyInsightContent');
-  if (wkSection && wkBody) {
-    var isSunday = new Date().getDay() === 0;
-    if (isSunday) wkSection.classList.remove('collapsed');
-    else          wkSection.classList.add('collapsed');
-
-    fetch('/api/insight/weekly').then(function(r){ return r.json(); }).then(function(data) {
-      if (!data || !data.content) {
-        wkBody.innerHTML = '<p style="color:var(--text2)">No weekly insight yet. Click ↻ to generate one.</p>';
-        return;
-      }
-      if (new Date(data.generated_at) < _lastSundayMidnight()) {
-        wkBody.innerHTML = '<p style="color:var(--text2)">No insight for this week yet. Click ↻ to generate one.</p>';
-        return;
-      }
-      wkBody.innerHTML = '<div class="message-bubble" style="border-left:3px solid var(--purple);">' + formatMessage(data.content) + '</div>';
-    }).catch(function() {
-      wkBody.innerHTML = '<p style="color:var(--text2)">Could not load weekly insight.</p>';
-    });
-  }
-
-  var outlookEl = document.getElementById('homeOutlookContent');
-  if (outlookEl) {
-    outlookEl.innerHTML = '<p style="color:var(--text2)">Loading outlook...</p>';
-    fetch('/api/daily-outlook', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      _lastOutlook = data;
-      outlookEl.innerHTML = buildOutlookGridHTML(data);
-    })
-    .catch(function() {
-      outlookEl.innerHTML = '<p style="color:var(--text2)">Could not load outlook.</p>';
-    });
-  }
-
-  var planEl = document.getElementById('homePlanContent');
-  if (planEl) {
-    planEl.innerHTML = '<p style="color:var(--text2)">Loading plan...</p>';
-    fetchPlanMyDay()
-    .then(function(data) {
-      if (!data.items || data.items.length === 0) {
-        planEl.innerHTML = '<p style="color:var(--text2)">No plan yet. Go to the Plan page to generate one.</p>';
-        return;
-      }
-      var typeIcon  = { assignment: '📝', task: '✓', calendar: '📅', free_time: '⏱' };
-      var typeLabel = { assignment: 'Assignment', task: 'Task', calendar: 'Event', free_time: 'Free Time' };
-      planEl.innerHTML = data.items.map(function(item, idx) {
-        var start = to12Hour(item.scheduled_start_time) || '';
-        var end   = to12Hour(item.scheduled_end_time) || '';
-        var icon  = typeIcon[item.item_type] || '•';
-        var label = typeLabel[item.item_type] || item.item_type;
-        var metaParts = [label];
-        if (item.estimated_minutes) metaParts.push(item.estimated_minutes + ' min');
-        var meta = metaParts.join(' · ');
-        return '<div class="plan-chat-card" data-type="' + item.item_type + '" data-home-idx="' + idx + '">'
-          +    '<div class="plan-chat-time">' + start + '<br>' + end + '</div>'
-          +    '<div style="flex:1;min-width:0;">'
-          +      '<div class="plan-chat-title">' + icon + ' ' + escapeHtml(item.item_title || '') + '</div>'
-          +      '<div class="plan-chat-meta">' + meta + '</div>'
-          +    '</div>'
-          +    '<button onclick="event.stopPropagation(); deletePlanItem(' + item.id + ')" title="Remove from plan" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:4px 6px;flex-shrink:0;">✕</button>'
-          + '</div>';
-      }).join('');
-      currentPlanItems = data.items;
-      planEl.querySelectorAll('.plan-chat-card').forEach(function(card) {
-        card.addEventListener('click', function(e) {
-          if (e.target.tagName === 'BUTTON') return;
-          var idx = parseInt(card.dataset.homeIdx, 10);
-          showPlanItemDetail(idx);
-        });
-      });
-    })
-    .catch(function() {
-      planEl.innerHTML = '<p style="color:var(--text2)">Could not load plan.</p>';
-    });
-  }
 }
 
 // ── Dashboard widgets ─────────────────────────────────────────────────────────
 
 let _dashData = null;
+
+// Category chips produced by the backend routing engine
+const CAT_META = {
+  school:   { label: 'School',   cls: 'cat-school' },
+  health:   { label: 'Health',   cls: 'cat-health' },
+  projects: { label: 'Projects', cls: 'cat-projects' },
+  general:  { label: 'General',  cls: 'cat-general' }
+};
+function catChip(cat) {
+  const m = CAT_META[cat] || CAT_META.general;
+  return '<span class="cat-chip ' + m.cls + '">' + m.label + '</span>';
+}
+
+// Shared fetch layer for all dashboards: coalesces identical GETs for 60s so
+// switching between Home/School/Health/Projects doesn't refetch everything.
+let _dashFetch = {};
+function dashGet(url, ttl) {
+  ttl = ttl || 60000;
+  const e = _dashFetch[url];
+  if (e && Date.now() - e.ts < ttl) return e.promise;
+  const p = fetchWithTimeout(url, {}, 15000).then(r => {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  });
+  _dashFetch[url] = { ts: Date.now(), promise: p };
+  p.catch(() => { delete _dashFetch[url]; });
+  return p;
+}
+function bustDashCache() { _dashFetch = {}; }
 
 function _parseDue(d) {
   if (!d) return null;
@@ -4222,32 +4455,45 @@ function _sameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
+// Shared snapshot used by the Home and School dashboards
+async function _loadCoreData() {
+  const [aR, tR, pR, wR, cR] = await Promise.allSettled([
+    dashGet('/api/assignments'),
+    dashGet('/api/tasks'),
+    dashGet('/api/projects'),
+    dashGet('/api/whoop/summary'),
+    dashGet('/api/calendar?days=14')
+  ]);
+  _dashData = {
+    assignments: aR.status === 'fulfilled' ? (aR.value.assignments || []) : [],
+    tasks:       tR.status === 'fulfilled' ? (tR.value.tasks || []) : [],
+    projects:    pR.status === 'fulfilled' ? (pR.value.projects || []) : [],
+    whoop:       wR.status === 'fulfilled' ? wR.value : null,
+    calendar:    cR.status === 'fulfilled' ? (cR.value.events || []) : []
+  };
+  return _dashData;
+}
+
 async function loadDashboard() {
   const greet = document.getElementById('dashGreeting');
   if (greet) {
     const h = new Date().getHours();
     greet.textContent = h < 5 ? 'Burning the midnight oil' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
   }
-  const [aR, tR, pR, wR] = await Promise.allSettled([
-    fetchWithTimeout('/api/assignments', {}, 15000).then(r => r.json()),
-    fetchWithTimeout('/api/tasks', {}, 15000).then(r => r.json()),
-    fetchWithTimeout('/api/projects', {}, 15000).then(r => r.json()),
-    fetchWithTimeout('/api/whoop/summary', {}, 15000).then(r => r.json())
-  ]);
-  _dashData = {
-    assignments: aR.status === 'fulfilled' ? (aR.value.assignments || []) : [],
-    tasks:       tR.status === 'fulfilled' ? (tR.value.tasks || []) : [],
-    projects:    pR.status === 'fulfilled' ? (pR.value.projects || []) : []
-  };
-  renderDashboard();
-  _dashWhoopData = wR.status === 'fulfilled' ? wR.value : null;
-  renderWhoopWidget(_dashWhoopData);
+  await _loadCoreData();
+  renderHomeDash();
 }
-let _dashWhoopData = null;
 
-function renderDashboard() {
+const _setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+
+function _todayISO() {
+  const n = new Date();
+  return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+}
+
+function renderHomeDash() {
   if (!_dashData) return;
-  const { assignments, tasks, projects } = _dashData;
+  const { assignments, tasks, projects, whoop, calendar } = _dashData;
   const now = new Date();
 
   const items = [];
@@ -4263,134 +4509,215 @@ function renderDashboard() {
   const dueToday     = items.filter(i => i.due && _sameDay(i.due, now));
   const dueTodayOpen = dueToday.filter(i => !i.done);
   const doneToday    = dueToday.filter(i => i.done);
-  const weekEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 7, 23, 59, 59);
-  const weekOpen = items.filter(i => !i.done && i.due && i.due >= now && i.due <= weekEnd);
-  const overdue  = items.filter(i => !i.done && i.due && i.due < now && !_sameDay(i.due, now));
+  const overdue      = items.filter(i => !i.done && i.due && i.due < now && !_sameDay(i.due, now));
 
-  // Hero
-  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('dashDueToday', dueTodayOpen.length);
-  set('dashDueTodaySub', dueTodayOpen.length === 0
-    ? (doneToday.length ? 'All done for today — nice work.' : 'Nothing due today.')
+  // Tile row
+  _setText('dashDueToday', dueTodayOpen.length);
+  _setText('dashDueTodaySub', dueTodayOpen.length === 0
+    ? (doneToday.length ? 'all done — nice work' : 'nothing due')
     : (dueTodayOpen.filter(i => i.kind === 'assignment').length + ' assignments · '
        + dueTodayOpen.filter(i => i.kind === 'task').length + ' tasks'));
-  const chipsEl = document.getElementById('dashHeroChips');
-  if (chipsEl) {
-    const chips = ['<span class="hero-chip">' + weekOpen.length + ' this week</span>'];
-    if (doneToday.length) chips.push('<span class="hero-chip">✓ ' + doneToday.length + ' done today</span>');
-    if (overdue.length)   chips.push('<span class="hero-chip">⚠ ' + overdue.length + ' overdue</span>');
-    chipsEl.innerHTML = chips.join('');
-  }
 
-  // Stat tiles
+  const todayISO = _todayISO();
+  const eventsToday = calendar.filter(e => (e.date || (e.start_iso || '').slice(0, 10)) === todayISO);
+  _setText('dashEventsToday', eventsToday.length);
+  _setText('dashEventsTodayMeta', eventsToday.length ? 'across all calendars' : 'clear schedule');
+
   const openTasks = tasks.filter(t => !t.completed);
   const urgent = openTasks.filter(t => ['critical', 'high'].includes(t.urgency)).length;
-  set('dashStatTasks', openTasks.length);
-  set('dashStatTasksMeta', urgent ? urgent + ' high priority' : 'nothing urgent');
-  set('dashStatOverdue', overdue.length);
-  set('dashStatOverdueMeta', overdue.length
-    ? overdue.filter(i => i.kind === 'assignment').length + ' assignments · ' + overdue.filter(i => i.kind === 'task').length + ' tasks'
-    : 'all caught up');
+  _setText('dashStatTasks', openTasks.length);
+  _setText('dashStatTasksMeta', urgent ? urgent + ' high priority' : 'nothing urgent');
+  _setText('dashStatOverdue', overdue.length);
+  _setText('dashStatOverdueMeta', overdue.length ? 'needs attention' : 'all caught up');
+
   const activeProjects = projects.filter(p => p.status === 'active');
   const needCheckin = activeProjects.filter(p => p.needs_checkin).length;
-  set('dashStatProjects', activeProjects.length);
-  set('dashStatProjectsMeta', needCheckin ? needCheckin + ' need a check-in' : 'all on track');
+  _setText('dashStatProjects', activeProjects.length);
+  _setText('dashStatProjectsMeta', needCheckin ? needCheckin + ' need a check-in' : 'all on track');
 
-  // Workload chart: open items due per day, next 7 days
-  const days = [];
-  for (let d = 0; d < 7; d++) {
-    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + d);
-    const count = items.filter(i => !i.done && i.due && _sameDay(i.due, date)).length;
-    days.push({ date, count, label: d === 0 ? 'Today' : date.toLocaleDateString('en-US', { weekday: 'short' }) });
+  const latestWhoop = whoop && whoop.connected && (whoop.days || [])[0];
+  _setText('dashStatRecovery', latestWhoop && latestWhoop.recovery_score != null ? latestWhoop.recovery_score + '%' : '–');
+  _setText('dashStatRecoveryMeta', latestWhoop
+    ? (latestWhoop.sleep_hours != null ? latestWhoop.sleep_hours + 'h sleep' : 'synced')
+    : 'open Health for more');
+
+  // Master agenda: EVERY calendar item for the next 7 days, with its routed category
+  _renderHomeAgenda(calendar);
+
+  // Upcoming tasks (all categories — this is the master view)
+  const taskWrap = document.getElementById('homeTasks');
+  if (taskWrap) {
+    const upcoming = openTasks.slice().sort((a, b) => {
+      const ad = a.due_date || '9999', bd = b.due_date || '9999';
+      if (ad !== bd) return ad < bd ? -1 : 1;
+      const u = { critical: 0, high: 1, medium: 2, low: 3 };
+      return (u[a.urgency] || 3) - (u[b.urgency] || 3);
+    }).slice(0, 20);
+    taskWrap.innerHTML = upcoming.length ? upcoming.map(t => {
+      const due = _parseDue(t.due_date);
+      const rel = due ? _dashRelDue(due, now) : { text: '', cls: '' };
+      return '<div class="upnext-row" onclick="navigateTo(\'tasks\')">'
+        + '<span class="priority-dot priority-' + (['critical','high','medium','low'].includes(t.urgency) ? t.urgency : 'low') + '"></span>'
+        + '<div class="upnext-main"><div class="upnext-title">' + escapeHtml(t.title || '') + '</div></div>'
+        + (t.source === 'project_task' ? catChip('projects') : catChip(t.category === 'club' ? 'school' : t.category))
+        + '<span class="upnext-due ' + rel.cls + '">' + rel.text + '</span>'
+        + '</div>';
+    }).join('') : '<div class="widget-empty">No open tasks. Enjoy the quiet.</div>';
   }
-  set('dashWorkloadTotal', days.reduce((s, d) => s + d.count, 0) + ' due');
-  _renderWorkloadChart(days);
 
-  // Gauge: share of today's items completed
-  _renderGauge(doneToday.length, dueToday.length);
-
-  // Up next: soonest open items
-  _renderUpNext(items.filter(i => !i.done && i.due).sort((a, b) => a.due - b.due).slice(0, 6), now);
-}
-
-function _renderWorkloadChart(days) {
-  const wrap = document.getElementById('dashWorkloadChart');
-  if (!wrap) return;
-  const W = Math.max(wrap.clientWidth || 0, 260);
-  const H = Math.max(wrap.clientHeight || 0, 165);
-  const padX = 6, labelH = 22, topPad = 18;
-  const plotH = H - labelH - topPad;
-  const n = days.length;
-  const slot = (W - padX * 2) / n;
-  const barW = Math.min(34, slot - 8);
-  const maxV = Math.max(4, Math.max.apply(null, days.map(d => d.count)));
-  const maxCount = Math.max.apply(null, days.map(d => d.count));
-
-  let svg = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Open items due per day, next 7 days">';
-  svg += '<line x1="' + padX + '" y1="' + (topPad + plotH) + '" x2="' + (W - padX) + '" y2="' + (topPad + plotH) + '" stroke="var(--border2)" stroke-width="1"/>';
-  days.forEach((d, i) => {
-    const cx = padX + slot * i + slot / 2;
-    const x = cx - barW / 2;
-    const h = d.count === 0 ? 3 : Math.max(6, (d.count / maxV) * plotH);
-    const y = topPad + plotH - h;
-    const fill = d.count === 0 ? 'var(--surface3)' : 'var(--accent)';
-    const r = Math.min(4, barW / 2, h);
-    svg += '<path d="M' + x + ',' + (topPad + plotH)
-        + ' L' + x + ',' + (y + r)
-        + ' Q' + x + ',' + y + ' ' + (x + r) + ',' + y
-        + ' L' + (x + barW - r) + ',' + y
-        + ' Q' + (x + barW) + ',' + y + ' ' + (x + barW) + ',' + (y + r)
-        + ' L' + (x + barW) + ',' + (topPad + plotH) + ' Z" fill="' + fill + '"/>';
-    // selective direct labels: today and the max day only
-    if (d.count > 0 && (i === 0 || (d.count === maxCount && maxCount > 0))) {
-      svg += '<text x="' + cx + '" y="' + (y - 6) + '" text-anchor="middle" font-size="10.5" font-weight="600" fill="var(--text2)" font-family="Space Grotesk, sans-serif">' + d.count + '</text>';
+  // Health snapshot
+  const healthWrap = document.getElementById('homeHealth');
+  if (healthWrap) {
+    if (latestWhoop) {
+      const rows = [];
+      if (latestWhoop.recovery_score != null) rows.push(['Recovery', latestWhoop.recovery_score + '%', _whoopBandColor(latestWhoop.recovery_score)]);
+      if (latestWhoop.strain != null) rows.push(['Strain', latestWhoop.strain.toFixed(1), 'var(--blue)']);
+      if (latestWhoop.sleep_hours != null) rows.push(['Sleep', latestWhoop.sleep_hours + 'h', 'var(--purple)']);
+      if (latestWhoop.rhr != null) rows.push(['Resting HR', latestWhoop.rhr + ' bpm', 'var(--text2)']);
+      healthWrap.innerHTML = rows.map(r =>
+        '<div class="upnext-row" style="cursor:default;">'
+        + '<span class="upnext-dot" style="background:' + r[2] + ';color:' + r[2] + ';"></span>'
+        + '<div class="upnext-main"><div class="upnext-title">' + r[0] + '</div></div>'
+        + '<span class="upnext-due">' + r[1] + '</span></div>').join('');
+    } else {
+      healthWrap.innerHTML = '<div class="widget-empty">WHOOP not connected.<br>Sample pipeline active on the Health page.</div>';
     }
-    svg += '<text x="' + cx + '" y="' + (H - 6) + '" text-anchor="middle" font-size="10" fill="' + (i === 0 ? 'var(--accent)' : 'var(--text3)') + '" font-weight="' + (i === 0 ? '600' : '400') + '" font-family="Space Grotesk, sans-serif">' + d.label + '</text>';
-    // hover hit target (wider than the bar)
-    svg += '<rect data-di="' + i + '" x="' + (padX + slot * i) + '" y="0" width="' + slot + '" height="' + H + '" fill="transparent"/>';
-  });
-  svg += '</svg>';
-  wrap.innerHTML = svg + '<div class="chart-tip" id="dashChartTip"></div>';
+  }
 
-  const tip = document.getElementById('dashChartTip');
-  wrap.querySelectorAll('rect[data-di]').forEach(rect => {
-    rect.addEventListener('mouseenter', () => {
-      const d = days[parseInt(rect.dataset.di, 10)];
-      const dateStr = d.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-      tip.textContent = dateStr + ' · ' + d.count + ' due';
-      const cx = padX + slot * parseInt(rect.dataset.di, 10) + slot / 2;
-      const h = d.count === 0 ? 3 : Math.max(6, (d.count / maxV) * plotH);
-      tip.style.left = cx + 'px';
-      tip.style.top = (topPad + plotH - h) + 'px';
-      tip.style.opacity = '1';
-    });
-    rect.addEventListener('mouseleave', () => { tip.style.opacity = '0'; });
-  });
+  // Project statuses
+  const projWrap = document.getElementById('homeProjects');
+  if (projWrap) {
+    const list = projects.filter(p => p.status !== 'done').slice(0, 6);
+    projWrap.innerHTML = list.length ? list.map(p =>
+      '<div class="upnext-row" onclick="navigateTo(\'projects\')">'
+      + '<span class="upnext-dot" style="background:' + (p.status === 'active' ? 'var(--accent)' : 'var(--amber)') + ';"></span>'
+      + '<div class="upnext-main"><div class="upnext-title">' + escapeHtml(p.title || '') + '</div></div>'
+      + '<span class="upnext-due">' + (p.needs_checkin ? 'check-in' : p.status) + '</span></div>').join('')
+      : '<div class="widget-empty">No projects yet.</div>';
+  }
 }
 
-function _renderGauge(done, total) {
-  const wrap = document.getElementById('dashGauge');
-  if (!wrap) return;
-  const size = 150, cx = size / 2, cy = size / 2;
-  const segs = 22, sweep = 260, startAngle = 140;
-  const r1 = 52, r2 = 66;
-  const pct = total > 0 ? done / total : 0;
-  const filled = Math.round(pct * segs);
-
-  let svg = '<svg width="' + size + '" height="' + size + '" role="img" aria-label="' + done + ' of ' + total + ' items due today completed">';
-  for (let i = 0; i < segs; i++) {
-    const a = (startAngle + (sweep / (segs - 1)) * i) * Math.PI / 180;
-    const x1 = cx + r1 * Math.cos(a), y1 = cy + r1 * Math.sin(a);
-    const x2 = cx + r2 * Math.cos(a), y2 = cy + r2 * Math.sin(a);
-    const on = total > 0 && i < filled;
-    svg += '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1) + '" y2="' + y2.toFixed(1)
-        + '" stroke="' + (on ? 'var(--accent)' : 'var(--surface3)') + '" stroke-width="6" stroke-linecap="round"/>';
+function _agendaTime(e) {
+  if (e.all_day) return 'all day';
+  const iso = e.start_iso || '';
+  if (iso.length > 10) {
+    const d = new Date(iso);
+    if (!isNaN(d.getTime())) return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   }
-  svg += '</svg>';
+  return e.start_display || '';
+}
 
-  const num = total === 0 ? '—' : Math.round(pct * 100) + '%';
-  const sub = total === 0 ? 'Nothing due today' : done + ' of ' + total + ' done today';
-  wrap.innerHTML = svg + '<div class="gauge-center"><div class="gauge-num">' + num + '</div><div class="gauge-sub">' + sub + '</div></div>';
+// Agenda rows grouped by day. Every single calendar item is shown — the
+// category chip tells you which sub-dashboard it also routes to.
+function _renderHomeAgenda(calendar) {
+  const wrap = document.getElementById('homeAgenda');
+  if (!wrap) return;
+  const todayISO = _todayISO();
+  const horizon = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const events = (calendar || []).filter(e => {
+    const d = e.date || (e.start_iso || '').slice(0, 10);
+    return d && d >= todayISO && d <= horizon;
+  });
+  if (!events.length) {
+    wrap.innerHTML = '<div class="widget-empty">Nothing on the calendar for the next 7 days.</div>';
+    return;
+  }
+  const byDay = {};
+  events.forEach(e => {
+    const d = e.date || (e.start_iso || '').slice(0, 10);
+    (byDay[d] = byDay[d] || []).push(e);
+  });
+  wrap.innerHTML = Object.keys(byDay).sort().map(d => {
+    const dt = new Date(d + 'T00:00:00');
+    const label = d === todayISO ? 'Today' : dt.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+    return '<div class="agenda-day">' + label + '</div>' + byDay[d].map(e =>
+      '<div class="agenda-row">'
+      + '<span class="agenda-time">' + escapeHtml(_agendaTime(e)) + '</span>'
+      + '<span class="agenda-title">' + escapeHtml(e.title || '') + '</span>'
+      + catChip(e.category)
+      + '</div>').join('');
+  }).join('');
+}
+
+// ── School dashboard ──────────────────────────────────────────────────────────
+
+async function loadSchoolPage() {
+  await _loadCoreData();
+  renderSchoolDash();
+}
+
+function renderSchoolDash() {
+  if (!_dashData) return;
+  const { assignments, tasks, calendar } = _dashData;
+  const now = new Date();
+
+  const open = assignments.filter(a => !a.done);
+  const overdue = open.filter(a => a.due_iso && new Date(a.due_iso) < now);
+  const dueToday = open.filter(a => a.due_iso && _sameDay(new Date(a.due_iso), now));
+
+  // School/club tasks come from the categorization engine (tasks.category)
+  const openTasks = tasks.filter(t => !t.completed && t.source !== 'project_task');
+  const schoolTasks = openTasks.filter(t => t.category === 'school');
+  const clubTasks = openTasks.filter(t => t.category === 'club');
+
+  _setText('schoolStatDue', open.length);
+  _setText('schoolStatDueMeta', dueToday.length ? dueToday.length + ' due today' : 'none due today');
+  _setText('schoolStatOverdue', overdue.length);
+  _setText('schoolStatOverdueMeta', overdue.length ? 'catch up soon' : 'all caught up');
+  _setText('schoolStatTasks', schoolTasks.length);
+  _setText('schoolStatTasksMeta', schoolTasks.filter(t => ['critical','high'].includes(t.urgency)).length + ' high priority');
+  _setText('schoolStatClub', clubTasks.length);
+  _setText('schoolStatClubMeta', clubTasks.length ? 'club & org work' : 'nothing pending');
+
+  const asgWrap = document.getElementById('schoolAssignments');
+  if (asgWrap) {
+    const sorted = open.slice().sort((a, b) => new Date(a.due_iso || '9999-12-31') - new Date(b.due_iso || '9999-12-31'));
+    asgWrap.innerHTML = sorted.length ? sorted.map(a => {
+      const due = a.due_iso ? new Date(a.due_iso) : null;
+      const rel = due ? _dashRelDue(due, now) : { text: '', cls: '' };
+      const cls = (a.class_name || 'Uncategorized').trim() || 'Uncategorized';
+      return '<div class="upnext-row" onclick="navigateTo(\'assignments\')">'
+        + '<span class="upnext-dot" style="background:' + classColor(cls) + ';"></span>'
+        + '<div class="upnext-main">'
+        +   '<div class="upnext-title">' + escapeHtml(a.title || '') + '</div>'
+        +   '<div class="upnext-meta">' + escapeHtml(cls) + '</div>'
+        + '</div>'
+        + '<span class="upnext-due ' + rel.cls + '">' + rel.text + '</span>'
+        + '</div>';
+    }).join('') : '<div class="widget-empty">No active assignments. 🎉</div>';
+  }
+
+  _renderSchoolTaskList('schoolTasks', schoolTasks, 'No school tasks. Add one with +.');
+  _renderSchoolTaskList('schoolClubTasks', clubTasks, 'No club or org tasks.');
+
+  const calWrap = document.getElementById('schoolCalendar');
+  if (calWrap) {
+    const todayISO = _todayISO();
+    const evs = calendar.filter(e => e.category === 'school' && (e.date || (e.start_iso || '').slice(0, 10)) >= todayISO).slice(0, 15);
+    calWrap.innerHTML = evs.length ? evs.map(e =>
+      '<div class="agenda-row">'
+      + '<span class="agenda-time">' + escapeHtml((e.date || '').slice(5).replace('-', '/')) + '</span>'
+      + '<span class="agenda-title">' + escapeHtml(e.title || '') + '</span>'
+      + '</div>').join('') : '<div class="widget-empty">No school events coming up.</div>';
+  }
+}
+
+function _renderSchoolTaskList(elId, list, emptyMsg) {
+  const wrap = document.getElementById(elId);
+  if (!wrap) return;
+  const now = new Date();
+  wrap.innerHTML = list.length ? list.map(t => {
+    const due = _parseDue(t.due_date);
+    const rel = due ? _dashRelDue(due, now) : { text: '', cls: '' };
+    return '<div class="upnext-row">'
+      + '<span class="priority-dot priority-' + (['critical','high','medium','low'].includes(t.urgency) ? t.urgency : 'low') + '"></span>'
+      + '<div class="upnext-main" style="cursor:pointer;" onclick="editTask(' + t.id + ')">'
+      +   '<div class="upnext-title">' + escapeHtml(t.title || '') + '</div>'
+      + '</div>'
+      + '<span class="upnext-due ' + rel.cls + '">' + rel.text + '</span>'
+      + '<button class="complete-btn" onclick="completeTask(event, ' + t.id + ')" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:14px;padding:2px 4px;" title="Mark as done">✓</button>'
+      + '</div>';
+  }).join('') : '<div class="widget-empty">' + emptyMsg + '</div>';
 }
 
 function _dashRelDue(due, now) {
@@ -4403,123 +4730,187 @@ function _dashRelDue(due, now) {
   return { text: due.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), cls: '' };
 }
 
-function _renderUpNext(list, now) {
-  const wrap = document.getElementById('dashUpNext');
-  if (!wrap) return;
-  if (!list.length) {
-    wrap.innerHTML = '<div class="widget-empty">Nothing coming up. Enjoy the quiet.</div>';
-    return;
-  }
-  wrap.innerHTML = list.map(i => {
-    const rel = _dashRelDue(i.due, now);
-    const color = i.kind === 'assignment' ? classColor((i.cls || 'Uncategorized')) : 'var(--blue)';
-    const meta = i.kind === 'assignment' ? (i.cls || 'Assignment') : 'Task';
-    const target = i.kind === 'assignment' ? 'assignments' : 'tasks';
-    return '<div class="upnext-row" onclick="navigateTo(\'' + target + '\')">'
-      + '<span class="upnext-dot" style="background:' + color + ';color:' + color + ';"></span>'
-      + '<div class="upnext-main">'
-      +   '<div class="upnext-title">' + escapeHtml(i.title) + '</div>'
-      +   '<div class="upnext-meta">' + escapeHtml(meta) + '</div>'
-      + '</div>'
-      + '<span class="upnext-due ' + rel.cls + '">' + rel.text + '</span>'
-      + '</div>';
-  }).join('');
-}
-
 function _whoopBandColor(score) {
   if (score == null) return 'var(--surface3)';
   return score >= 67 ? 'var(--accent)' : score >= 34 ? 'var(--amber)' : 'var(--red)';
 }
 
-function renderWhoopWidget(data) {
-  const section = document.getElementById('dashWhoopSection');
-  if (!section) return;
-  if (!data || !data.configured) {
-    section.style.display = 'none';
-    return;
-  }
-  section.style.display = '';
-  const totalEl = document.getElementById('dashWhoopTotal');
-  const chartEl = document.getElementById('dashWhoopChart');
-  const vitalsEl = document.getElementById('dashWhoopVitals');
-  if (!data.connected) {
-    if (totalEl) totalEl.textContent = 'Not connected';
-    if (chartEl) chartEl.innerHTML = '<div class="widget-empty">Connect WHOOP to see recovery trends here.</div>';
-    if (vitalsEl) vitalsEl.innerHTML = '<div class="widget-empty" style="padding:12px 8px;">'
-      + '<button class="btn-accent" onclick="location.href=\'/whoop-auth/start\'">Connect WHOOP</button></div>';
-    return;
-  }
-  const days = (data.days || []).slice().reverse(); // oldest -> newest for the chart
-  if (!days.length) {
-    if (totalEl) totalEl.textContent = 'No data yet';
-    if (chartEl) chartEl.innerHTML = '<div class="widget-empty">No WHOOP data synced yet.</div>';
-    if (vitalsEl) vitalsEl.innerHTML = '<div class="widget-empty">No data yet.</div>';
-    return;
-  }
-  const withScore = days.filter(d => d.recovery_score != null);
-  const avg = withScore.length ? Math.round(withScore.reduce((s, d) => s + d.recovery_score, 0) / withScore.length) : null;
-  if (totalEl) totalEl.textContent = avg != null ? avg + '% avg' : '–';
-  _renderWhoopChart(days);
-  _renderWhoopVitals(days[days.length - 1]);
+// ── Health & Fitness dashboard ────────────────────────────────────────────────
+
+let _healthData = null;
+
+async function loadHealthPage() {
+  const [sR, wR, hR, pR, plR] = await Promise.allSettled([
+    dashGet('/api/whoop/summary'),
+    dashGet('/api/whoop/workouts'),
+    dashGet('/api/whoop/heart-rate', 30000),
+    dashGet('/api/fitness/prs'),
+    dashGet('/api/fitness/planned-workouts', 15000)
+  ]);
+  _healthData = {
+    summary:  sR.status === 'fulfilled' ? sR.value : null,
+    workouts: wR.status === 'fulfilled' ? wR.value : null,
+    hr:       hR.status === 'fulfilled' ? hR.value : null,
+    prs:      pR.status === 'fulfilled' ? pR.value : null,
+    planned:  plR.status === 'fulfilled' ? (plR.value.planned || []) : []
+  };
+  renderHealthDash();
 }
 
-function _renderWhoopChart(days) {
-  const wrap = document.getElementById('dashWhoopChart');
-  if (!wrap) return;
-  const W = Math.max(wrap.clientWidth || 0, 260);
-  const H = Math.max(wrap.clientHeight || 0, 165);
-  const padX = 6, labelH = 22, topPad = 18;
-  const plotH = H - labelH - topPad;
-  const n = days.length;
-  const slot = (W - padX * 2) / n;
-  const barW = Math.min(34, slot - 8);
+function renderHealthDash() {
+  if (!_healthData) return;
+  const { summary, workouts, hr, prs, planned } = _healthData;
 
-  let svg = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="WHOOP recovery score, last 7 days">';
-  svg += '<line x1="' + padX + '" y1="' + (topPad + plotH) + '" x2="' + (W - padX) + '" y2="' + (topPad + plotH) + '" stroke="var(--border2)" stroke-width="1"/>';
-  days.forEach((d, i) => {
-    const score = d.recovery_score;
-    const cx = padX + slot * i + slot / 2;
-    const x = cx - barW / 2;
-    const h = score == null ? 3 : Math.max(6, (score / 100) * plotH);
-    const y = topPad + plotH - h;
-    const fill = _whoopBandColor(score);
-    const r = Math.min(4, barW / 2, h);
-    svg += '<path d="M' + x + ',' + (topPad + plotH)
-        + ' L' + x + ',' + (y + r)
-        + ' Q' + x + ',' + y + ' ' + (x + r) + ',' + y
-        + ' L' + (x + barW - r) + ',' + y
-        + ' Q' + (x + barW) + ',' + y + ' ' + (x + barW) + ',' + (y + r)
-        + ' L' + (x + barW) + ',' + (topPad + plotH) + ' Z" fill="' + fill + '"/>';
-    if (score != null) {
-      svg += '<text x="' + cx + '" y="' + (y - 6) + '" text-anchor="middle" font-size="10.5" font-weight="600" fill="var(--text2)" font-family="Space Grotesk, sans-serif">' + score + '</text>';
-    }
-    const dateObj = new Date(d.date + 'T00:00:00');
-    const label = dateObj.toLocaleDateString('en-US', { weekday: 'short' });
-    const isLast = i === days.length - 1;
-    svg += '<text x="' + cx + '" y="' + (H - 6) + '" text-anchor="middle" font-size="10" fill="' + (isLast ? 'var(--accent)' : 'var(--text3)') + '" font-weight="' + (isLast ? '600' : '400') + '" font-family="Space Grotesk, sans-serif">' + label + '</text>';
+  const day = summary && summary.connected && (summary.days || [])[0];
+  _setText('healthStatRecovery', day && day.recovery_score != null ? day.recovery_score + '%' : '–');
+  _setText('healthStatRecoveryMeta', day && day.hrv_ms != null ? 'HRV ' + Math.round(day.hrv_ms) + 'ms' : (day ? 'synced from WHOOP' : 'not connected'));
+  _setText('healthStatStrain', day && day.strain != null ? day.strain.toFixed(1) : '–');
+  _setText('healthStatStrainMeta', day ? 'today’s cardiovascular load' : 'not connected');
+  _setText('healthStatSleep', day && day.sleep_hours != null ? day.sleep_hours + 'h' : '–');
+  _setText('healthStatSleepMeta', day && day.sleep_performance != null ? day.sleep_performance + '% performance' : (day ? 'last night' : 'not connected'));
+  _setText('healthStatHR', hr && hr.current_bpm ? hr.current_bpm : '–');
+  _setText('healthStatHRMeta', hr ? (hr.source === 'mock' ? 'bpm · sample data' : 'bpm · recent') : '');
+
+  const sub = document.getElementById('healthSub');
+  if (sub && workouts) {
+    sub.textContent = workouts.mock
+      ? 'Sample data pipeline active — connect WHOOP in Settings to go live.'
+      : 'Live WHOOP data — metrics, workouts, records, and planning.';
+  }
+
+  if (hr) {
+    const chip = document.getElementById('healthHRChip');
+    if (chip) chip.textContent = hr.current_bpm + ' bpm now';
+    _renderHRSparkline(hr.samples || []);
+  }
+
+  const woWrap = document.getElementById('healthWorkouts');
+  if (woWrap && workouts) {
+    const list = (workouts.workouts || []).slice(0, 15);
+    const chip = document.getElementById('healthWorkoutsChip');
+    if (chip) chip.textContent = workouts.mock ? 'sample data' : 'from WHOOP';
+    woWrap.innerHTML = list.length ? list.map(w => {
+      const dist = w.distance_m ? (w.distance_m / 1609.34).toFixed(1) + ' mi' : '';
+      const meta = [w.duration_min ? w.duration_min + ' min' : '', dist,
+                    w.strain != null ? 'strain ' + Number(w.strain).toFixed(1) : '',
+                    w.avg_hr ? '❤ ' + w.avg_hr : ''].filter(Boolean).join(' · ');
+      const dt = w.date ? new Date(w.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
+      return '<div class="upnext-row" style="cursor:default;">'
+        + '<span class="upnext-dot" style="background:var(--red);"></span>'
+        + '<div class="upnext-main">'
+        +   '<div class="upnext-title">' + escapeHtml(w.sport || 'Workout') + '</div>'
+        +   '<div class="upnext-meta">' + escapeHtml(meta) + '</div>'
+        + '</div>'
+        + '<span class="upnext-due">' + escapeHtml(dt) + '</span>'
+        + '</div>';
+    }).join('') : '<div class="widget-empty">No workouts recorded yet.</div>';
+  }
+
+  const prWrap = document.getElementById('healthPRs');
+  if (prWrap && prs && prs.records) {
+    const order = ['longest_run', 'fastest_mile', 'longest_swim'];
+    const icons = { longest_run: '🏃', fastest_mile: '⚡', longest_swim: '🏊' };
+    prWrap.innerHTML = order.map(k => {
+      const r = prs.records[k] || {};
+      const when = r.achieved_on ? new Date(r.achieved_on + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+      return '<div class="upnext-row" style="cursor:default;">'
+        + '<span style="font-size:15px;flex-shrink:0;">' + icons[k] + '</span>'
+        + '<div class="upnext-main">'
+        +   '<div class="upnext-title">' + escapeHtml(r.label || k) + '</div>'
+        +   (when ? '<div class="upnext-meta">' + escapeHtml(when) + '</div>' : '')
+        + '</div>'
+        + '<span class="upnext-due" style="font-weight:700;color:var(--accent);">' + escapeHtml(r.value_display || '—') + '</span>'
+        + '</div>';
+    }).join('');
+  }
+
+  renderPlannedWorkouts(planned);
+}
+
+function _renderHRSparkline(samples) {
+  const wrap = document.getElementById('healthHRChart');
+  if (!wrap || !samples.length) return;
+  const W = Math.max(wrap.clientWidth || 0, 240);
+  const H = Math.max(wrap.clientHeight || 0, 90);
+  const pad = 8;
+  const vals = samples.map(s => s.bpm);
+  const min = Math.min.apply(null, vals) - 4, max = Math.max.apply(null, vals) + 4;
+  const pts = samples.map((s, i) => {
+    const x = pad + (W - pad * 2) * (i / (samples.length - 1));
+    const y = pad + (H - pad * 2) * (1 - (s.bpm - min) / (max - min));
+    return x.toFixed(1) + ',' + y.toFixed(1);
   });
-  svg += '</svg>';
-  wrap.innerHTML = svg;
+  const last = pts[pts.length - 1].split(',');
+  wrap.innerHTML = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Heart rate, last 30 minutes">'
+    + '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--red)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
+    + '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="3.5" fill="var(--red)"/>'
+    + '</svg>';
 }
 
-function _renderWhoopVitals(day) {
-  const wrap = document.getElementById('dashWhoopVitals');
+function renderPlannedWorkouts(planned) {
+  const wrap = document.getElementById('healthPlanned');
   if (!wrap) return;
-  if (!day) { wrap.innerHTML = '<div class="widget-empty">No data yet.</div>'; return; }
-  const rows = [];
-  if (day.recovery_score != null) rows.push(['Recovery', day.recovery_score + '%', _whoopBandColor(day.recovery_score)]);
-  if (day.sleep_hours != null) rows.push(['Sleep', day.sleep_hours + 'h' + (day.sleep_performance != null ? ' (' + day.sleep_performance + '%)' : ''), 'var(--blue)']);
-  if (day.strain != null) rows.push(['Strain', day.strain.toFixed(1), 'var(--blue)']);
-  if (day.hrv_ms != null) rows.push(['HRV', Math.round(day.hrv_ms) + 'ms', 'var(--text2)']);
-  if (day.rhr != null) rows.push(['Resting HR', day.rhr + ' bpm', 'var(--text2)']);
-  if (!rows.length) { wrap.innerHTML = '<div class="widget-empty">No data yet.</div>'; return; }
-  wrap.innerHTML = rows.map(function(r) {
-    return '<div class="upnext-row" style="cursor:default;">'
-      + '<span class="upnext-dot" style="background:' + r[2] + ';color:' + r[2] + ';"></span>'
-      + '<div class="upnext-main"><div class="upnext-title">' + r[0] + '</div></div>'
-      + '<span class="upnext-due">' + r[1] + '</span>'
+  const list = (planned || []).filter(p => !p.completed);
+  wrap.innerHTML = list.length ? list.map(p => {
+    const dt = new Date(p.planned_date + 'T00:00:00');
+    const when = dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+      + (p.planned_time ? ' · ' + p.planned_time : '');
+    return '<div class="upnext-row">'
+      + '<span class="ptask-check" onclick="completePlannedWorkout(' + p.id + ')" title="Mark done"></span>'
+      + '<div class="upnext-main">'
+      +   '<div class="upnext-title">' + escapeHtml(p.title) + '</div>'
+      +   '<div class="upnext-meta">' + escapeHtml(p.sport + ' · ' + p.duration_min + ' min · ' + when) + '</div>'
+      + '</div>'
+      + '<button onclick="deletePlannedWorkout(' + p.id + ')" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:13px;padding:2px 4px;" title="Remove">✕</button>'
       + '</div>';
-  }).join('');
+  }).join('') : '<div class="widget-empty">Nothing planned. Add a workout above.</div>';
+}
+
+async function submitPlannedWorkout(e) {
+  e.preventDefault();
+  const title = document.getElementById('plannerTitle').value.trim();
+  if (!title) return false;
+  const body = {
+    title: title,
+    sport: document.getElementById('plannerSport').value,
+    planned_date: document.getElementById('plannerDate').value || _todayISO(),
+    duration_min: parseInt(document.getElementById('plannerDuration').value, 10) || 45
+  };
+  try {
+    const r = await fetch('/api/fitness/planned-workouts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    document.getElementById('plannerTitle').value = '';
+    bustDashCache();
+    showToast('Workout planned', 'success');
+    loadHealthPage();
+  } catch (err) {
+    showToast('Could not plan workout', 'error');
+  }
+  return false;
+}
+
+async function completePlannedWorkout(id) {
+  try {
+    await fetch('/api/fitness/planned-workouts/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ completed: true })
+    });
+    bustDashCache();
+    loadHealthPage();
+  } catch (e) { showToast('Update failed', 'error'); }
+}
+
+async function deletePlannedWorkout(id) {
+  try {
+    await fetch('/api/fitness/planned-workouts/' + id, { method: 'DELETE' });
+    bustDashCache();
+    loadHealthPage();
+  } catch (e) { showToast('Delete failed', 'error'); }
 }
 
 let _dashResizeT = null;
@@ -4527,8 +4918,9 @@ window.addEventListener('resize', function() {
   clearTimeout(_dashResizeT);
   _dashResizeT = setTimeout(function() {
     const home = document.getElementById('page-home');
-    if (_dashData && home && home.classList.contains('active')) renderDashboard();
-    if (_dashWhoopData && _dashWhoopData.connected && home && home.classList.contains('active')) renderWhoopWidget(_dashWhoopData);
+    if (_dashData && home && home.classList.contains('active')) renderHomeDash();
+    const health = document.getElementById('page-health');
+    if (_healthData && health && health.classList.contains('active')) renderHealthDash();
   }, 150);
 });
 
@@ -4801,12 +5193,11 @@ function applyAppMode(mode, cfg) {
   const isSummer = mode === 'summer';
   const isSummerSchool = cfg ? !!cfg.is_summer_school : false;
 
-  // school-only-nav: hidden in summer UNLESS is_summer_school=true (assignments/plan)
+  // school-only-nav: hidden in summer UNLESS is_summer_school=true
   document.querySelectorAll('.school-only-nav').forEach(el => {
     const page = el.dataset.page;
     if (isSummer) {
-      // assignments stays if summer school; plan always hidden in summer
-      el.style.display = (page === 'assignments' && isSummerSchool) ? '' : 'none';
+      el.style.display = ((page === 'school' || page === 'assignments') && isSummerSchool) ? '' : 'none';
     } else {
       el.style.display = '';
     }
@@ -4821,10 +5212,12 @@ function applyAppMode(mode, cfg) {
   const homeHeader   = document.getElementById('homePageHeader');
   if (schoolContent) schoolContent.style.display = isSummer ? 'none' : '';
   if (summerContent) summerContent.style.display = isSummer ? '' : 'none';
-  if (homeHeader) homeHeader.textContent = isSummer ? '☀️ Summer' : 'Dashboard';
+  if (homeHeader) homeHeader.textContent = isSummer ? '☀️ Summer' : 'Home · Everything';
+  const homePage = document.getElementById('page-home');
+  if (homePage) homePage.classList.toggle('dash-fit', !isSummer);
 
   // If on a now-hidden page, redirect to home
-  const hiddenInSummer = ['plan'].concat(isSummerSchool ? [] : ['assignments']);
+  const hiddenInSummer = isSummerSchool ? [] : ['school', 'assignments'];
   const activePage = document.querySelector('.page.active');
   if (isSummer && activePage) {
     const pid = activePage.id.replace('page-', '');
@@ -5212,8 +5605,7 @@ async function loadSidebarData() {
   // Show skeleton loaders for each section
   const elements = {
     assignmentsList: document.getElementById('assignmentsList'),
-    tasksList: document.getElementById('tasksList'),
-    planContent: document.getElementById('planContent')
+    tasksList: document.getElementById('tasksList')
   };
 
   const skeletonHTML = `
@@ -5263,14 +5655,6 @@ async function loadSidebarData() {
         calendarCache = data.events || [];
         buildEventsByDate();
         renderCalendar();
-      }
-    },
-    plan: {
-      url: '/api/plan-my-day',
-      containerId: 'planContent',
-      processor: (data) => {
-        setPlanCache(data);
-        renderPlan(data);
       }
     }
   };
@@ -5322,11 +5706,141 @@ async function loadProjects() {
 
     projectsCache = data.projects;
     renderProjects();
-    renderProjectsKanban();
+    // Refresh the projects dashboard if it has been rendered at least once
+    if (_projDashData) {
+      _projDashData.projects = projectsCache;
+      renderProjectsDash();
+    }
   } catch (error) {
     clearTimeout(timeoutId);
     console.error('Error loading projects:', error);
   }
+}
+
+// ── Current Projects dashboard ────────────────────────────────────────────────
+
+let _projDashData = null;
+
+async function loadProjectsPage() {
+  const [pR, tR, cR] = await Promise.allSettled([
+    dashGet('/api/projects'),
+    dashGet('/api/tasks'),
+    dashGet('/api/calendar?days=14')
+  ]);
+  _projDashData = {
+    projects: pR.status === 'fulfilled' ? (pR.value.projects || []) : [],
+    tasks:    tR.status === 'fulfilled' ? (tR.value.tasks || []) : [],
+    calendar: cR.status === 'fulfilled' ? (cR.value.events || []) : []
+  };
+  projectsCache = _projDashData.projects;
+  renderProjectsDash();
+}
+
+function renderProjectsDash() {
+  if (!_projDashData) return;
+  const { projects, tasks, calendar } = _projDashData;
+  const projTasks = (tasks || []).filter(t => t.source === 'project_task');
+  const openProjTasks = projTasks.filter(t => !t.completed);
+
+  const active = projects.filter(p => p.status === 'active');
+  const paused = projects.filter(p => p.status === 'paused');
+  const done   = projects.filter(p => p.status === 'done');
+
+  _setText('projStatActive', active.length);
+  _setText('projStatActiveMeta', active.filter(p => p.needs_checkin).length + ' need a check-in');
+  _setText('projStatTasks', openProjTasks.length);
+  _setText('projStatTasksMeta', 'across active projects');
+  _setText('projStatPaused', paused.length);
+  _setText('projStatDone', done.length);
+
+  const grid = document.getElementById('projectsGrid');
+  if (grid) {
+    const cards = active.concat(paused);
+    grid.innerHTML = cards.length ? cards.map(p => {
+      const mine = projTasks.filter(t => t.project_id === p.id);
+      const openMine = mine.filter(t => !t.completed);
+      const taskRows = mine.slice(0, 30).map(t =>
+        '<div class="ptask-row">'
+        + '<span class="ptask-check' + (t.completed ? ' done' : '') + '" onclick="toggleProjectDashTask(' + p.id + ',' + t.id + ',' + !t.completed + ')">'
+        +   (t.completed ? '<svg width="9" height="9" viewBox="0 0 10 10"><path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>' : '')
+        + '</span>'
+        + '<span class="ptask-label' + (t.completed ? ' done' : '') + '">' + escapeHtml(t.title || '')
+        +   (t.due_date ? ' <span style="color:var(--text3);font-size:10px;">· ' + escapeHtml(t.due_date.slice(5).replace('-', '/')) + '</span>' : '')
+        + '</span>'
+        + '</div>').join('');
+      return '<div class="project-card">'
+        + '<div class="project-card-head" onclick="openProjectDetailsModal(' + p.id + ')">'
+        +   '<span class="project-card-title">' + escapeHtml(p.title || '') + '</span>'
+        +   '<span class="project-status-chip st-' + p.status + '">' + (p.needs_checkin ? 'check-in' : p.status) + '</span>'
+        + '</div>'
+        + (p.description ? '<div class="project-card-desc">' + escapeHtml(p.description) + '</div>' : '')
+        + '<div class="project-card-tasks">'
+        +   (mine.length ? taskRows : '<div style="color:var(--text3);font-size:11.5px;">'
+              + (p.status === 'active' ? 'No action items yet.' : 'Open the project to see its tasks.') + '</div>')
+        + '</div>'
+        + (p.status === 'active'
+            ? '<div class="ptask-add">'
+              + '<input type="text" class="field" id="ptaskAdd-' + p.id + '" placeholder="Add action item…" '
+              +   'onkeydown="if(event.key===\'Enter\'){event.preventDefault();addProjectDashTask(' + p.id + ');}">'
+              + '<button class="btn-ghost" style="font-size:11px;padding:5px 10px;" onclick="addProjectDashTask(' + p.id + ')">Add</button>'
+              + '</div>'
+            : '')
+        + '</div>';
+    }).join('') : '<div class="widget-empty" style="grid-column:1/-1;">No projects yet. Create one with +.</div>';
+  }
+
+  const calWrap = document.getElementById('projectsCalendar');
+  if (calWrap) {
+    const todayISO = _todayISO();
+    const evs = (calendar || []).filter(e => e.category === 'projects' && (e.date || (e.start_iso || '').slice(0, 10)) >= todayISO).slice(0, 15);
+    const dueRows = openProjTasks.filter(t => t.due_date).sort((a, b) => a.due_date < b.due_date ? -1 : 1).slice(0, 8);
+    let html = '';
+    if (evs.length) {
+      html += evs.map(e =>
+        '<div class="agenda-row">'
+        + '<span class="agenda-time">' + escapeHtml((e.date || '').slice(5).replace('-', '/')) + '</span>'
+        + '<span class="agenda-title">' + escapeHtml(e.title || '') + '</span>'
+        + '</div>').join('');
+    }
+    if (dueRows.length) {
+      html += '<div class="agenda-day">Task due dates</div>' + dueRows.map(t =>
+        '<div class="agenda-row">'
+        + '<span class="agenda-time">' + escapeHtml((t.due_date || '').slice(5).replace('-', '/')) + '</span>'
+        + '<span class="agenda-title">' + escapeHtml(t.title || '') + '</span>'
+        + '</div>').join('');
+    }
+    calWrap.innerHTML = html || '<div class="widget-empty">No project deadlines detected on the calendar.</div>';
+  }
+}
+
+async function toggleProjectDashTask(projectId, taskId, done) {
+  try {
+    const r = await fetch('/api/projects/' + projectId + '/tasks/' + taskId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: done ? 'done' : 'pending' })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    bustDashCache();
+    loadProjectsPage();
+  } catch (e) { showToast('Could not update task', 'error'); }
+}
+
+async function addProjectDashTask(projectId) {
+  const input = document.getElementById('ptaskAdd-' + projectId);
+  const title = input ? input.value.trim() : '';
+  if (!title) return;
+  try {
+    const r = await fetch('/api/projects/' + projectId + '/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    input.value = '';
+    bustDashCache();
+    loadProjectsPage();
+  } catch (e) { showToast('Could not add task', 'error'); }
 }
 
 const CLASS_COLORS = ['#55E6A5', '#6FC7F2', '#B9A7FF', '#FFC46B', '#FF7A7A', '#5CD6C0', '#F2A6D8', '#C8E67A'];
@@ -5444,190 +5958,6 @@ function renderProjects() {
     </div>
   `).join('');
   updateSidebarStats();
-}
-
-function renderProjectsKanban() {
-  const board = document.getElementById('kanbanBoard');
-  if (!board) return;
-
-  const cols = {
-    active: document.getElementById('kanbanColActive'),
-    paused: document.getElementById('kanbanColPaused'),
-    done:   document.getElementById('kanbanColDone')
-  };
-  const counts = {
-    active: document.getElementById('kanbanCountActive'),
-    paused: document.getElementById('kanbanCountPaused'),
-    done:   document.getElementById('kanbanCountDone')
-  };
-  if (!cols.active || !cols.paused || !cols.done) return;
-
-  const groups = { active: [], paused: [], done: [] };
-  (projectsCache || []).forEach(p => {
-    const status = groups.hasOwnProperty(p.status) ? p.status : 'active';
-    groups[status].push(p);
-  });
-
-  Object.keys(groups).forEach(status => {
-    counts[status].textContent = groups[status].length;
-    const list = groups[status];
-    if (list.length === 0) {
-      cols[status].innerHTML = '<div class="kanban-empty">No projects</div>';
-      return;
-    }
-    cols[status].innerHTML = list.map(p => {
-      const needsCheckin = p.needs_checkin ? '<span class="kanban-checkin-dot" title="Check-in overdue"></span>' : '';
-      return '<div class="kanban-card" draggable="true" data-project-id="' + p.id + '">'
-        + '<div class="kanban-card-title">' + escapeHtml(p.title || '') + needsCheckin + '</div>'
-        + (p.description ? '<div class="kanban-card-desc">' + escapeHtml(p.description) + '</div>' : '')
-        + '<div class="kanban-card-footer" style="justify-content:space-between;">'
-        +   '<button class="kanban-tasks-toggle" id="ktg-' + p.id + '" onclick="event.stopPropagation();toggleKanbanTasks(' + p.id + ',this)">'
-        +     '<span class="ktg-arrow">▶</span> Tasks'
-        +   '</button>'
-        +   '<button class="vis-toggle" onclick="event.stopPropagation();toggleProjectHidden(' + p.id + ',' + !p.hidden_from_parent + ')" style="background:none;border:none;cursor:pointer;padding:0 2px;font-size:13px;line-height:1;transition:transform 0.15s, opacity 0.15s;opacity:' + (p.hidden_from_parent ? '0.65' : '1') + ';" title="' + (p.hidden_from_parent ? 'Hidden from parent — click to show' : 'Visible to parent — click to hide') + '">' + (p.hidden_from_parent ? '🙈' : '👁') + '</button>'
-        + '</div>'
-        + '<div class="kanban-tasks-list" id="ktl-' + p.id + '"></div>'
-        + '</div>';
-    }).join('');
-  });
-
-  wireKanbanInteractions();
-}
-
-async function toggleKanbanTasks(projectId, btn) {
-  const list = document.getElementById('ktl-' + projectId);
-  if (!list) return;
-  const isOpen = list.classList.contains('open');
-  if (isOpen) {
-    list.classList.remove('open');
-    btn.classList.remove('open');
-    return;
-  }
-  btn.classList.add('open');
-  list.classList.add('open');
-  if (list.dataset.loaded) return; // already fetched
-  list.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:4px 0;">Loading…</div>';
-  try {
-    const resp = await fetch('/api/projects/' + projectId + '/tasks');
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const data = await resp.json();
-    const tasks = data.tasks || [];
-    list.dataset.loaded = '1';
-    renderKanbanTaskList(projectId, tasks, list);
-  } catch (e) {
-    list.innerHTML = '<div style="color:var(--red);font-size:12px;">Failed to load tasks</div>';
-  }
-}
-
-function renderKanbanTaskList(projectId, tasks, container) {
-  if (tasks.length === 0) {
-    container.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:4px 0;">No tasks yet</div>';
-    return;
-  }
-  container.innerHTML = tasks.map(t => {
-    const done = t.status === 'done';
-    const dueStr = t.due_date ? ' · ' + formatDateMDY(t.due_date) : '';
-    return '<div class="kanban-task-row" id="ktr-' + t.id + '">'
-      + '<div class="kanban-task-check' + (done ? ' done' : '') + '" onclick="event.stopPropagation();completeKanbanTask(' + projectId + ',' + t.id + ',this)">'
-      +   (done ? '<svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>' : '')
-      + '</div>'
-      + '<span class="kanban-task-label' + (done ? ' done' : '') + '">' + escapeHtml(t.title) + '<span style="color:var(--text3);font-size:10px;">' + escapeHtml(dueStr) + '</span></span>'
-      + '</div>';
-  }).join('');
-}
-
-async function completeKanbanTask(projectId, taskId, checkEl) {
-  if (checkEl.classList.contains('done')) return;
-  checkEl.classList.add('done');
-  checkEl.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>';
-  const label = checkEl.closest('.kanban-task-row')?.querySelector('.kanban-task-label');
-  if (label) label.classList.add('done');
-  try {
-    const patchResp = await fetch('/api/projects/' + projectId + '/tasks/' + taskId, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'done' }),
-      credentials: 'same-origin'
-    });
-    if (!patchResp.ok) {
-      // Revert visual state if server rejected the update
-      checkEl.classList.remove('done');
-      checkEl.innerHTML = '';
-      if (label) label.classList.remove('done');
-      showToast('Failed to update task — please try again', 'error');
-      return;
-    }
-    // Reload the task list so the card reflects the updated state
-    const list = document.getElementById('ktl-' + projectId);
-    if (list) { delete list.dataset.loaded; }
-    const resp = await fetch('/api/projects/' + projectId + '/tasks');
-    if (resp.ok) {
-      const data = await resp.json();
-      if (list) renderKanbanTaskList(projectId, data.tasks || [], list);
-    }
-    // Refresh the sidebar tasks so the completed project task disappears there too
-    loadSidebarData();
-  } catch (e) {
-    console.error('Failed to complete project task:', e);
-    checkEl.classList.remove('done');
-    checkEl.innerHTML = '';
-    if (label) label.classList.remove('done');
-  }
-}
-
-function wireKanbanInteractions() {
-  const cards = document.querySelectorAll('#kanbanBoard .kanban-card');
-  cards.forEach(card => {
-    card.addEventListener('click', (e) => {
-      if (card.classList.contains('dragging')) return;
-      const id = parseInt(card.dataset.projectId, 10);
-      if (!isNaN(id)) openProjectDetailsModal(id);
-    });
-    card.addEventListener('dragstart', (e) => {
-      card.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', card.dataset.projectId);
-    });
-    card.addEventListener('dragend', () => card.classList.remove('dragging'));
-  });
-
-  const cols = document.querySelectorAll('#kanbanBoard .kanban-column');
-  cols.forEach(col => {
-    const body = col.querySelector('.kanban-column-body');
-    col.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      col.classList.add('drag-over');
-    });
-    col.addEventListener('dragleave', (e) => {
-      if (!col.contains(e.relatedTarget)) col.classList.remove('drag-over');
-    });
-    col.addEventListener('drop', async (e) => {
-      e.preventDefault();
-      col.classList.remove('drag-over');
-      const id = parseInt(e.dataTransfer.getData('text/plain'), 10);
-      const newStatus = body.dataset.status;
-      if (isNaN(id) || !newStatus) return;
-      const project = (projectsCache || []).find(p => p.id === id);
-      if (!project || project.status === newStatus) return;
-      const previousStatus = project.status;
-      project.status = newStatus;
-      renderProjectsKanban();
-      try {
-        const resp = await fetch('/api/projects/' + id, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: newStatus })
-        });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      } catch (err) {
-        console.error('Failed to update project status:', err);
-        project.status = previousStatus;
-        renderProjectsKanban();
-        if (typeof showToast === 'function') showToast('Could not update project status', 'error');
-      }
-    });
-  });
 }
 
 function viewProject(title, description) {
@@ -6223,8 +6553,10 @@ function renderCalendar() {
 }
 
 function renderPlan(planData) {
+  // The dedicated Plan page was removed; plans now live in chat flows only.
   const container = document.getElementById('planContent');
   const notificationDot = document.getElementById('planNeedsUpdate');
+  if (!container || !notificationDot) return;
 
   if (planData.needs_update) {
     notificationDot.style.display = 'inline-block';
@@ -6378,7 +6710,7 @@ function showPlanItemDetail(idx) {
 }
 
 async function generatePlan() {
-  const btn = document.getElementById('generatePlanBtn');
+  const btn = document.getElementById('generatePlanBtn') || document.createElement('button');
   const originalText = btn.textContent;
   btn.disabled = true;
   btn.textContent = '⏳ Generating…';
@@ -8416,6 +8748,12 @@ async function completeTask(event, taskId) {
       }
 
       await loadSidebarData();
+      // Refresh whichever dashboard is showing this task
+      bustDashCache();
+      var schoolPage = document.getElementById('page-school');
+      if (schoolPage && schoolPage.classList.contains('active')) loadSchoolPage();
+      var homePage2 = document.getElementById('page-home');
+      if (homePage2 && homePage2.classList.contains('active') && _currentAppMode !== 'summer') loadHomePage();
       const task = tasksCache.find(t => t.id === taskId);
       if (task) {
         task.completed = true;
@@ -8734,7 +9072,7 @@ async function deleteProjectConfirm(projectId) {
   if (idx === -1) return;
   const removed = projectsCache.splice(idx, 1)[0];
   renderProjects();
-  if (typeof renderProjectsKanban === 'function') renderProjectsKanban();
+  if (_projDashData) { _projDashData.projects = projectsCache; renderProjectsDash(); }
   closeEditProjectModal();
 
   scheduleUndoableDelete(
@@ -8746,7 +9084,7 @@ async function deleteProjectConfirm(projectId) {
     () => {
       projectsCache.splice(idx, 0, removed);
       renderProjects();
-      if (typeof renderProjectsKanban === 'function') renderProjectsKanban();
+      if (_projDashData) { _projDashData.projects = projectsCache; renderProjectsDash(); }
     }
   );
 }

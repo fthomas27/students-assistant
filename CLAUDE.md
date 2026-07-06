@@ -62,14 +62,26 @@ This Flask-based web application provides a comprehensive student management sys
 
 ### 6. WHOOP Integration
 - **OAuth2 Connect**: Student links their WHOOP account from Settings (`/whoop-auth/start` → `/whoop-auth/callback`); the refresh token is stored server-side and access tokens are refreshed automatically
-- **Home Dashboard Widget**: 7-day recovery chart + today's vitals (recovery, sleep, strain, HRV, resting heart rate) on the home page
+- **Health dashboard data**: recovery/sleep/strain summary, recent workouts, and heart rate feed the Health & Fitness dashboard; a deterministic mock pipeline (same response shape) fills in when WHOOP is not connected
 - **AI Context**: The latest recovery/sleep/strain snapshot is injected into `/api/chat`, the morning briefing, and the evening debrief so Jarvis can factor recovery into pacing advice
+
+### 7. Multi-Dashboard Architecture
+The UI is four dense, above-the-fold grid dashboards (each widget scrolls internally; the page itself does not scroll on desktop):
+- **Home** — master aggregated view of *everything*: all calendar items (with category chips), upcoming tasks, health metrics, and project statuses
+- **School** — academics only: active assignments, school tasks, and club/student-org tasks (`tasks.category` = `school` / `club`)
+- **Health & Fitness** — WHOOP metrics (recovery/strain/sleep), recent heart rate, recent workouts, personal records tracker (longest run, fastest mile, longest swim), and an interactive workout planner
+- **Current Projects** — grid of project cards, each with its granular action items inline (complete/add tasks in place), plus project deadlines/milestones
+
+**AI Calendar Categorization Engine** (`categorize_events` in app.py): every calendar item is routed to exactly one category — `school`, `health`, `projects`, or `general` — via persistent cache → deterministic source/keyword rules → Claude Haiku batch classification → `general` fallback. No item is ever dropped; Home shows everything regardless of category, sub-dashboards filter by it. Tasks are routed the same way via `categorize_task` (school/club/health/general), with manual override through `POST/PATCH /api/tasks` `category`.
 
 ## Database Schema
 
 Key tables include:
 - `config` - User settings (name, timezone, morning briefing time)
-- `tasks` - Pending user tasks with urgency and due dates
+- `tasks` - Pending user tasks with urgency, due dates, and dashboard `category`
+- `calendar_categories` - Persistent cache for the calendar categorization engine
+- `planned_workouts` - Workout planner entries (Health dashboard)
+- `personal_records` - Manual PR overrides (longest run, fastest mile, longest swim)
 - `completions` - Logged task/assignment completions with time tracking
 - `projects` - Active projects with status tracking
 - `project_tasks` - Tasks within projects
@@ -129,9 +141,14 @@ Key endpoints include:
 - `POST /api/chat` - Chat with Jarvis
 - `GET /api/briefing` - Today's morning briefing
 - `GET /api/debrief` - Today's evening debrief
-- `POST /api/tasks` - Create/manage tasks
+- `POST /api/tasks` - Create/manage tasks (accepts optional `category`: school/club/health/general)
 - `GET /api/task-suggestions` - AI task suggestions
-- `GET /api/plan-my-day` - Generate daily schedule
+- `GET /api/calendar` - All calendar events, each with a routed `category`
+- `GET /api/plan-my-day` - Generate daily schedule (used by chat flows)
+- `GET /api/whoop/workouts` - Recent workouts (live WHOOP or mock pipeline; `mock` flag)
+- `GET /api/whoop/heart-rate` - Recent/current heart-rate series
+- `GET|POST /api/fitness/prs` - Personal records (computed from workouts + manual overrides)
+- `GET|POST /api/fitness/planned-workouts` (+ `PATCH|DELETE /<id>`) - Workout planner CRUD
 
 ## Security Features
 
