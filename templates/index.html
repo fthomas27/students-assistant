@@ -4781,6 +4781,8 @@ function _isHealthPageActive() {
   return !!(health && health.classList.contains('active'));
 }
 
+let _hrFailStreak = 0;
+
 async function _refreshHeartRate() {
   try {
     // Bypass the shared dashGet cache — this poll's entire job is to
@@ -4788,11 +4790,17 @@ async function _refreshHeartRate() {
     const r = await fetchWithTimeout('/api/whoop/heart-rate', {}, 15000);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const hr = await r.json();
+    _hrFailStreak = 0;
     _dashFetch['/api/whoop/heart-rate'] = { ts: Date.now(), promise: Promise.resolve(hr) };
     if (_healthData) _healthData.hr = hr;
     _renderHRWidget(hr);
   } catch (e) {
     console.error('Heart-rate refresh failed:', e);
+    // Never freeze silently: after two straight misses, say the reading is
+    // stale right on the tile instead of leaving an hours-old number up.
+    if (++_hrFailStreak >= 2 && _isHealthPageActive()) {
+      _setText('healthStatHRMeta', 'bpm · reading stale, retrying');
+    }
   }
 }
 
