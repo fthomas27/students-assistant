@@ -893,7 +893,7 @@ ON CONFLICT (ip_address) DO NOTHING""")
         cur = conn.cursor()
 
     try:
-        cur.execute("ALTER TABLE projects ADD COLUMN hidden_from_parent BOOLEAN NOT NULL DEFAULT FALSE")
+        cur.execute("ALTER TABLE projects DROP COLUMN IF EXISTS hidden_from_parent")
         conn.commit()
     except psycopg2.Error:
         conn.rollback()
@@ -901,7 +901,7 @@ ON CONFLICT (ip_address) DO NOTHING""")
         cur = conn.cursor()
 
     try:
-        cur.execute("ALTER TABLE tasks ADD COLUMN hidden_from_parent BOOLEAN NOT NULL DEFAULT FALSE")
+        cur.execute("ALTER TABLE tasks DROP COLUMN IF EXISTS hidden_from_parent")
         conn.commit()
     except psycopg2.Error:
         conn.rollback()
@@ -2024,7 +2024,14 @@ def whoop_daily_summary(days=7):
         score = s.get("score") or {}
         entry = by_date.setdefault(d, {})
         entry["sleep_performance"] = score.get("sleep_performance_percentage")
-        sleep_ms = (score.get("stage_summary") or {}).get("total_sleep_time_milli")
+        # WHOOP's stage_summary has no single "total sleep" field — sum the
+        # actual sleep stages (light + slow-wave + REM), excluding awake time.
+        stage_summary = score.get("stage_summary") or {}
+        sleep_ms = (
+            (stage_summary.get("total_light_sleep_time_milli") or 0)
+            + (stage_summary.get("total_slow_wave_sleep_time_milli") or 0)
+            + (stage_summary.get("total_rem_sleep_time_milli") or 0)
+        )
         entry["sleep_hours"] = round(sleep_ms / 3600000, 1) if sleep_ms else None
 
     ordered = sorted(by_date.items(), key=lambda kv: kv[0], reverse=True)[:days]
@@ -6703,14 +6710,14 @@ def api_tasks_get():
         if uid:
             cur.execute("""
 SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
-       NULL as project_id, NULL as project_title, hidden_from_parent, category
+       NULL as project_id, NULL as project_title, category
 FROM tasks WHERE user_id = %s ORDER BY completed ASC,
     CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
     created_at ASC""", (uid,))
         else:
             cur.execute("""
 SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
-       NULL as project_id, NULL as project_title, hidden_from_parent, category
+       NULL as project_id, NULL as project_title, category
 FROM tasks ORDER BY completed ASC,
     CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
     created_at ASC""")
@@ -6720,8 +6727,7 @@ FROM tasks ORDER BY completed ASC,
             cur.execute("""
 SELECT pt.id, pt.title, pt.notes, 'medium' as urgency,
        (pt.status = 'done') as completed, NULL as completed_at, pt.due_date,
-       pt.created_at, pt.project_id, pt.assignee, p.title as project_title,
-       p.hidden_from_parent
+       pt.created_at, pt.project_id, pt.assignee, p.title as project_title
 FROM project_tasks pt
 JOIN projects p ON p.id = pt.project_id
 WHERE p.status = 'active' AND p.user_id = %s
@@ -6730,8 +6736,7 @@ ORDER BY pt.created_at ASC""", (uid,))
             cur.execute("""
 SELECT pt.id, pt.title, pt.notes, 'medium' as urgency,
        (pt.status = 'done') as completed, NULL as completed_at, pt.due_date,
-       pt.created_at, pt.project_id, pt.assignee, p.title as project_title,
-       p.hidden_from_parent
+       pt.created_at, pt.project_id, pt.assignee, p.title as project_title
 FROM project_tasks pt
 JOIN projects p ON p.id = pt.project_id
 WHERE p.status = 'active'
@@ -6850,9 +6855,6 @@ WHERE plan_date = %s""", (today,))
                 except (ValueError, TypeError):
                     return jsonify({"error": "invalid due_date format"}), 400
             cur.execute(f"UPDATE tasks SET due_date=%s WHERE id=%s{uid_clause}", (due_date, task_id) + uid_params)
-        if "hidden_from_parent" in data:
-            cur.execute(f"UPDATE tasks SET hidden_from_parent=%s WHERE id=%s{uid_clause}",
-                        (bool(data["hidden_from_parent"]), task_id) + uid_params)
         if "category" in data:
             category = str(data["category"]).lower().strip()
             if category in TASK_CATEGORIES:
@@ -7018,7 +7020,7 @@ def api_parent_task_update(task_id):
 
 @app.route("/api/parent/daily-plan", methods=["GET"])
 def api_parent_daily_plan():
-    """Return today's daily plan for parent view. Hidden task items show as Private."""
+    """Return today's daily plan for parent view."""
     today = datetime.now(TZ).date()
     conn = get_db()
     try:
@@ -7037,29 +7039,14 @@ WHERE dpi.plan_id = %s
 ORDER BY dpi.order_index ASC, dpi.scheduled_start_time ASC""", (plan["id"],))
         items = [dict(r) for r in cur.fetchall()]
 
-        # Collect task IDs to check hidden status
-        task_ids = [int(i["item_id"]) for i in items
-                    if i["item_type"] == "task" and i["item_id"] and i["item_id"].isdigit()]
-        hidden_task_ids = set()
-        if task_ids:
-            cur.execute("SELECT id FROM tasks WHERE id = ANY(%s) AND hidden_from_parent = TRUE",
-                        (task_ids,))
-            hidden_task_ids = {r["id"] for r in cur.fetchall()}
-
-        result = []
-        for item in items:
-            is_hidden = (item["item_type"] == "task"
-                         and item["item_id"]
-                         and item["item_id"].isdigit()
-                         and int(item["item_id"]) in hidden_task_ids)
-            result.append({
-                "id": item["id"],
-                "item_type": item["item_type"] if not is_hidden else "private",
-                "item_title": item["item_title"] if not is_hidden else "",
-                "scheduled_start_time": str(item["scheduled_start_time"]),
-                "scheduled_end_time": str(item["scheduled_end_time"]),
-                "completed": item["completed"],
-            })
+        result = [{
+            "id": item["id"],
+            "item_type": item["item_type"],
+            "item_title": item["item_title"],
+            "scheduled_start_time": str(item["scheduled_start_time"]),
+            "scheduled_end_time": str(item["scheduled_end_time"]),
+            "completed": item["completed"],
+        } for item in items]
 
         return jsonify({"exists": True, "items": result})
     except Exception as e:
@@ -7501,7 +7488,7 @@ def api_projects_get():
         uid_p = (uid,) if uid else ()
         cur.execute(f"""
 SELECT id, title, description, status, lead, members, last_checkin,
-       checkin_interval_days, created_at, hidden_from_parent,
+       checkin_interval_days, created_at,
        CASE WHEN last_checkin IS NULL OR
            NOW() - last_checkin > make_interval(days => checkin_interval_days)
        THEN TRUE ELSE FALSE END as needs_checkin
@@ -7570,7 +7557,6 @@ def api_projects_update(project_id):
         "members": ("members", lambda v: str(v)[:500]),
         "status": ("status", lambda v: str(v).strip().lower()),
         "checkin_interval_days": ("checkin_interval_days", lambda v: max(1, min(90, int(v) if isinstance(v, (int, float)) else 7))),
-        "hidden_from_parent": ("hidden_from_parent", lambda v: bool(v)),
     }
 
     for key, (db_field, transform) in fields_map.items():
