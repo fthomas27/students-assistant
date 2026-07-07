@@ -299,6 +299,14 @@ margin-bottom: 20px;
       <div class="field-label">Password</div>
       <input class="field-input" id="approval-password" type="password" placeholder="6+ characters" autocomplete="new-password">
     </div>
+    <div class="field-wrap">
+      <div class="field-label">Your Anthropic API Key (required)</div>
+      <input class="field-input" id="approval-api-key" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+      <div style="font-size:11px; color:var(--text3); margin-top:6px;">
+        Jarvis runs on Claude using your own API key — get one at
+        <a href="https://console.anthropic.com/" target="_blank" rel="noopener" style="color:var(--text2);">console.anthropic.com</a>.
+      </div>
+    </div>
     <input type="hidden" id="approval-token" value="{{ approval_token }}">
     <button class="submit-btn" id="approval-submit-btn" onclick="submitApprovedSignup()">Complete Signup</button>
     <div class="error-msg" id="approval-error"></div>
@@ -336,6 +344,20 @@ margin-bottom: 20px;
     <div class="field-wrap">
       <div class="field-label">Password</div>
       <input class="field-input" id="password-input" type="password" placeholder="6+ characters" autocomplete="new-password">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Your Anthropic API Key (required)</div>
+      <input class="field-input" id="api-key-input" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+      <div style="font-size:11px; color:var(--text3); margin-top:6px;">
+        Jarvis runs on Claude using <strong>your own</strong> API key — you pay Anthropic directly for your AI usage.
+        Get one free at <a href="https://console.anthropic.com/" target="_blank" rel="noopener" style="color:var(--text2);">console.anthropic.com</a>.
+        It's encrypted at rest and never shared.
+      </div>
+      <button type="button" onclick="testApiKey()" id="test-key-btn"
+              style="margin-top:8px; background:transparent; color:var(--text2); border:1px solid var(--text3); border-radius:8px; padding:6px 14px; font-size:12px; cursor:pointer;">
+        Test key
+      </button>
+      <span id="test-key-result" style="font-size:12px; margin-left:8px;"></span>
     </div>
     <button class="submit-btn" onclick="goToCalendars()">Continue →</button>
     <div class="error-msg" id="error-msg-1"></div>
@@ -471,15 +493,18 @@ function submitApprovedSignup() {
   var email = (emailEl.value || '').trim().toLowerCase();
   var username = (unEl.value || '').trim();
   var password = pwEl.value || '';
+  var apiKeyEl = document.getElementById('approval-api-key');
+  var apiKey = apiKeyEl ? apiKeyEl.value.trim() : '';
   if (!email || !username || !password) { errEl.textContent = 'All fields required'; return; }
   if (username.length < 3) { errEl.textContent = 'Username must be at least 3 characters'; return; }
   if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters'; return; }
+  if (!apiKey) { errEl.textContent = 'An Anthropic API key is required — Jarvis runs on your key.'; return; }
   btn.disabled = true;
   btn.textContent = 'Creating account...';
   fetch('/api/signup/complete-approved', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({token: token, email: email, username: username, password: password})
+    body: JSON.stringify({token: token, email: email, username: username, password: password, anthropic_api_key: apiKey})
   }).then(function(r) { return r.json().then(function(d) { return {s: r.status, d: d}; }); })
   .then(function(res) {
     if (res.s === 200 || res.s === 201) {
@@ -540,16 +565,44 @@ function validateCode() {
   });
 }
 
+function testApiKey() {
+  var key = document.getElementById('api-key-input').value.trim();
+  var resEl = document.getElementById('test-key-result');
+  if (!key) { resEl.style.color = 'var(--red)'; resEl.textContent = 'Enter a key first'; return; }
+  resEl.style.color = 'var(--text3)';
+  resEl.textContent = 'Testing...';
+  fetch('/api/signup/test-key', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({api_key: key})
+  }).then(function(r) { return r.json().then(function(d) { return {s: r.status, d: d}; }); })
+  .then(function(res) {
+    if (res.s === 200 && res.d.ok) {
+      resEl.style.color = 'var(--green)';
+      resEl.textContent = '✓ Key works';
+    } else {
+      resEl.style.color = 'var(--red)';
+      resEl.textContent = (res.d && res.d.error) || 'Key check failed';
+    }
+  }).catch(function() {
+    resEl.style.color = 'var(--red)';
+    resEl.textContent = 'Connection error';
+  });
+}
+
 function goToCalendars() {
   var email    = document.getElementById('email-input').value.trim();
   var username = document.getElementById('username-input').value.trim();
   var password = document.getElementById('password-input').value;
+  var apiKey   = document.getElementById('api-key-input').value.trim();
   var errEl    = document.getElementById('error-msg-1');
 
   errEl.textContent = '';
   if (!email || !username || !password) { errEl.textContent = 'All fields required'; return; }
   if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters'; return; }
   if (username.length < 3) { errEl.textContent = 'Username must be at least 3 characters'; return; }
+  if (!apiKey) { errEl.textContent = 'An Anthropic API key is required — Jarvis runs on your key.'; return; }
+  if (apiKey.indexOf('sk-ant-') !== 0) { errEl.textContent = 'That doesn\'t look like an Anthropic API key (starts with sk-ant-).'; return; }
 
   setStep(2);
 }
@@ -563,7 +616,8 @@ function submitSignup(skipCalendars) {
 
   errEl.textContent = '';
 
-  var payload = {code: validCode, email: email, username: username, password: password};
+  var payload = {code: validCode, email: email, username: username, password: password,
+                 anthropic_api_key: document.getElementById('api-key-input').value.trim()};
   if (!skipCalendars) {
     payload.canvas_ical_url       = document.getElementById('canvas-ical-input').value.trim();
     payload.canvas_api_token      = document.getElementById('canvas-token-input').value.trim();

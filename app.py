@@ -1263,6 +1263,58 @@ _config_cache_lock = threading.Lock()
 CONFIG_CACHE_TTL = 30  # seconds
 
 
+# ── Sensitive config encryption ───────────────────────────────────────────────
+# Per-user secrets (API keys, OAuth tokens, passwords) are encrypted at rest
+# with a Fernet key from CONFIG_ENCRYPTION_KEY. Values are stored with an
+# "enc:v1:" prefix; plaintext legacy values pass through on read and get
+# re-encrypted the next time they are saved.
+
+SENSITIVE_CONFIG_KEYS = {
+    "anthropic_api_key", "canvas_api_token", "whoop_refresh_token",
+    "whoop_access_token", "google_refresh_token", "powerschool_password",
+}
+_ENC_PREFIX = "enc:v1:"
+_fernet = None
+
+
+def _get_fernet():
+    global _fernet
+    if _fernet is None:
+        key = os.environ.get("CONFIG_ENCRYPTION_KEY", "").strip()
+        if not key:
+            return None
+        try:
+            from cryptography.fernet import Fernet
+            _fernet = Fernet(key.encode())
+        except Exception as e:
+            log.error("CONFIG_ENCRYPTION_KEY invalid: %s", e)
+            return None
+    return _fernet
+
+
+def _encrypt_config_value(key, value):
+    if key not in SENSITIVE_CONFIG_KEYS or not value or value.startswith(_ENC_PREFIX):
+        return value
+    f = _get_fernet()
+    if f is None:
+        return value  # no key configured — store plaintext (dev mode)
+    return _ENC_PREFIX + f.encrypt(value.encode()).decode()
+
+
+def _decrypt_config_value(key, value):
+    if not isinstance(value, str) or not value.startswith(_ENC_PREFIX):
+        return value
+    f = _get_fernet()
+    if f is None:
+        log.error("Encrypted config value for %s but CONFIG_ENCRYPTION_KEY unset", key)
+        return ""
+    try:
+        return f.decrypt(value[len(_ENC_PREFIX):].encode()).decode()
+    except Exception:
+        log.error("Failed to decrypt config value for %s (wrong CONFIG_ENCRYPTION_KEY?)", key)
+        return ""
+
+
 def get_config():
     """Returns global config (used by scheduler and admin context)."""
     global _config_cache, _config_cache_ts
@@ -1275,7 +1327,7 @@ def get_config():
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    result = {r["key"]: r["value"] for r in rows}
+    result = {r["key"]: _decrypt_config_value(r["key"], r["value"]) for r in rows}
     with _config_cache_lock:
         _config_cache = result
         _config_cache_ts = time.monotonic()
@@ -1300,7 +1352,7 @@ def get_user_config(user_id=None):
     cur.close()
     conn.close()
     result = dict(get_config())  # start with global defaults
-    result.update({r["key"]: r["value"] for r in rows})  # overlay user-specific values
+    result.update({r["key"]: _decrypt_config_value(r["key"], r["value"]) for r in rows})  # overlay user-specific values
     return result
 
 
@@ -1311,7 +1363,7 @@ def set_config(updates):
     for k, v in updates.items():
         cur.execute("""
 INSERT INTO config (key, value) VALUES (%s, %s)
-ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""", (k, str(v)))
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""", (k, _encrypt_config_value(k, str(v))))
     conn.commit()
     cur.close()
     conn.close()
@@ -1335,10 +1387,56 @@ def set_user_config(updates, user_id=None):
     for k, v in updates.items():
         cur.execute("""
 INSERT INTO user_config (user_id, key, value) VALUES (%s, %s, %s)
-ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value""", (uid, k, str(v)))
+ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value""", (uid, k, _encrypt_config_value(k, str(v))))
     conn.commit()
     cur.close()
     conn.close()
+
+
+class MissingApiKeyError(RuntimeError):
+    """Raised when a Claude call is attempted for a user with no API key."""
+
+
+def _user_api_key(uid=None):
+    """Resolve the Anthropic API key for a user (BYOK).
+
+    Order: the user's own user_config key → the legacy global config key →
+    the ANTHROPIC_API_KEY env var (local-dev convenience only; production
+    should not set it so each customer pays for their own usage).
+    """
+    uid = uid or _uid()
+    try:
+        cfg = get_user_config(uid) if uid else get_config()
+        key = (cfg.get("anthropic_api_key") or "").strip()
+        if key:
+            return key
+    except Exception as e:
+        log.warning("_user_api_key lookup failed: %s", e)
+    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+
+def _anthropic_client_for(uid=None, *, max_retries=3, timeout=60.0):
+    """Return an Anthropic client bound to the user's own API key."""
+    key = _user_api_key(uid)
+    if not key:
+        raise MissingApiKeyError(
+            "No Anthropic API key on file. Add yours in Settings → AI."
+        )
+    return anthropic.Anthropic(api_key=key, max_retries=max_retries, timeout=timeout)
+
+
+def _ai_error_response(exc):
+    """Map an AI-call exception to a JSON error the UI can act on."""
+    if isinstance(exc, MissingApiKeyError):
+        return jsonify({"error": str(exc), "error_code": "no_api_key"}), 402
+    name = type(exc).__name__
+    if name == "AuthenticationError":
+        return jsonify({"error": "Your Anthropic API key was rejected. Update it in Settings.",
+                        "error_code": "bad_api_key"}), 402
+    if name in ("RateLimitError", "OverloadedError"):
+        return jsonify({"error": "Your Anthropic account is rate-limited or out of credits.",
+                        "error_code": "key_quota"}), 429
+    return jsonify({"error": str(exc)}), 500
 
 
 # ── Mem0 long-term memory ──────────────────────────────────────────────────────
@@ -2272,7 +2370,7 @@ def _ai_categorize_titles(titles):
     Any parse/API failure returns {} so callers fall back to 'general'."""
     if not titles:
         return {}
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key()
     if not api_key:
         return {}
     try:
@@ -2412,9 +2510,9 @@ def _ps_configured():
 
 def _ps_ask_claude(content: list) -> dict:
     """Send content blocks to Claude Haiku and parse the JSON grade/attendance result."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key()
     if not api_key:
-        return {"error": "ANTHROPIC_API_KEY not set"}
+        return {"error": "No Anthropic API key on file for this user"}
     try:
         client = anthropic.Anthropic(api_key=api_key)
         resp = client.messages.create(
@@ -4045,9 +4143,9 @@ def generate_briefing(force=False, uid=None):
         if not uid:
             log.warning("Morning briefing: no user to generate for")
             return
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = _user_api_key(uid)
         if not api_key:
-            log.warning("Morning briefing: ANTHROPIC_API_KEY not set")
+            log.warning("Morning briefing: no API key on file for user %s", uid)
             return
         cfg = get_config()
         name = cfg.get("name", "Jarvis")
@@ -4303,9 +4401,9 @@ def generate_evening_debrief(uid=None):
         if not uid:
             log.warning("Evening debrief: no user to generate for")
             return
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = _user_api_key(uid)
         if not api_key:
-            log.warning("Evening debrief: ANTHROPIC_API_KEY not set")
+            log.warning("Evening debrief: no API key on file for user %s", uid)
             return
         cfg = get_config()
         name = cfg.get("name", "Jarvis")
@@ -4414,9 +4512,9 @@ def generate_weekly_insight(force=False, uid=None):
         if not uid:
             log.warning("Weekly insight: no user to generate for")
             return
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = _user_api_key(uid)
         if not api_key:
-            log.warning("Weekly insight: ANTHROPIC_API_KEY not set")
+            log.warning("Weekly insight: no API key on file for user %s", uid)
             return
         cfg = get_config()
         name = cfg.get("name", "Jarvis")
@@ -5733,7 +5831,7 @@ def api_admin_claude_usage():
         return jsonify({"error": "Not authenticated"}), 401
 
     try:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = _user_api_key()
         if not api_key:
             return jsonify({
                 "tokens_used": 0,
@@ -6347,7 +6445,7 @@ def api_powerschool_debug():
 def api_diagnostic():
     """Diagnostic endpoint to check if debrief can be generated."""
     uid = _require_uid()
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key(uid)
     has_db = True
     has_debrief = False
     try:
@@ -7341,7 +7439,7 @@ def api_task_suggestions():
     """Generate AI-powered task suggestions based on pending assignments and calendar events."""
     uid = _require_uid()
     start = time.time()
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key(uid)
     if not api_key:
         return jsonify({"suggestions": []}), 200
 
@@ -7984,6 +8082,45 @@ def api_project_tasks_delete(project_id, task_id):
     return jsonify({"status": "ok"})
 
 
+def _validate_anthropic_key(key):
+    """Make the cheapest possible live call with the submitted key.
+    Returns (ok, error_message)."""
+    key = (key or "").strip()
+    if not key:
+        return False, "API key is empty"
+    if not key.startswith("sk-ant-"):
+        return False, "That doesn't look like an Anthropic API key (should start with sk-ant-)"
+    try:
+        client = anthropic.Anthropic(api_key=key, max_retries=0, timeout=15.0)
+        client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        return True, ""
+    except anthropic.AuthenticationError:
+        return False, "Anthropic rejected this API key"
+    except Exception as e:
+        name = type(e).__name__
+        if name in ("RateLimitError", "OverloadedError"):
+            # Key is valid; the account is just busy/out of credits right now.
+            return True, ""
+        return False, f"Could not verify key: {e}"
+
+
+@app.route("/api/settings/test-anthropic-key", methods=["POST"])
+def api_test_anthropic_key():
+    """Validate an Anthropic API key without saving it. Uses the stored key
+    when none is submitted."""
+    uid = _require_uid()
+    data = request.get_json(force=True, silent=True) or {}
+    key = (data.get("api_key") or "").strip()
+    if not key or key.startswith("•"):
+        key = _user_api_key(uid)
+    ok, err = _validate_anthropic_key(key)
+    return jsonify({"ok": ok, "error": err or None}), (200 if ok else 400)
+
+
 @app.route("/api/config", methods=["GET"])
 def api_config_get():
     uid = _require_uid()
@@ -8021,9 +8158,10 @@ def api_config_post():
         "canvas_base_url", "sports_ical_url", "job_schedule_ical_url",
     }
     updates = {k: str(v)[:2000] for k, v in data.items() if k in allowed}
-    # Skip masked Canvas token (UI sends •••••••• when unchanged)
-    if updates.get("canvas_api_token", "").strip().startswith("•"):
-        del updates["canvas_api_token"]
+    # Skip masked secrets (UI sends •••••••• when unchanged)
+    for _masked_key in ("canvas_api_token", "anthropic_api_key"):
+        if updates.get(_masked_key, "").strip().startswith("•"):
+            del updates[_masked_key]
     if updates:
         if "timezone" in updates:
             try:
@@ -10808,9 +10946,10 @@ def api_chat():
     data = request.get_json(force=True) or {}
     messages = data.get("messages", [])
     conversation_id = (data.get("conversation_id") or "").strip()[:64] or uuid.uuid4().hex
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key(chat_user_id)
     if not api_key:
-        return jsonify({"error": "ANTHROPIC_API_KEY not configured in Railway environment."}), 500
+        return jsonify({"error": "No Anthropic API key on file. Add yours in Settings → AI.",
+                        "error_code": "no_api_key"}), 402
     try:
         now_chat = datetime.now(TZ)
         system_static = (
@@ -11567,15 +11706,15 @@ ORDER BY order_index ASC""", (plan_id,))
 
 def _generate_daily_plan_for_date(target_date, uid=None):
     """Core plan generation logic. Returns dict {plan_id, items_count} or raises."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     today = target_date  # alias so the body below reads naturally
     uid = uid or _default_student_uid()
     if not uid:
         raise RuntimeError("no user to plan for")
+    api_key = _user_api_key(uid)
 
     with _plan_lock:
         if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not configured")
+            raise MissingApiKeyError("No Anthropic API key on file for this user")
 
         # ── Phase 1: fetch all DB data then release the connection ──────
         completed_titles = set()
@@ -12235,7 +12374,7 @@ def api_stocks_research():
     symbol = str(data.get("symbol", "")).strip().upper()[:16]
     if not symbol:
         return jsonify({"error": "symbol required"}), 400
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key(uid)
     if not api_key:
         return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
 
@@ -12608,7 +12747,7 @@ def api_outlook_news_detail():
     except Exception:
         pass
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key()
     if not api_key:
         return jsonify({"synthesis": "_(Claude synthesis unavailable — API key not configured.)_"}), 200
 
@@ -12665,15 +12804,23 @@ if not _SKIP_BOOT:
     except Exception as e:
         log.warning(f"Database initialization failed: {e}. Running in limited mode.")
 
-# Seed API key from env var into DB so it persists across deploys
+# One-time migration: adopt a legacy ANTHROPIC_API_KEY env var as the default
+# student's personal key (BYOK — the platform no longer supplies a shared key).
 if not _SKIP_BOOT:
     try:
-        _env_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if _env_api_key and not get_config().get("anthropic_api_key", ""):
-            set_config({"anthropic_api_key": _env_api_key})
-            log.info("Seeded ANTHROPIC_API_KEY from environment into DB config")
+        _env_api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if _env_api_key:
+            _mig_uid = _default_student_uid()
+            if _mig_uid:
+                _mig_conn = get_db(); _mig_cur = _mig_conn.cursor()
+                _mig_cur.execute("SELECT value FROM user_config WHERE user_id = %s AND key = 'anthropic_api_key'", (_mig_uid,))
+                _mig_row = _mig_cur.fetchone()
+                _mig_cur.close(); _mig_conn.close()
+                if not (_mig_row and (_mig_row["value"] or "").strip()):
+                    set_user_config({"anthropic_api_key": _env_api_key}, user_id=_mig_uid)
+                    log.info("Migrated ANTHROPIC_API_KEY from environment into the default student's user_config")
     except Exception as e:
-        log.warning(f"Could not seed API key: {e}")
+        log.warning(f"Could not migrate API key: {e}")
 
 # Guard: only start scheduler and background briefing in the first/main worker.
 # With gunicorn --workers 1 this always runs. With multiple workers it only runs
@@ -13243,6 +13390,19 @@ def _save_calendar_urls(user_id, data):
         cals["canvas_base_url"] = cals["canvas_base_url"].rstrip("/")
     if cals:
         set_user_config(cals, user_id=user_id)
+    # BYOK: the signup payload carries the (already-encrypted) Anthropic key
+    # through the Stripe round trip; store it as the user's own key.
+    _sk = str(data.get("anthropic_api_key", "")).strip()
+    if _sk:
+        set_user_config({"anthropic_api_key": _sk}, user_id=user_id)
+
+
+@app.route("/api/signup/test-key", methods=["POST"])
+def api_signup_test_key():
+    """Public key check used by the signup form (the caller submits their own key)."""
+    data = request.get_json(force=True, silent=True) or {}
+    ok, err = _validate_anthropic_key(data.get("api_key", ""))
+    return jsonify({"ok": ok, "error": err or None}), (200 if ok else 400)
 
 
 @app.route("/api/signup/create-checkout", methods=["POST"])
@@ -13254,11 +13414,15 @@ def api_signup_create_checkout():
     email   = str(data.get("email", "")).strip().lower()
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", "")).strip()
+    api_key  = str(data.get("anthropic_api_key", "")).strip()
 
     if not all([code, email, username, password]):
         return jsonify({"error": "All fields are required"}), 400
     if len(username) < 3 or len(password) < 6:
         return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
+    _key_ok, _key_err = _validate_anthropic_key(api_key)
+    if not _key_ok:
+        return jsonify({"error": f"Anthropic API key check failed: {_key_err}"}), 400
 
     # Validate code
     conn = get_db(); cur = conn.cursor()
@@ -13288,8 +13452,11 @@ def api_signup_create_checkout():
     if not price_id:
         return jsonify({"error": "Pricing not configured. Contact admin."}), 503
 
-    # Stash calendar URLs in pending_signups so they survive the Stripe round trip
-    cals_json = json.dumps({k: str(data.get(k, "")).strip() for k in _CAL_KEYS})
+    # Stash calendar URLs + the (encrypted) API key in pending_signups so they
+    # survive the Stripe round trip. Never put secrets in Stripe metadata.
+    _signup_payload = {k: str(data.get(k, "")).strip() for k in _CAL_KEYS}
+    _signup_payload["anthropic_api_key"] = _encrypt_config_value("anthropic_api_key", api_key)
+    cals_json = json.dumps(_signup_payload)
     pconn = get_db(); pcur = pconn.cursor()
     try:
         pcur.execute("""
@@ -13329,6 +13496,7 @@ def api_signup_create_free():
     email    = str(data.get("email", "")).strip().lower()
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", "")).strip()
+    api_key  = str(data.get("anthropic_api_key", "")).strip()
 
     if not all([code, email, username, password]):
         return jsonify({"error": "All fields are required"}), 400
@@ -13336,6 +13504,9 @@ def api_signup_create_free():
         return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
     if not _basic_email_ok(email):
         return jsonify({"error": "Invalid email"}), 400
+    _key_ok, _key_err = _validate_anthropic_key(api_key)
+    if not _key_ok:
+        return jsonify({"error": f"Anthropic API key check failed: {_key_err}"}), 400
 
     user_id = str(uuid.uuid4())
     conn = get_db(); cur = conn.cursor()
@@ -13376,6 +13547,7 @@ VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
 
     _init_user_defaults(user_id)
     _save_calendar_urls(user_id, data)
+    set_user_config({"anthropic_api_key": api_key}, user_id=user_id)
     log.info("Free signup: user %s (%s) created via code %s", username, email, code)
     return jsonify({"status": "ok", "redirect": "/login"})
 
@@ -13986,6 +14158,10 @@ def api_signup_complete_approved():
         return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
     if not _basic_email_ok(email):
         return jsonify({"error": "Invalid email"}), 400
+    _appr_key = str(data.get("anthropic_api_key", "")).strip()
+    _key_ok, _key_err = _validate_anthropic_key(_appr_key)
+    if not _key_ok:
+        return jsonify({"error": f"Anthropic API key check failed: {_key_err}"}), 400
 
     conn = get_db(); cur = conn.cursor()
     try:
@@ -14019,8 +14195,11 @@ def api_signup_complete_approved():
         if not price_id:
             return jsonify({"error": "Pricing not configured. Contact admin."}), 503
 
-        # Stash calendar URLs under the token (reuses pending_signups keyed by access_code)
-        cals_json = json.dumps({k: str(data.get(k, "")).strip() for k in _CAL_KEYS})
+        # Stash calendar URLs + encrypted API key under the token
+        # (reuses pending_signups keyed by access_code)
+        _appr_payload = {k: str(data.get(k, "")).strip() for k in _CAL_KEYS}
+        _appr_payload["anthropic_api_key"] = _encrypt_config_value("anthropic_api_key", _appr_key)
+        cals_json = json.dumps(_appr_payload)
         sconn = get_db(); scur = sconn.cursor()
         try:
             scur.execute("""

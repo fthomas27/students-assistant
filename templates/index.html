@@ -3648,6 +3648,18 @@ margin: 8px 2px 10px;
         </div>
       </div>
       <div class="settings-section">
+        <h3>AI</h3>
+        <p style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">Jarvis runs on Claude using <strong>your own</strong> Anthropic API key — you pay Anthropic directly for your usage. Encrypted at rest. Get a key at <a href="https://console.anthropic.com/" target="_blank" rel="noopener" style="color:var(--text2);">console.anthropic.com</a>.</p>
+        <div class="settings-item" style="display:block;border-bottom:none;">
+          <label style="display:block;margin-bottom:6px;">Anthropic API Key</label>
+          <input type="password" id="cfgAnthropicKey" class="field" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+          <div style="display:flex;align-items:center;gap:10px;margin-top:8px;">
+            <button type="button" class="btn-accent" style="padding:6px 14px;font-size:12px;" onclick="testAnthropicKey()">Test key</button>
+            <span id="anthropicKeyStatus" style="font-size:12px;color:var(--text3);"></span>
+          </div>
+        </div>
+      </div>
+      <div class="settings-section">
         <h3>Calendars</h3>
         <p style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">These calendars are private to your account. Paste the iCal feed URLs from your services.</p>
         <div class="settings-item" style="display:block;">
@@ -5132,6 +5144,14 @@ function openSettings() {
     document.getElementById('hasSummerJobCheck').checked = !!cfg.has_summer_job;
     document.getElementById('summerQuestionsDiv').style.display = mode === 'summer' ? 'block' : 'none';
 
+    // Anthropic API key (masked when set — the server never returns the real key)
+    const keyEl = document.getElementById('cfgAnthropicKey');
+    if (keyEl) {
+      keyEl.value = cfg.has_api_key ? '••••••••' : '';
+      const statusEl = document.getElementById('anthropicKeyStatus');
+      if (statusEl) statusEl.textContent = cfg.has_api_key ? 'A key is on file.' : 'No key on file — Jarvis AI features are off.';
+    }
+
     // Calendar URLs
     if (document.getElementById('cfgCanvasIcal'))    document.getElementById('cfgCanvasIcal').value    = cfg.canvas_ical_url || '';
     if (document.getElementById('cfgCanvasToken'))   document.getElementById('cfgCanvasToken').value   = cfg.canvas_api_token || '';
@@ -5168,6 +5188,65 @@ function loadWhoopStatus() {
     const section = document.getElementById('whoopSettingsSection');
     if (section) section.style.display = 'none';
   });
+}
+
+function testAnthropicKey() {
+  const keyEl = document.getElementById('cfgAnthropicKey');
+  const statusEl = document.getElementById('anthropicKeyStatus');
+  if (!keyEl || !statusEl) return;
+  statusEl.style.color = 'var(--text3)';
+  statusEl.textContent = 'Testing…';
+  const kv = keyEl.value.trim();
+  const payload = (kv && kv.indexOf('•') !== 0) ? { api_key: kv } : {};
+  fetch('/api/settings/test-anthropic-key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(async (r) => {
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) {
+      statusEl.style.color = 'var(--green, #4caf50)';
+      statusEl.textContent = '✓ Key works';
+    } else {
+      statusEl.style.color = 'var(--red, #ff7a7a)';
+      statusEl.textContent = d.error || 'Key check failed';
+    }
+  }).catch(() => {
+    statusEl.style.color = 'var(--red, #ff7a7a)';
+    statusEl.textContent = 'Connection error';
+  });
+}
+
+// BYOK: surface API-key problems from any AI endpoint as a persistent banner.
+function showApiKeyBanner(message) {
+  let b = document.getElementById('apiKeyBanner');
+  if (!b) {
+    b = document.createElement('div');
+    b.id = 'apiKeyBanner';
+    b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:10000;background:#8b2f2f;color:#fff;' +
+      'padding:10px 16px;font-size:13px;display:flex;align-items:center;justify-content:center;gap:12px;';
+    document.body.appendChild(b);
+  }
+  b.innerHTML = '<span>' + message + '</span>' +
+    '<button onclick="openSettings();this.parentNode.remove();" style="background:#fff;color:#8b2f2f;border:none;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;font-weight:600;">Fix in Settings</button>' +
+    '<button onclick="this.parentNode.remove();" style="background:transparent;color:#fff;border:none;font-size:16px;cursor:pointer;">✕</button>';
+}
+
+function handleAiErrorPayload(d) {
+  if (!d || !d.error_code) return false;
+  if (d.error_code === 'no_api_key') {
+    showApiKeyBanner('Jarvis needs your Anthropic API key to work. Add it in Settings → AI.');
+    return true;
+  }
+  if (d.error_code === 'bad_api_key') {
+    showApiKeyBanner('Your Anthropic API key was rejected. Update it in Settings → AI.');
+    return true;
+  }
+  if (d.error_code === 'key_quota') {
+    showApiKeyBanner('Your Anthropic account is rate-limited or out of credits.');
+    return true;
+  }
+  return false;
 }
 
 function disconnectWhoop() {
@@ -5240,6 +5319,13 @@ function saveSettings() {
     const el = document.getElementById(calFields[k]);
     if (el) cfgPayload[k] = el.value.trim();
   });
+
+  // Anthropic key: only send when the user typed a new one (mask means unchanged)
+  const keyEl = document.getElementById('cfgAnthropicKey');
+  if (keyEl) {
+    const kv = keyEl.value.trim();
+    if (kv && kv.indexOf('•') !== 0) cfgPayload.anthropic_api_key = kv;
+  }
 
   // Build a minimal cfg-like object so applyAppMode can gate on is_summer_school
   applyAppMode(mode, { is_summer_school: isSummerSchool, has_summer_job: hasSummerJob });
@@ -8065,12 +8151,15 @@ async function sendMessage() {
     if (!response.ok || !response.body) {
       // Server may have returned a JSON error (config missing, etc.)
       let errMsg = 'Sorry, I encountered an error.';
+      let errData = null;
       try {
-        const errData = await response.json();
+        errData = await response.json();
         if (errData && errData.error) errMsg = errData.error;
       } catch (_e) { /* ignore */ }
       loadingBubble.innerHTML = `<div class="message-bubble" style="color: var(--red);">${escapeHtml(errMsg)}</div>`;
-      showToast('Connection error. Please try again.', 'error');
+      if (!handleAiErrorPayload(errData)) {
+        showToast('Connection error. Please try again.', 'error');
+      }
       return;
     }
 
