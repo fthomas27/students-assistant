@@ -3384,21 +3384,25 @@ def _extract_keywords(text, limit=8):
     return out
 
 
-def _load_news_preferences():
+def _load_news_preferences(uid=None):
     """Return a profile dict: {outlet_score: {...}, liked_keywords: set, disliked_keywords: set, disliked_urls: set}."""
     profile = {"outlet_score": {}, "liked_keywords": set(), "disliked_keywords": set(), "disliked_urls": set()}
+    uid = uid or _uid() or _default_student_uid()
+    if not uid:
+        return profile
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
-            "SELECT outlet, rating, COUNT(*) AS n FROM news_preferences GROUP BY outlet, rating"
+            "SELECT outlet, rating, COUNT(*) AS n FROM news_preferences WHERE user_id = %s GROUP BY outlet, rating",
+            (uid,)
         )
         for r in cur.fetchall():
             outlet = r["outlet"] or ""
             rating = int(r["rating"])
             n = int(r["n"] or 0)
             profile["outlet_score"][outlet] = profile["outlet_score"].get(outlet, 0) + (rating * n)
-        cur.execute("SELECT rating, keywords, url_hash, url FROM news_preferences ORDER BY created_at DESC LIMIT 200")
+        cur.execute("SELECT rating, keywords, url_hash, url FROM news_preferences WHERE user_id = %s ORDER BY created_at DESC LIMIT 200", (uid,))
         for r in cur.fetchall():
             words = (r["keywords"] or "").split()
             target = profile["liked_keywords"] if int(r["rating"]) == 1 else profile["disliked_keywords"]
@@ -3632,9 +3636,9 @@ def parse_canvas_assignments(cal):
     return assignments
 
 
-def _cache_canvas_assignments(assignments):
+def _cache_canvas_assignments(assignments, user_id):
     """Persist seen Canvas assignments so overdue ones survive Canvas iCal pruning."""
-    if not assignments:
+    if not assignments or not user_id:
         return
     try:
         conn = get_db()
@@ -3643,9 +3647,9 @@ def _cache_canvas_assignments(assignments):
             uid = (a.get("uid") or "").strip() or a["title"]
             cur.execute("""
 INSERT INTO canvas_assignments_cache
-    (uid, title, class_name, due_iso, due_display, description, urgency, last_seen_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-ON CONFLICT (uid) DO UPDATE SET
+    (uid, title, class_name, due_iso, due_display, description, urgency, last_seen_at, user_id)
+VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+ON CONFLICT (user_id, uid) WHERE user_id IS NOT NULL DO UPDATE SET
     title       = EXCLUDED.title,
     class_name  = EXCLUDED.class_name,
     due_iso     = EXCLUDED.due_iso,
@@ -3655,14 +3659,14 @@ ON CONFLICT (uid) DO UPDATE SET
     last_seen_at = NOW()""",
                 (uid, a["title"], a.get("class_name", ""),
                  a.get("due_iso", ""), a.get("due_display", ""),
-                 a.get("description", "")[:1000], a.get("urgency", "low")))
+                 a.get("description", "")[:1000], a.get("urgency", "low"), user_id))
         conn.commit()
         cur.close(); conn.close()
     except Exception as e:
         log.warning("_cache_canvas_assignments failed: %s", e)
 
 
-def _promote_overdue_to_tasks():
+def _promote_overdue_to_tasks(user_id):
     """Auto-create a task for each overdue Canvas assignment not yet in the task list.
 
     Runs inside get_canvas_assignments_with_overdue() every time assignments are
@@ -3670,13 +3674,15 @@ def _promote_overdue_to_tasks():
     flag so concurrent calls (briefing job, notification job, chat tabs) cannot
     double-insert tasks. Already-completed assignments are claimed but no task is created.
     """
+    if not user_id:
+        return
     try:
         now_iso = datetime.now(TZ).isoformat()
         lookback_iso = (datetime.now(TZ) - timedelta(days=90)).isoformat()
         conn = get_db()
         cur = conn.cursor()
 
-        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (user_id,))
         done_titles = set(r["assignment_title"] for r in cur.fetchall())
 
         cur.execute("""
@@ -3685,8 +3691,9 @@ def _promote_overdue_to_tasks():
             WHERE due_iso < %s
               AND due_iso > %s
               AND promoted_to_task = FALSE
+              AND user_id = %s
             ORDER BY due_iso ASC""",
-            (now_iso, lookback_iso))
+            (now_iso, lookback_iso, user_id))
         candidates = cur.fetchall()
 
         promoted = 0
@@ -3695,8 +3702,8 @@ def _promote_overdue_to_tasks():
             # If we don't get a row back, another process already claimed it.
             cur.execute(
                 "UPDATE canvas_assignments_cache SET promoted_to_task = TRUE "
-                "WHERE uid = %s AND promoted_to_task = FALSE RETURNING uid",
-                (row["uid"],))
+                "WHERE uid = %s AND user_id = %s AND promoted_to_task = FALSE RETURNING uid",
+                (row["uid"], user_id))
             if not cur.fetchone():
                 continue
 
@@ -3706,8 +3713,8 @@ def _promote_overdue_to_tasks():
 
             # Skip if a matching incomplete task already exists (manual or prior promotion)
             cur.execute(
-                "SELECT id FROM tasks WHERE title = %s AND completed = FALSE LIMIT 1",
-                (row["title"],))
+                "SELECT id FROM tasks WHERE title = %s AND completed = FALSE AND user_id = %s LIMIT 1",
+                (row["title"], user_id))
             if cur.fetchone():
                 continue
 
@@ -3717,8 +3724,8 @@ def _promote_overdue_to_tasks():
                 due_date = None
             notes = f"Overdue Canvas assignment — {row['class_name']}" if row["class_name"] else "Overdue Canvas assignment"
             cur.execute(
-                "INSERT INTO tasks (title, urgency, due_date, notes) VALUES (%s, 'high', %s, %s)",
-                (row["title"], due_date, notes))
+                "INSERT INTO tasks (title, urgency, due_date, notes, user_id) VALUES (%s, 'high', %s, %s, %s)",
+                (row["title"], due_date, notes, user_id))
             promoted += 1
             log.info("Promoted overdue Canvas assignment to task: %r", row["title"])
 
@@ -3729,21 +3736,26 @@ def _promote_overdue_to_tasks():
         log.warning("_promote_overdue_to_tasks failed: %s", e)
 
 
-def get_canvas_assignments_with_overdue(cal):
+def get_canvas_assignments_with_overdue(cal, uid=None):
     """Return upcoming Canvas assignments PLUS any overdue ones not yet completed.
 
     Canvas drops past-due events from its iCal feed; this function caches every
     assignment seen from the live feed and re-surfaces overdue ones until the
     student explicitly marks them done via complete_assignment.
     """
+    uid = uid or _uid() or _default_student_uid()
+
     # 1. Live upcoming assignments from Canvas iCal
     live = parse_canvas_assignments(cal)
 
+    if not uid:
+        return live
+
     # 2. Persist them so we don't lose them after Canvas prunes the feed
-    _cache_canvas_assignments(live)
+    _cache_canvas_assignments(live, uid)
 
     # 3. Promote any newly overdue assignments to the task list
-    _promote_overdue_to_tasks()
+    _promote_overdue_to_tasks(uid)
 
     # 4. Merge in overdue assignments from cache that are not yet completed
     try:
@@ -3751,14 +3763,14 @@ def get_canvas_assignments_with_overdue(cal):
         lookback_iso = (datetime.now(TZ) - timedelta(days=90)).isoformat()
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (uid,))
         done_titles = set(r["assignment_title"] for r in cur.fetchall())
         cur.execute("""
             SELECT uid, title, class_name, due_iso, due_display, description
             FROM canvas_assignments_cache
-            WHERE due_iso < %s AND due_iso > %s
+            WHERE due_iso < %s AND due_iso > %s AND user_id = %s
             ORDER BY due_iso DESC""",
-            (now_iso, lookback_iso))
+            (now_iso, lookback_iso, uid))
         cached_overdue = cur.fetchall()
         cur.close(); conn.close()
 
@@ -3849,6 +3861,7 @@ def get_class_average(class_name):
         return None
     conn = get_db()
     cur = conn.cursor()
+    # GLOBAL-OK: aggregate average minutes per class name; exposes no row data.
     cur.execute("""
 SELECT AVG(duration_minutes) as avg FROM (
     SELECT duration_minutes FROM completions
@@ -3870,6 +3883,7 @@ def get_class_averages_batch(class_names):
     conn = get_db()
     cur = conn.cursor()
     # Get all class averages in a single query
+    # GLOBAL-OK: aggregate average minutes per class name; exposes no row data.
     cur.execute("""
 SELECT class_name, AVG(duration_minutes) as avg FROM (
     SELECT class_name, duration_minutes, ROW_NUMBER() OVER (PARTITION BY class_name ORDER BY completed_at DESC) as rn
@@ -3996,7 +4010,7 @@ def send_email(to_addr, subject, body_html):
         return False
 
 
-def _ntfy_dedup(key, title="", max_age_hours=20):
+def _ntfy_dedup(key, title="", max_age_hours=20, uid=None):
     """Return True if this notification has NOT been sent within max_age_hours (and record it).
     Returns False if a duplicate was found (skip sending)."""
     try:
@@ -4004,16 +4018,18 @@ def _ntfy_dedup(key, title="", max_age_hours=20):
         cur = conn.cursor()
         cutoff = datetime.now(TZ) - timedelta(hours=max_age_hours)
         cur.execute(
-            "SELECT sent_at FROM notification_log WHERE notification_key = %s AND sent_at > %s",
-            (key, cutoff),
+            "SELECT sent_at FROM notification_log WHERE notification_key = %s "
+            "AND COALESCE(user_id::text, 'global') = COALESCE(%s, 'global') AND sent_at > %s",
+            (key, uid, cutoff),
         )
         if cur.fetchone():
             cur.close(); conn.close()
             return False
         cur.execute(
-            "INSERT INTO notification_log (notification_key, title, sent_at) VALUES (%s, %s, NOW()) "
-            "ON CONFLICT (notification_key) DO UPDATE SET sent_at = NOW(), title = EXCLUDED.title",
-            (key[:500], (title or key)[:255]),
+            "INSERT INTO notification_log (notification_key, title, sent_at, user_id) VALUES (%s, %s, NOW(), %s) "
+            "ON CONFLICT ((COALESCE(user_id::text, 'global')), notification_key) "
+            "DO UPDATE SET sent_at = NOW(), title = EXCLUDED.title",
+            (key[:500], (title or key)[:255], uid),
         )
         conn.commit()
         cur.close(); conn.close()
@@ -4050,7 +4066,7 @@ def generate_briefing(force=False, uid=None):
         assignments = []
         cal = fetch_ical(u_canvas_ical())
         if cal:
-            assignments = get_canvas_assignments_with_overdue(cal)
+            assignments = get_canvas_assignments_with_overdue(cal, uid=uid)
 
         events = []
         cal2 = fetch_ical(u_personal_ical())
@@ -4329,7 +4345,7 @@ FROM completions WHERE completed_at >= %s AND user_id = %s ORDER BY completed_at
         cal = fetch_ical(u_canvas_ical())
         remaining_asgn = []
         if cal:
-            all_asgn = get_canvas_assignments_with_overdue(cal)
+            all_asgn = get_canvas_assignments_with_overdue(cal, uid=uid)
             done_titles = {d["assignment_title"] for d in done_today}
             remaining_asgn = [a for a in all_asgn if a["title"] not in done_titles]
 
@@ -4475,7 +4491,7 @@ WHERE status = 'active' AND user_id = %s""", (uid,))
         upcoming_assignments = []
         cal = fetch_ical(u_canvas_ical())
         if cal:
-            all_asgn = get_canvas_assignments_with_overdue(cal)
+            all_asgn = get_canvas_assignments_with_overdue(cal, uid=uid)
             for a in all_asgn:
                 d = _assignment_due_date_local(a)
                 if today <= d <= week_ahead:
@@ -4571,6 +4587,7 @@ def cleanup_old_data():
     try:
         conn = get_db()
         cur = conn.cursor()
+        # GLOBAL-OK: age-based prune across all tenants; deletes only stale rows.
         cur.execute("DELETE FROM daily_plans WHERE plan_date < CURRENT_DATE - INTERVAL '60 days'")
         deleted_plans = cur.rowcount
         cur.execute("DELETE FROM projects WHERE status = 'done' AND done_at < NOW() - INTERVAL '7 days'")
@@ -4597,6 +4614,7 @@ def _notif_canvas_assignments():
         assignments = get_canvas_assignments_with_overdue(cal)
         conn = get_db()
         cur = conn.cursor()
+        # PHASE5: completions read is global until notification jobs loop per-user
         cur.execute("SELECT DISTINCT assignment_title FROM completions")
         done = set(r["assignment_title"] for r in cur.fetchall())
         cur.close(); conn.close()
@@ -4657,6 +4675,7 @@ def check_overdue_tasks():
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
+            # PHASE5: overdue-task scan is global until the job loops per-user
             "SELECT id, title, due_date FROM tasks "
             "WHERE completed = FALSE AND due_date < %s ORDER BY due_date ASC LIMIT 10",
             (today,),
@@ -4761,6 +4780,7 @@ def check_idle_detection():
         cur = conn.cursor()
         cutoff = now - timedelta(hours=3)
         cur.execute(
+            # PHASE5: idle detection reads all users until the job loops per-user
             "SELECT MAX(completed_at) AS last FROM completions WHERE completed_at > %s",
             (cutoff,),
         )
@@ -4852,6 +4872,7 @@ def check_stock_alerts():
             return
         conn = get_db()
         cur = conn.cursor()
+        # PHASE5: stock alert scan is global until the job loops per-user
         cur.execute("""
             SELECT
                 st.symbol,
@@ -4859,7 +4880,7 @@ def check_stock_alerts():
                 sn.target_price,
                 sn.stop_loss
             FROM stock_transactions st
-            LEFT JOIN stock_notes sn ON sn.symbol = st.symbol
+            LEFT JOIN stock_notes sn ON sn.symbol = st.symbol AND sn.user_id = st.user_id
             GROUP BY st.symbol, sn.target_price, sn.stop_loss
             HAVING SUM(CASE WHEN st.action='buy' THEN st.quantity ELSE -st.quantity END) > 0
         """)
@@ -6184,10 +6205,12 @@ def api_calendar():
     events = []
     today = datetime.now(TZ).date()
 
-    # Resolve user-scoped calendar URLs in the request thread. Flask's `session`
-    # is bound to the request context and is NOT accessible from worker threads,
-    # so calling u_*_ical() inside the ThreadPoolExecutor below silently falls
-    # back to the (usually empty) env vars and the user's saved URLs are ignored.
+    # Resolve user-scoped calendar URLs (and the user id) in the request thread.
+    # Flask's `session` is bound to the request context and is NOT accessible
+    # from worker threads, so calling u_*_ical() inside the ThreadPoolExecutor
+    # below silently falls back to the (usually empty) env vars and the user's
+    # saved URLs are ignored.
+    cal_uid      = _require_uid()
     personal_url = u_personal_ical()
     sports_url   = u_sports_ical()
     job_url      = u_job_schedule_ical()
@@ -6237,7 +6260,7 @@ def api_calendar():
             else:
                 log.info(f"/api/calendar: canvas took {elapsed:.2f}s")
             if cal:
-                for a in get_canvas_assignments_with_overdue(cal):
+                for a in get_canvas_assignments_with_overdue(cal, uid=cal_uid):
                     result.append({
                         "title": a["title"],
                         "start_display": a["due_display"],
@@ -7584,8 +7607,10 @@ def _process_recurring_tasks():
     today = date.today()
 
     # Find all active recurring tasks where last_created_at is older than recurrence interval
+    # PHASE5: scans every user's recurring tasks; rows carry user_id so new
+    # instances land with the right owner.
     cur.execute("""
-SELECT id, title, notes, urgency, recurrence
+SELECT id, title, notes, urgency, recurrence, last_created_at, user_id
 FROM recurring_tasks
 WHERE active = TRUE
 AND (last_created_at IS NULL OR last_created_at::date < %s)""", (today,))
@@ -7618,9 +7643,9 @@ AND (last_created_at IS NULL OR last_created_at::date < %s)""", (today,))
             due_date = _calculate_next_due_date(recurrence)
             task_notes = f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]"
             cur.execute("""
-INSERT INTO tasks (title, notes, urgency, due_date)
-VALUES (%s, %s, %s, %s)""",
-                        (title, task_notes, urgency, due_date))
+INSERT INTO tasks (title, notes, urgency, due_date, user_id)
+VALUES (%s, %s, %s, %s, %s)""",
+                        (title, task_notes, urgency, due_date, task["user_id"]))
             cur.execute("UPDATE recurring_tasks SET last_created_at = NOW() WHERE id = %s", (task_id,))
 
     conn.commit()
@@ -9219,7 +9244,7 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None, uid=None):
                 cal = fetch_ical(u_canvas_ical())
                 if not cal:
                     return {"assignments": [], "error": "Could not fetch Canvas calendar"}
-                asgn_list = get_canvas_assignments_with_overdue(cal)
+                asgn_list = get_canvas_assignments_with_overdue(cal, uid=uid)
                 conn = get_db()
                 cur = conn.cursor()
                 cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id=%s", (uid,))
@@ -10605,23 +10630,17 @@ def _chat_persist_message(conversation_id, role, content, user_id=None):
 
 def _chat_recent_summaries(exclude_conversation_id, limit=5, user_id=None):
     """Return [{'updated_at', 'summary'}] for the most recent prior conversations."""
+    if not user_id:
+        return []
     try:
         conn = get_db()
         cur = conn.cursor()
-        if user_id:
-            cur.execute(
-                "SELECT conversation_id, summary, updated_at FROM chat_summaries "
-                "WHERE conversation_id != %s AND summary != '' AND user_id = %s "
-                "ORDER BY updated_at DESC LIMIT %s",
-                (exclude_conversation_id or "", user_id, int(limit)),
-            )
-        else:
-            cur.execute(
-                "SELECT conversation_id, summary, updated_at FROM chat_summaries "
-                "WHERE conversation_id != %s AND summary != '' "
-                "ORDER BY updated_at DESC LIMIT %s",
-                (exclude_conversation_id or "", int(limit)),
-            )
+        cur.execute(
+            "SELECT conversation_id, summary, updated_at FROM chat_summaries "
+            "WHERE conversation_id != %s AND summary != '' AND user_id = %s "
+            "ORDER BY updated_at DESC LIMIT %s",
+            (exclude_conversation_id or "", user_id, int(limit)),
+        )
         rows = [dict(r) for r in cur.fetchall()]
         cur.close(); conn.close()
         return rows
@@ -10630,17 +10649,21 @@ def _chat_recent_summaries(exclude_conversation_id, limit=5, user_id=None):
         return []
 
 
-def _chat_last_messages(conversation_id, limit=6):
-    """Return the last N stored messages for this conversation, oldest-first."""
-    if not conversation_id:
+def _chat_last_messages(conversation_id, limit=6, user_id=None):
+    """Return the last N stored messages for this conversation, oldest-first.
+
+    conversation_id is client-supplied, so the user_id filter is what stops
+    one tenant paging through another's conversation by guessing IDs.
+    """
+    if not conversation_id or not user_id:
         return []
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
             "SELECT role, content, created_at FROM chat_messages "
-            "WHERE conversation_id=%s ORDER BY created_at DESC LIMIT %s",
-            (conversation_id, int(limit)),
+            "WHERE conversation_id=%s AND user_id=%s ORDER BY created_at DESC LIMIT %s",
+            (conversation_id, user_id, int(limit)),
         )
         rows = [dict(r) for r in cur.fetchall()]
         cur.close(); conn.close()
@@ -10651,16 +10674,16 @@ def _chat_last_messages(conversation_id, limit=6):
         return []
 
 
-def _chat_summary_status(conversation_id):
+def _chat_summary_status(conversation_id, user_id=None):
     """Return (message_count_in_db, existing_summary_row_or_none)."""
-    if not conversation_id:
+    if not conversation_id or not user_id:
         return (0, None)
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) AS n FROM chat_messages WHERE conversation_id=%s", (conversation_id,))
+        cur.execute("SELECT COUNT(*) AS n FROM chat_messages WHERE conversation_id=%s AND user_id=%s", (conversation_id, user_id))
         n = (cur.fetchone() or {}).get("n", 0)
-        cur.execute("SELECT summary, message_count, updated_at FROM chat_summaries WHERE conversation_id=%s", (conversation_id,))
+        cur.execute("SELECT summary, message_count, updated_at FROM chat_summaries WHERE conversation_id=%s AND user_id=%s", (conversation_id, user_id))
         existing = cur.fetchone()
         cur.close(); conn.close()
         return (int(n or 0), dict(existing) if existing else None)
@@ -10674,10 +10697,10 @@ def _chat_maybe_summarize_async(conversation_id, api_key, user_id=None):
     Eligibility: message_count >= 6 AND (no summary yet OR summary is >24h old AND >=4 new messages).
     Uses claude-haiku-4-5 (cheap) to roll the convo into 2-3 sentences.
     """
-    if not conversation_id or not api_key:
+    if not conversation_id or not api_key or not user_id:
         return
     try:
-        n_msgs, existing = _chat_summary_status(conversation_id)
+        n_msgs, existing = _chat_summary_status(conversation_id, user_id=user_id)
         if n_msgs < 6:
             return
         if existing:
@@ -10698,7 +10721,7 @@ def _chat_maybe_summarize_async(conversation_id, api_key, user_id=None):
 
 def _chat_summarize_worker(conversation_id, api_key, user_id=None):
     try:
-        msgs = _chat_last_messages(conversation_id, limit=40)
+        msgs = _chat_last_messages(conversation_id, limit=40, user_id=user_id)
         if not msgs:
             return
         transcript = "\n".join(
@@ -10781,7 +10804,7 @@ def _build_active_tools() -> list:
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
-    chat_user_id = _uid()
+    chat_user_id = _require_uid()
     data = request.get_json(force=True) or {}
     messages = data.get("messages", [])
     conversation_id = (data.get("conversation_id") or "").strip()[:64] or uuid.uuid4().hex
@@ -10923,11 +10946,11 @@ def api_chat():
             if _canvas_active and u_canvas_ical():
                 cal = fetch_ical(u_canvas_ical())
                 if cal:
-                    asgn_list = get_canvas_assignments_with_overdue(cal)
+                    asgn_list = get_canvas_assignments_with_overdue(cal, uid=chat_user_id)
                     try:
                         _conn = get_db()
                         _cur = _conn.cursor()
-                        _cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                        _cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (chat_user_id,))
                         _done = set(r["assignment_title"] for r in _cur.fetchall())
                         _cur.close(); _conn.close()
                         asgn_list = [a for a in asgn_list if a["title"] not in _done]
@@ -10951,7 +10974,7 @@ def api_chat():
             try:
                 _bl_conn = get_db()
                 _bl_cur = _bl_conn.cursor()
-                _bl_cur.execute("SELECT title, category, completed FROM bucket_list ORDER BY completed, created_at DESC LIMIT 20")
+                _bl_cur.execute("SELECT title, category, completed FROM bucket_list WHERE user_id = %s ORDER BY completed, created_at DESC LIMIT 20", (chat_user_id,))
                 _bl_rows = _bl_cur.fetchall()
                 _bl_cur.close(); _bl_conn.close()
                 if _bl_rows:
@@ -10996,7 +11019,7 @@ def api_chat():
             try:
                 _sp_conn = get_db()
                 _sp_cur = _sp_conn.cursor()
-                _sp_cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s", (datetime.now(TZ).date(),))
+                _sp_cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s AND user_id = %s", (datetime.now(TZ).date(), chat_user_id))
                 _sp_plan = _sp_cur.fetchone()
                 if _sp_plan:
                     _sp_cur.execute("""
@@ -11024,19 +11047,19 @@ FROM daily_plan_items WHERE plan_id = %s ORDER BY order_index ASC LIMIT 20""", (
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "SELECT id, title, urgency, notes FROM tasks WHERE completed=FALSE "
-                "ORDER BY urgency DESC, created_at ASC LIMIT 15"
+                "SELECT id, title, urgency, notes FROM tasks WHERE completed=FALSE AND user_id=%s "
+                "ORDER BY urgency DESC, created_at ASC LIMIT 15", (chat_user_id,)
             )
             tasks = [dict(r) for r in cur.fetchall()]
             cur.execute("""
 SELECT p.title as project, pt.title as task, pt.assignee, pt.status, pt.notes
 FROM project_tasks pt JOIN projects p ON p.id=pt.project_id
-WHERE p.status='active' AND pt.status!='done' ORDER BY pt.created_at ASC LIMIT 10""")
+WHERE p.status='active' AND pt.status!='done' AND p.user_id=%s ORDER BY pt.created_at ASC LIMIT 10""", (chat_user_id,))
             proj_tasks = [dict(r) for r in cur.fetchall()]
             cur.execute("""
 SELECT p.title as project, pn.content as note
 FROM project_notes pn JOIN projects p ON p.id=pn.project_id
-WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
+WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 6""", (chat_user_id,))
             proj_notes = [dict(r) for r in cur.fetchall()]
             cur.close(); conn.close()
             if tasks:
@@ -11144,7 +11167,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
             # If client only sent a small history (e.g. fresh tab), pull a few recent
             # messages from this conversation so Jarvis doesn't lose mid-thread context.
             if len(messages) <= 1:
-                prior = _chat_last_messages(conversation_id, limit=6)
+                prior = _chat_last_messages(conversation_id, limit=6, user_id=chat_user_id)
                 # Drop the very latest if it duplicates the incoming user message.
                 if messages and prior and prior[-1].get("role") == "user" and \
                    prior[-1].get("content") == (messages[-1].get("content") if isinstance(messages[-1].get("content"), str) else ""):
@@ -11227,7 +11250,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
         try:
             _brief_conn = get_db()
             _brief_cur = _brief_conn.cursor()
-            _brief_cur.execute("SELECT content, generated_at FROM briefing_cache WHERE id = 1")
+            _brief_cur.execute("SELECT content, generated_at FROM briefing_cache WHERE user_id = %s", (chat_user_id,))
             _brief_row = _brief_cur.fetchone()
             _brief_cur.close(); _brief_conn.close()
             if _brief_row and _brief_row["content"]:
@@ -11493,12 +11516,13 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
 @app.route("/api/plan-my-day", methods=["GET"])
 def api_plan_my_day_get():
     """Get today's daily plan with all scheduled items."""
+    uid = _require_uid()
     start = time.time()
     today = datetime.now(TZ).date()
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT id, needs_update FROM daily_plans WHERE plan_date = %s", (today,))
+        cur.execute("SELECT id, needs_update FROM daily_plans WHERE plan_date = %s AND user_id = %s", (today, uid))
         plan_row = cur.fetchone()
         if not plan_row:
             cur.close()
@@ -11541,10 +11565,13 @@ ORDER BY order_index ASC""", (plan_id,))
         return jsonify({"error": str(e)}), 500
 
 
-def _generate_daily_plan_for_date(target_date):
+def _generate_daily_plan_for_date(target_date, uid=None):
     """Core plan generation logic. Returns dict {plan_id, items_count} or raises."""
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     today = target_date  # alias so the body below reads naturally
+    uid = uid or _default_student_uid()
+    if not uid:
+        raise RuntimeError("no user to plan for")
 
     with _plan_lock:
         if not api_key:
@@ -11559,19 +11586,19 @@ def _generate_daily_plan_for_date(target_date):
         try:
             cur = conn.cursor()
             try:
-                cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (uid,))
                 completed_titles = set(r["assignment_title"] for r in cur.fetchall())
-                cur.execute("SELECT uid, minutes FROM assignment_estimates")
+                cur.execute("SELECT uid, minutes FROM assignment_estimates WHERE user_id = %s", (uid,))
                 custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
 
                 urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
                 cur.execute("""
                     SELECT id, title, due_date, urgency FROM tasks
-                    WHERE completed = FALSE
+                    WHERE completed = FALSE AND user_id = %s
                     AND (due_date IS NULL OR due_date <= %s)
                     ORDER BY urgency DESC, due_date ASC
                     LIMIT 15
-                """, (today + timedelta(days=3),))
+                """, (uid, today + timedelta(days=3),))
                 for task_row in cur.fetchall():
                     due_date = task_row.get("due_date")
                     urgency = task_row.get("urgency", "medium")
@@ -11598,7 +11625,7 @@ def _generate_daily_plan_for_date(target_date):
         try:
             cal = fetch_ical(u_canvas_ical())
             if cal:
-                all_asgn = get_canvas_assignments_with_overdue(cal)
+                all_asgn = get_canvas_assignments_with_overdue(cal, uid=uid)
                 class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
                 class_avg_cache = get_class_averages_batch(class_names)
 
@@ -11620,14 +11647,14 @@ def _generate_daily_plan_for_date(target_date):
                             due_local = due_dt.astimezone(TZ)
                             due_date = due_local.date()
                             if due_date == today:
-                                uid = a.get("uid", "")
-                                if uid in custom_estimates:
-                                    est_mins = custom_estimates[uid]
+                                asgn_uid = a.get("uid", "")
+                                if asgn_uid in custom_estimates:
+                                    est_mins = custom_estimates[asgn_uid]
                                 else:
                                     est_mins = estimate_assignment(a.get("title", ""), a.get("class_name", ""), class_avg_cache=class_avg_cache)
                                 item = {
                                     "type": "assignment",
-                                    "id": uid,
+                                    "id": asgn_uid,
                                     "title": a.get("title", ""),
                                     "class": a.get("class_name", ""),
                                     "estimated_minutes": int(est_mins)
@@ -11877,17 +11904,17 @@ Rules:
         try:
             cur = conn.cursor()
             try:
-                cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
+                cur.execute("DELETE FROM daily_plans WHERE plan_date = %s AND user_id = %s", (today, uid))
                 cur.execute(
-                    "INSERT INTO daily_plans (plan_date, generated_at) VALUES (%s, NOW()) RETURNING id",
-                    (today,)
+                    "INSERT INTO daily_plans (plan_date, generated_at, user_id) VALUES (%s, NOW(), %s) RETURNING id",
+                    (today, uid)
                 )
                 plan_id = cur.fetchone()["id"]
                 for idx, item in enumerate(scheduled_items):
                     cur.execute("""
 INSERT INTO daily_plan_items (plan_id, item_type, item_id, item_title,
-                              scheduled_start_time, scheduled_end_time, estimated_minutes, order_index)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                              scheduled_start_time, scheduled_end_time, estimated_minutes, order_index, user_id)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
                             plan_id,
                             item.get("item_type", ""),
@@ -11896,7 +11923,8 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                             item.get("scheduled_start_time", "09:00"),
                             item.get("scheduled_end_time", "09:30"),
                             item.get("estimated_minutes", 30),
-                            idx
+                            idx,
+                            uid
                         )
                     )
                 conn.commit()
@@ -11924,8 +11952,9 @@ def auto_generate_plan_job():
 @app.route("/api/plan-my-day/generate", methods=["POST"])
 def api_plan_my_day_generate():
     """Generate a new daily plan using AI."""
+    uid = _require_uid()
     try:
-        result = _generate_daily_plan_for_date(datetime.now(TZ).date())
+        result = _generate_daily_plan_for_date(datetime.now(TZ).date(), uid=uid)
         return jsonify({"status": "ok", "plan_id": result["plan_id"], "items_count": result["items_count"]})
     except Exception as e:
         log.exception("Error generating daily plan")
@@ -11935,6 +11964,7 @@ def api_plan_my_day_generate():
 @app.route("/api/plan-my-day/reorder", methods=["PATCH"])
 def api_plan_my_day_reorder():
     """Reorder items in today's plan."""
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     try:
         with _plan_lock:
@@ -11942,7 +11972,7 @@ def api_plan_my_day_reorder():
             cur = conn.cursor()
 
             today = datetime.now(TZ).date()
-            cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s", (today,))
+            cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s AND user_id = %s", (today, uid))
             plan_row = cur.fetchone()
 
             if not plan_row:
@@ -11973,6 +12003,7 @@ WHERE id = %s AND plan_id = %s""",
 @app.route("/api/plan-my-day/items/<int:item_id>", methods=["PATCH"])
 def api_plan_my_day_item_update(item_id):
     """Update a specific plan item's times."""
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     try:
         with _plan_lock:
@@ -11988,8 +12019,8 @@ SET scheduled_start_time = COALESCE(%s, scheduled_start_time),
     scheduled_end_time = COALESCE(%s, scheduled_end_time),
     user_edited = TRUE,
     updated_at = NOW()
-WHERE id = %s""",
-                (start_time, end_time, item_id)
+WHERE id = %s AND plan_id IN (SELECT id FROM daily_plans WHERE user_id = %s)""",
+                (start_time, end_time, item_id, uid)
             )
 
             conn.commit()
@@ -12004,11 +12035,12 @@ WHERE id = %s""",
 @app.route("/api/plan-my-day/items/<int:item_id>", methods=["DELETE"])
 def api_plan_my_day_item_delete(item_id):
     """Delete a single plan item."""
+    uid = _require_uid()
     try:
         with _plan_lock:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("DELETE FROM daily_plan_items WHERE id = %s", (item_id,))
+            cur.execute("DELETE FROM daily_plan_items WHERE id = %s AND plan_id IN (SELECT id FROM daily_plans WHERE user_id = %s)", (item_id, uid))
             conn.commit()
             cur.close()
             conn.close()
@@ -12021,12 +12053,13 @@ def api_plan_my_day_item_delete(item_id):
 @app.route("/api/plan-my-day", methods=["DELETE"])
 def api_plan_my_day_delete():
     """Delete today's plan."""
+    uid = _require_uid()
     today = datetime.now(TZ).date()
     try:
         with _plan_lock:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
+            cur.execute("DELETE FROM daily_plans WHERE plan_date = %s AND user_id = %s", (today, uid))
             conn.commit()
             cur.close()
             conn.close()
@@ -12332,16 +12365,17 @@ def api_news_rate():
     summary = str(data.get("summary", ""))
     if not (url or title):
         return jsonify({"error": "url or title required"}), 400
+    uid = _require_uid()
     url_hash = hashlib.sha256((url or title).encode("utf-8")).hexdigest()[:32]
     keywords = _extract_keywords(title + " " + summary)
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO news_preferences (url_hash, url, title, outlet, rating, keywords) "
-            "VALUES (%s, %s, %s, %s, %s, %s) "
-            "ON CONFLICT (url_hash) DO UPDATE SET rating=EXCLUDED.rating, created_at=NOW()",
-            (url_hash, url, title, outlet, rating, " ".join(keywords))
+            "INSERT INTO news_preferences (url_hash, url, title, outlet, rating, keywords, user_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (user_id, url_hash) WHERE user_id IS NOT NULL DO UPDATE SET rating=EXCLUDED.rating, created_at=NOW()",
+            (url_hash, url, title, outlet, rating, " ".join(keywords), uid)
         )
         conn.commit()
         cur.close()
@@ -12354,13 +12388,15 @@ def api_news_rate():
 
 @app.route("/api/news/preferences", methods=["GET"])
 def api_news_preferences():
+    uid = _require_uid()
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
             "SELECT outlet, SUM(CASE WHEN rating=1 THEN 1 ELSE 0 END) AS likes, "
             "SUM(CASE WHEN rating=-1 THEN 1 ELSE 0 END) AS dislikes "
-            "FROM news_preferences WHERE outlet <> '' GROUP BY outlet ORDER BY likes DESC, dislikes ASC"
+            "FROM news_preferences WHERE outlet <> '' AND user_id = %s GROUP BY outlet ORDER BY likes DESC, dislikes ASC",
+            (uid,)
         )
         outlets = [{
             "outlet": r["outlet"],
@@ -12368,7 +12404,8 @@ def api_news_preferences():
             "dislikes": int(r["dislikes"] or 0),
         } for r in cur.fetchall()]
         cur.execute(
-            "SELECT rating, COUNT(*) AS n FROM news_preferences GROUP BY rating"
+            "SELECT rating, COUNT(*) AS n FROM news_preferences WHERE user_id = %s GROUP BY rating",
+            (uid,)
         )
         totals = {"likes": 0, "dislikes": 0}
         for r in cur.fetchall():
@@ -12390,10 +12427,11 @@ def api_daily_outlook():
     today = datetime.now(TZ).date()
     today_iso = today.isoformat()
 
-    # Resolve user-scoped calendar URLs in the request thread; the worker
-    # threads below cannot access Flask's session-bound LocalProxy. Without
-    # this, u_*_ical() would silently fall back to env vars and the user's
-    # saved settings calendars would be ignored.
+    # Resolve user-scoped calendar URLs (and the user id itself) in the request
+    # thread; the worker threads below cannot access Flask's session-bound
+    # LocalProxy. Without this, u_*_ical() would silently fall back to env vars
+    # and the user's saved settings calendars would be ignored.
+    outlook_uid  = _require_uid()
     canvas_url   = u_canvas_ical()
     personal_url = u_personal_ical()
     sports_url   = u_sports_ical()
@@ -12406,12 +12444,12 @@ def api_daily_outlook():
                 return []
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT DISTINCT assignment_title FROM completions")
+            cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (outlook_uid,))
             done = set(r["assignment_title"] for r in cur.fetchall())
             cur.close()
             conn.close()
             out = []
-            for a in get_canvas_assignments_with_overdue(cal):
+            for a in get_canvas_assignments_with_overdue(cal, uid=outlook_uid):
                 if a["title"] in done:
                     continue
                 due_iso = a.get("due_iso", "")
@@ -12460,9 +12498,9 @@ def api_daily_outlook():
             cur = conn.cursor()
             cur.execute(
                 "SELECT id, title, urgency, due_date, notes FROM tasks "
-                "WHERE completed = FALSE AND (due_date IS NULL OR due_date <= %s) "
+                "WHERE completed = FALSE AND user_id = %s AND (due_date IS NULL OR due_date <= %s) "
                 "ORDER BY urgency DESC, due_date ASC NULLS LAST LIMIT 10",
-                (today,)
+                (outlook_uid, today)
             )
             rows = cur.fetchall()
             cur.close()
@@ -12480,7 +12518,7 @@ def api_daily_outlook():
 
     def _get_stocks():
         try:
-            return build_portfolio_snapshot()
+            return build_portfolio_snapshot(uid=outlook_uid)
         except Exception as e:
             log.warning("outlook: stocks failed: %s", e)
             return None
@@ -12655,6 +12693,7 @@ try:
             try:
                 conn = get_db()
                 cur = conn.cursor()
+                # PHASE5: boot-time debrief check still targets the legacy singleton row
                 cur.execute("SELECT content FROM debrief_cache WHERE id = 1")
                 row = cur.fetchone()
                 cur.close()
@@ -12900,13 +12939,14 @@ def api_whoop_heart_rate():
 def api_fitness_prs():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
+    uid = _require_uid()
     workouts, is_mock = fitness_workouts(limit=25)
     prs = compute_personal_records(workouts)
     # Manual overrides (or records predating the WHOOP history) win.
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT record_key, label, value_display, value_numeric, achieved_on FROM personal_records")
+        cur.execute("SELECT record_key, label, value_display, value_numeric, achieved_on FROM personal_records WHERE user_id = %s", (uid,))
         for r in cur.fetchall():
             prs[r["record_key"]] = {
                 "label": r["label"],
@@ -12942,10 +12982,10 @@ def api_fitness_prs_set():
     cur.execute("""
 INSERT INTO personal_records (record_key, user_id, label, value_display, value_numeric, achieved_on, updated_at)
 VALUES (%s, %s, %s, %s, %s, %s, NOW())
-ON CONFLICT (record_key) DO UPDATE
+ON CONFLICT (user_id, record_key) WHERE user_id IS NOT NULL DO UPDATE
 SET value_display = EXCLUDED.value_display, value_numeric = EXCLUDED.value_numeric,
     achieved_on = EXCLUDED.achieved_on, updated_at = NOW()""",
-                (key, _uid(), label, value_display, data.get("value_numeric"), achieved_on))
+                (key, _require_uid(), label, value_display, data.get("value_numeric"), achieved_on))
     conn.commit()
     cur.close()
     conn.close()
@@ -12961,8 +13001,8 @@ def api_planned_workouts_get():
     cur.execute("""
 SELECT id, title, sport, planned_date, planned_time, duration_min, notes, completed
 FROM planned_workouts
-WHERE completed = FALSE OR planned_date >= CURRENT_DATE - 7
-ORDER BY planned_date ASC, planned_time ASC NULLS LAST""")
+WHERE (completed = FALSE OR planned_date >= CURRENT_DATE - 7) AND user_id = %s
+ORDER BY planned_date ASC, planned_time ASC NULLS LAST""", (_require_uid(),))
     rows = [dict(r) for r in cur.fetchall()]
     cur.close()
     conn.close()
@@ -13002,7 +13042,7 @@ def api_planned_workouts_create():
     cur.execute("""
 INSERT INTO planned_workouts (user_id, title, sport, planned_date, planned_time, duration_min, notes)
 VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                (_uid(), title, sport, planned_date, planned_time, duration_min, notes))
+                (_require_uid(), title, sport, planned_date, planned_time, duration_min, notes))
     workout_id = cur.fetchone()["id"]
     conn.commit()
     cur.close()
@@ -13014,13 +13054,14 @@ VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
 def api_planned_workouts_update(workout_id):
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     conn = get_db()
     cur = conn.cursor()
     if "completed" in data:
-        cur.execute("UPDATE planned_workouts SET completed=%s WHERE id=%s", (bool(data["completed"]), workout_id))
+        cur.execute("UPDATE planned_workouts SET completed=%s WHERE id=%s AND user_id=%s", (bool(data["completed"]), workout_id, uid))
     if "title" in data and str(data["title"]).strip():
-        cur.execute("UPDATE planned_workouts SET title=%s WHERE id=%s", (str(data["title"]).strip()[:200], workout_id))
+        cur.execute("UPDATE planned_workouts SET title=%s WHERE id=%s AND user_id=%s", (str(data["title"]).strip()[:200], workout_id, uid))
     conn.commit()
     cur.close()
     conn.close()
@@ -13033,7 +13074,7 @@ def api_planned_workouts_delete(workout_id):
         return jsonify({"error": "Not authenticated"}), 401
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM planned_workouts WHERE id=%s", (workout_id,))
+    cur.execute("DELETE FROM planned_workouts WHERE id=%s AND user_id=%s", (workout_id, _require_uid()))
     conn.commit()
     cur.close()
     conn.close()
@@ -13048,7 +13089,8 @@ def gmail_list_drafts():
     cur = conn.cursor()
     cur.execute(
         "SELECT id, to_addr, cc_addr, subject, body, created_at FROM gmail_drafts "
-        "WHERE status='pending' ORDER BY created_at DESC"
+        "WHERE status='pending' AND user_id=%s ORDER BY created_at DESC",
+        (_require_uid(),)
     )
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
@@ -13065,11 +13107,12 @@ def gmail_send_draft(draft_id):
     creds = _get_google_credentials()
     if not creds:
         return jsonify({"error": "Google not authorized. Visit /google-auth/start."}), 400
+    _draft_uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT to_addr, cc_addr, subject, body, conversation_id FROM gmail_drafts WHERE id=%s AND status='pending'",
-        (draft_id,),
+        "SELECT to_addr, cc_addr, subject, body, conversation_id FROM gmail_drafts WHERE id=%s AND status='pending' AND user_id=%s",
+        (draft_id, _draft_uid),
     )
     row = cur.fetchone()
     if not row:
@@ -13087,7 +13130,7 @@ def gmail_send_draft(draft_id):
         from googleapiclient.discovery import build as _gbuild
         svc = _gbuild("gmail", "v1", credentials=creds, cache_discovery=False)
         svc.users().messages().send(userId="me", body={"raw": raw}).execute()
-        cur.execute("UPDATE gmail_drafts SET status='sent' WHERE id=%s", (draft_id,))
+        cur.execute("UPDATE gmail_drafts SET status='sent' WHERE id=%s AND user_id=%s", (draft_id, _draft_uid))
         conn.commit()
         log.info(f"Gmail draft {draft_id} sent to {row['to_addr']!r}")
         # Inject a note so Jarvis knows this draft was handled and won't recreate it
@@ -13096,6 +13139,7 @@ def gmail_send_draft(draft_id):
                 row["conversation_id"],
                 "user",
                 f"[Notification: Email draft '{row['subject']}' to {row['to_addr']} was sent by the student.]",
+                user_id=_draft_uid,
             )
     except Exception as e:
         conn.rollback()
@@ -13110,19 +13154,20 @@ def gmail_send_draft(draft_id):
 def gmail_discard_draft(draft_id):
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
+    _draft_uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT subject, to_addr, conversation_id FROM gmail_drafts WHERE id=%s AND status='pending'",
-        (draft_id,),
+        "SELECT subject, to_addr, conversation_id FROM gmail_drafts WHERE id=%s AND status='pending' AND user_id=%s",
+        (draft_id, _draft_uid),
     )
     row = cur.fetchone()
     if not row:
         cur.close(); conn.close()
         return jsonify({"error": "Draft not found or already processed"}), 404
     cur.execute(
-        "UPDATE gmail_drafts SET status='discarded' WHERE id=%s",
-        (draft_id,),
+        "UPDATE gmail_drafts SET status='discarded' WHERE id=%s AND user_id=%s",
+        (draft_id, _draft_uid),
     )
     conn.commit()
     if row.get("conversation_id"):
@@ -13130,6 +13175,7 @@ def gmail_discard_draft(draft_id):
             row["conversation_id"],
             "user",
             f"[Notification: Email draft '{row['subject']}' to {row['to_addr']} was discarded by the student.]",
+            user_id=_draft_uid,
         )
     cur.close(); conn.close()
     return jsonify({"status": "discarded"})
