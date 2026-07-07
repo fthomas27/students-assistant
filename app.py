@@ -21,7 +21,7 @@ import psycopg2.pool
 from psycopg2 import sql as pgsql
 import requests
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, session, redirect, Response, stream_with_context
+from flask import Flask, request, jsonify, render_template, session, redirect, Response, stream_with_context, abort
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 from icalendar import Calendar
@@ -140,6 +140,8 @@ if os.environ.get("FLASK_BOOT_DEV") != "1":
         _bad_secrets.append("ADMIN_PASSWORD")
     if not PARENT_PASSWORD or PARENT_PASSWORD == "PARENT_PASSWORD":
         _bad_secrets.append("PARENT_PASSWORD")
+    if not os.environ.get("DATABASE_URL", "").strip():
+        _bad_secrets.append("DATABASE_URL")
     if _bad_secrets:
         raise RuntimeError(
             "Refusing to start: missing or default-valued secrets: "
@@ -202,7 +204,7 @@ def jarvis_persona(audience_name, role_phrase):
     """
     return (
         "You are Jarvis — the dry, sardonic British AI from the Iron Man films — "
-        f"{role_phrase} {audience_name}, a high school student in Park City, Utah. "
+        f"{role_phrase} {audience_name}, a high school student. "
         "Your default register is sarcastic-but-caring: you get the job done impeccably, "
         "but you cannot resist a pointed remark about it. Think withering politeness rather than outright rudeness — "
         "the kind of sarcasm that makes someone laugh and feel slightly roasted at the same time. "
@@ -238,7 +240,6 @@ def _scheduler_last_error_get():
 _CSRF_EXEMPT_PATHS = {
     '/login', '/logout', '/admin', '/parent',
     '/api/login', '/api/csrf-token',
-    '/api/test-admin-password', '/api/test-security-code', '/api/test-lockdown-status',
 }
 
 
@@ -304,20 +305,56 @@ def require_csrf():
     return None
 
 
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    """Unauthenticated health check for the hosting platform (Railway)."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.close()
+        conn.close()
+        db_ok = True
+    except Exception:
+        db_ok = False
+    try:
+        sched_running = bool(scheduler.running)
+    except Exception:
+        sched_running = False
+    status = 200 if db_ok else 503
+    return jsonify({"status": "ok" if db_ok else "degraded",
+                    "db": db_ok, "scheduler": sched_running}), status
+
+
 @app.before_request
 def require_auth():
     path = request.path.rstrip('/')
+    if path == '/healthz':
+        return None
+    # Maintenance mode: admins (and the login/admin pages themselves) only.
+    if path not in ('/login', '/logout', '/admin') and not path.startswith('/api/admin/') \
+            and not session.get("admin_authenticated"):
+        try:
+            if is_app_locked_down():
+                if path.startswith('/api/'):
+                    return jsonify({"error": "Down for maintenance. Back shortly."}), 503
+                return "<h1>Down for maintenance</h1><p>Jarvis will be back shortly.</p>", 503
+        except Exception:
+            pass
     if path in ('/login', '/logout', '/admin', '/parent', '/manifest.json', '/sw.js'):
         return None
     if path.startswith('/signup'):
         return None
-    if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password', '/api/csrf-token'):
+    if path in ('/api/lockdown-status', '/api/csrf-token'):
         return None
     if path.startswith('/api/signup/') or path.startswith('/api/webhooks/'):
         return None
     if path.startswith('/api/admin/'):
         return None
     if path.startswith('/api/parent/'):
+        if not PARENT_USER or PARENT_USER == "PARENT_USER":
+            return jsonify({"error": "Not found"}), 404
         if not session.get("parent_authenticated"):
             return jsonify({"error": "Not authenticated"}), 401
         return None
@@ -325,6 +362,31 @@ def require_auth():
         if path.startswith('/api/'):
             return jsonify({"error": "Not authenticated"}), 401
         return redirect("/login")
+    # Continuous subscription enforcement (checked at most every 5 minutes):
+    # a canceled subscriber loses access mid-session, not just at next login.
+    if path not in ('/billing',) and not path.startswith('/api/billing'):
+        _sub_check_ts = session.get("_sub_checked_at", 0)
+        if time.time() - _sub_check_ts > 300:
+            _sub_uid = session.get("user_id")
+            if _sub_uid:
+                try:
+                    _c = get_db(); _cu = _c.cursor()
+                    _cu.execute("""
+SELECT u.is_comped, s.status FROM users u
+LEFT JOIN subscriptions s ON s.user_id = u.id
+WHERE u.id = %s AND u.active = TRUE
+ORDER BY s.created_at DESC LIMIT 1""", (_sub_uid,))
+                    _row = _cu.fetchone()
+                    _cu.close(); _c.close()
+                    _ok = bool(_row and (_row["is_comped"] or (_row["status"] in ("active", "past_due"))))
+                    if not _ok:
+                        session.clear()
+                        if path.startswith('/api/'):
+                            return jsonify({"error": "Your subscription is inactive.", "billing": True}), 403
+                        return redirect("/login")
+                    session["_sub_checked_at"] = time.time()
+                except Exception as _sub_err:
+                    log.debug("subscription re-check failed: %s", _sub_err)
 
 _plan_lock = threading.Lock()
 
@@ -342,16 +404,31 @@ def _uid():
         return None
 
 
+def _require_uid():
+    """Return the current session's user_id or abort the request with 401.
+
+    Every user-facing route MUST scope its queries with this. Routes that
+    intentionally operate without a tenant (admin, health, signup) are the
+    only exceptions and must be marked # GLOBAL-OK at the query site.
+    """
+    uid = _uid()
+    if not uid:
+        abort(401, description="No user session")
+    return uid
+
+
 def _init_user_singleton(user_id, table, extra_cols=""):
     """Ensure a singleton row exists for user_id in singleton tables (timer_state, caches)."""
     conn = get_db()
     cur = conn.cursor()
     try:
+        if not user_id:
+            return
         if table == "timer_state":
             cur.execute("""INSERT INTO timer_state (assignment_uid, assignment_title, class_name, estimate_minutes, accumulated_seconds, active, user_id)
-VALUES ('', '', '', 30, 0, FALSE, %s) ON CONFLICT (user_id) DO NOTHING WHERE user_id IS NOT NULL""", (user_id,))
+VALUES ('', '', '', 30, 0, FALSE, %s) ON CONFLICT (user_id) WHERE user_id IS NOT NULL DO NOTHING""", (user_id,))
         elif table in ("briefing_cache", "debrief_cache", "insight_cache"):
-            cur.execute(f"INSERT INTO {table} (content, user_id) VALUES ('', %s) ON CONFLICT (user_id) DO NOTHING WHERE user_id IS NOT NULL", (user_id,))
+            cur.execute(f"INSERT INTO {table} (content, user_id) VALUES ('', %s) ON CONFLICT (user_id) WHERE user_id IS NOT NULL DO NOTHING", (user_id,))
         conn.commit()
     except Exception as e:
         log.debug("_init_user_singleton %s %s: %s", table, user_id, e)
@@ -371,6 +448,9 @@ def _init_user_defaults(user_id):
         "app_mode": "school",
         "is_summer_school": "false",
         "has_summer_job": "false",
+        # Private push-notification channel; the student subscribes to this
+        # topic in the ntfy app.
+        "ntfy_topic": "jarvis-" + secrets.token_urlsafe(12).lower().replace("_", "").replace("-", "")[:16],
     }
     conn = get_db()
     cur = conn.cursor()
@@ -433,19 +513,18 @@ def _default_student_uid():
         return uid
 
 
-def _resolve_user_url(config_key, env_fallback):
-    """Return current student's URL setting from user_config, falling back to env var.
+def _resolve_user_url(config_key, env_fallback, uid=None):
+    """Return a student's URL setting from user_config, falling back to env var.
 
-    In request context: uses session.user_id.
-    In scheduler/worker context (no session): falls back to the default student
-    user's user_config so saved settings still apply to background jobs.
-    Env var is the last resort.
+    Scheduler jobs must pass uid explicitly; request handlers may omit it
+    (session user is used). The legacy default-student fallback remains only
+    for code paths that predate per-user job loops.
     """
-    uid = None
-    try:
-        uid = session.get("user_id")
-    except (RuntimeError, KeyError):
-        uid = None
+    if not uid:
+        try:
+            uid = session.get("user_id")
+        except (RuntimeError, KeyError):
+            uid = None
     if not uid:
         uid = _default_student_uid()
     if uid:
@@ -458,12 +537,12 @@ def _resolve_user_url(config_key, env_fallback):
     return env_fallback
 
 
-def u_personal_ical():    return _resolve_user_url("personal_ical_url",     PERSONAL_ICAL_URL)
-def u_canvas_ical():      return _resolve_user_url("canvas_ical_url",       CANVAS_ICAL_URL)
-def u_canvas_api_token(): return _resolve_user_url("canvas_api_token",      CANVAS_API_TOKEN)
-def u_canvas_base_url():  return _resolve_user_url("canvas_base_url",       CANVAS_BASE_URL).rstrip("/")
-def u_sports_ical():      return _resolve_user_url("sports_ical_url",       SPORTS_ICAL_URL)
-def u_job_schedule_ical():return _resolve_user_url("job_schedule_ical_url", JOB_SCHEDULE_ICAL_URL)
+def u_personal_ical(uid=None):    return _resolve_user_url("personal_ical_url",     PERSONAL_ICAL_URL, uid)
+def u_canvas_ical(uid=None):      return _resolve_user_url("canvas_ical_url",       CANVAS_ICAL_URL, uid)
+def u_canvas_api_token(uid=None): return _resolve_user_url("canvas_api_token",      CANVAS_API_TOKEN, uid)
+def u_canvas_base_url(uid=None):  return _resolve_user_url("canvas_base_url",       CANVAS_BASE_URL, uid).rstrip("/")
+def u_sports_ical(uid=None):      return _resolve_user_url("sports_ical_url",       SPORTS_ICAL_URL, uid)
+def u_job_schedule_ical(uid=None):return _resolve_user_url("job_schedule_ical_url", JOB_SCHEDULE_ICAL_URL, uid)
 MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "").strip()
 RED_DAY_ICAL_URL = os.environ.get("RED_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_7ufb5f1vj8aks1shds5ou4fhe8%40group.calendar.google.com/public/basic.ics")
 WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_64ohm1bccvi50iti8fe455stkg%40group.calendar.google.com/public/basic.ics")
@@ -483,7 +562,20 @@ GUARDIAN_API_KEY = os.environ.get("GUARDIAN_API_KEY", "")
 # ── PowerSchool ───────────────────────────────────────────────────────────────
 POWER_USERN = os.environ.get("POWER_USERN", "").strip()
 POWER_PASS  = os.environ.get("POWER_PASS", "").strip()
-PS_BASE_URL = "https://powerschool.pcschools.us"
+PS_DEFAULT_BASE_URL = "https://powerschool.pcschools.us"
+
+
+def _ps_creds(uid=None):
+    """(username, password, base_url) for PowerSchool — per-user config with
+    legacy env fallback. PowerSchool is best-effort and district-specific."""
+    try:
+        cfg = get_user_config(uid or _uid() or _default_student_uid())
+    except Exception:
+        cfg = {}
+    user = (cfg.get("powerschool_username") or "").strip() or POWER_USERN
+    pw = (cfg.get("powerschool_password") or "").strip() or POWER_PASS
+    base = (cfg.get("powerschool_base_url") or "").strip().rstrip("/") or PS_DEFAULT_BASE_URL
+    return user, pw, base
 
 # ── ntfy push notifications ────────────────────────────────────────────────────
 NTFY_TOPIC  = os.environ.get("NTFY_TOPIC", "").strip()
@@ -508,123 +600,244 @@ GOOGLE_SCOPES = [
 # ── Default values ─────────────────────────────────────────────────────────────
 DEFAULT_ESTIMATE_MINS = 30
 
-# ── Park City School District 2025-2026 Bell Schedule ────────────────────────
-# Red Day = shorter (A-block), White Day = longer (B-block), alternating each school day
-# First day of school: 2025-08-18 (Red day)
-SCHOOL_YEAR_START = date(2025, 8, 18)
-SCHOOL_YEAR_END = date(2026, 6, 5)
+# ── Multi-school model ─────────────────────────────────────────────────────────
+# Every user belongs to a school (users.school_id → schools). A school defines
+# timezone, year dates, no-school dates, day-type rotation (e.g. Park City's
+# alternating Red/White), bell schedules, and optional day-type iCal feeds.
+# Park City High School is seeded from these constants; users at other schools
+# create their own during signup.
 
-# All dates with no school (students)
-_ns_ranges = [
-    (date(2025, 8, 7), date(2025, 8, 15)),   # Teacher work days before school
-    (date(2025, 9, 1), date(2025, 9, 1)),    # Labor Day
-    (date(2025, 9, 23), date(2025, 9, 23)),  # Rosh Hashanah
-    (date(2025, 10, 2), date(2025, 10, 3)),  # Yom Kippur + Fall Break
-    (date(2025, 11, 7), date(2025, 11, 7)),  # Prof Development
-    (date(2025, 11, 26), date(2025, 11, 28)),# Thanksgiving
-    (date(2025, 12, 22), date(2026, 1, 2)),  # Winter Break
-    (date(2026, 1, 19), date(2026, 1, 19)),  # MLK Day
-    (date(2026, 2, 16), date(2026, 2, 20)),  # Presidents Day + February Break
-    (date(2026, 3, 20), date(2026, 3, 20)),  # Prof Development
-    (date(2026, 4, 13), date(2026, 4, 17)),  # Teacher Comp + Spring Break
-    (date(2026, 5, 22), date(2026, 5, 22)),  # Make Up Snow Day
-    (date(2026, 5, 25), date(2026, 5, 25)),  # Memorial Day
-]
-NO_SCHOOL_DATES = set()
-for _s, _e in _ns_ranges:
-    _cur = _s
-    while _cur <= _e:
-        NO_SCHOOL_DATES.add(_cur)
-        _cur += timedelta(days=1)
+PARK_CITY_SCHOOL = {
+    "id": None,  # filled at boot from the seeded DB row
+    "name": "Park City High School",
+    "timezone": "America/Denver",
+    "schedule_type": "ab_alternating",       # or "weekly"
+    "day_type_names": ["red", "white"],
+    # ab_alternating: {day_type: {"default": [sh,sm,eh,em], "fri": [...]}}
+    # weekly:         {"mon"|"tue"|...: [sh,sm,eh,em]} — missing day = no school
+    "bell_schedules": {
+        "red":   {"default": [7, 35, 12, 53], "fri": [7, 35, 10, 25]},
+        "white": {"default": [7, 35, 14, 25], "fri": [7, 35, 11, 30]},
+    },
+    "year_start": date(2025, 8, 18),
+    "year_end": date(2026, 6, 5),
+    # list of [start_iso, end_iso] inclusive ranges
+    "no_school_ranges": [
+        ["2025-08-07", "2025-08-15"], ["2025-09-01", "2025-09-01"],
+        ["2025-09-23", "2025-09-23"], ["2025-10-02", "2025-10-03"],
+        ["2025-11-07", "2025-11-07"], ["2025-11-26", "2025-11-28"],
+        ["2025-12-22", "2026-01-02"], ["2026-01-19", "2026-01-19"],
+        ["2026-02-16", "2026-02-20"], ["2026-03-20", "2026-03-20"],
+        ["2026-04-13", "2026-04-17"], ["2026-05-22", "2026-05-22"],
+        ["2026-05-25", "2026-05-25"],
+    ],
+    "day_type_ical_urls": {
+        "red": os.environ.get("RED_DAY_ICAL_URL", RED_DAY_ICAL_URL),
+        "white": os.environ.get("WHITE_DAY_ICAL_URL", WHITE_DAY_ICAL_URL),
+    },
+}
 
 
-def is_school_day(d):
+def _expand_no_school_dates(ranges):
+    out = set()
+    for pair in ranges or []:
+        try:
+            s = date.fromisoformat(pair[0]); e = date.fromisoformat(pair[1])
+        except Exception:
+            continue
+        cur = s
+        while cur <= e:
+            out.add(cur)
+            cur += timedelta(days=1)
+    return out
+
+
+def _school_row_to_dict(row):
+    """Convert a schools DB row into the runtime school dict."""
+    try:
+        s = {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "timezone": row["timezone"] or "America/Denver",
+            "schedule_type": row["schedule_type"] or "weekly",
+            "day_type_names": json.loads(row["day_type_names"] or "[]"),
+            "bell_schedules": json.loads(row["bell_schedules"] or "{}"),
+            "year_start": row["year_start"],
+            "year_end": row["year_end"],
+            "no_school_ranges": json.loads(row["no_school_dates"] or "[]"),
+            "day_type_ical_urls": json.loads(row["day_type_ical_urls"] or "{}"),
+        }
+        s["_no_school_set"] = _expand_no_school_dates(s["no_school_ranges"])
+        return s
+    except Exception as e:
+        log.warning("_school_row_to_dict failed: %s", e)
+        return None
+
+
+_school_cache = {}          # uid -> (school_dict, monotonic_ts)
+_school_cache_lock = threading.Lock()
+_SCHOOL_CACHE_TTL = 60.0
+
+
+def _fallback_school():
+    s = dict(PARK_CITY_SCHOOL)
+    s["_no_school_set"] = _expand_no_school_dates(s["no_school_ranges"])
+    return s
+
+
+def _school_for(uid=None):
+    """Return the school dict for a user (cached ~60s). Falls back to the
+    Park City definition when the user has no school or the lookup fails."""
+    uid = uid or _uid() or _default_student_uid()
+    cache_key = uid or "__default__"
+    now = time.monotonic()
+    with _school_cache_lock:
+        hit = _school_cache.get(cache_key)
+        if hit and (now - hit[1]) < _SCHOOL_CACHE_TTL:
+            return hit[0]
+    school = None
+    if uid:
+        try:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("""
+SELECT s.id, s.name, s.timezone, s.schedule_type, s.day_type_names, s.bell_schedules,
+       s.year_start, s.year_end, s.no_school_dates, s.day_type_ical_urls
+FROM schools s JOIN users u ON u.school_id = s.id WHERE u.id = %s""", (uid,))
+            row = cur.fetchone()
+            cur.close(); conn.close()
+            if row:
+                school = _school_row_to_dict(row)
+        except Exception as e:
+            log.debug("_school_for(%s) failed: %s", uid, e)
+    if school is None:
+        school = _fallback_school()
+    with _school_cache_lock:
+        _school_cache[cache_key] = (school, now)
+    return school
+
+
+def _invalidate_school_cache():
+    with _school_cache_lock:
+        _school_cache.clear()
+
+
+def user_tz(uid=None):
+    """The user's local timezone (from their school), default Mountain."""
+    try:
+        return ZoneInfo(_school_for(uid)["timezone"])
+    except Exception:
+        return _TZ_DEFAULT
+
+
+def is_school_day(d, school=None):
     """Return True if d is a regular school day (weekday, not holiday, within school year)."""
-    if d < SCHOOL_YEAR_START or d > SCHOOL_YEAR_END:
+    school = school or _school_for()
+    ys, ye = school.get("year_start"), school.get("year_end")
+    if ys and d < ys:
+        return False
+    if ye and d > ye:
         return False
     if d.weekday() >= 5:  # Saturday/Sunday
         return False
-    return d not in NO_SCHOOL_DATES
+    if school.get("schedule_type") == "weekly":
+        dow_key = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[d.weekday()]
+        if dow_key not in (school.get("bell_schedules") or {}):
+            return False
+    return d not in school.get("_no_school_set", set())
 
 
-def _build_day_type_cache():
+_day_type_caches = {}       # school id/name -> {date: day_type}
+_day_type_caches_lock = threading.Lock()
+
+
+def _day_type_cache_for(school):
+    """Alternating-pattern cache: first school day = first day type, then rotate."""
+    key = school.get("id") or school.get("name")
+    with _day_type_caches_lock:
+        cached = _day_type_caches.get(key)
+    if cached is not None:
+        return cached
     cache = {}
-    cur = SCHOOL_YEAR_START
-    count = 0
-    while cur <= SCHOOL_YEAR_END:
-        if is_school_day(cur):
-            cache[cur] = "red" if count % 2 == 0 else "white"
-            count += 1
-        else:
-            cache[cur] = None
-        cur += timedelta(days=1)
+    names = school.get("day_type_names") or []
+    ys, ye = school.get("year_start"), school.get("year_end")
+    if names and ys and ye:
+        cur, count = ys, 0
+        while cur <= ye:
+            if is_school_day(cur, school=school):
+                cache[cur] = names[count % len(names)]
+                count += 1
+            else:
+                cache[cur] = None
+            cur += timedelta(days=1)
+    with _day_type_caches_lock:
+        _day_type_caches[key] = cache
     return cache
 
-_DAY_TYPE_CACHE = _build_day_type_cache()
 
-
-def _get_day_type_from_ical(d):
-    """Check the official Red/White day iCal feeds for a specific date."""
-    day_start = datetime(d.year, d.month, d.day, tzinfo=TZ)
+def _get_day_type_from_ical(d, school):
+    """Check the school's official day-type iCal feeds for a specific date."""
+    urls = school.get("day_type_ical_urls") or {}
+    if not urls:
+        return None
+    tz = ZoneInfo(school.get("timezone", "America/Denver"))
+    day_start = datetime(d.year, d.month, d.day, tzinfo=tz)
     day_end = day_start + timedelta(days=1)
     try:
-        red_cal = fetch_ical(RED_DAY_ICAL_URL)
-        if red_cal and recurring_ical_events.of(red_cal).between(day_start, day_end):
-            return "red"
-        white_cal = fetch_ical(WHITE_DAY_ICAL_URL)
-        if white_cal and recurring_ical_events.of(white_cal).between(day_start, day_end):
-            return "white"
+        for dtype, url in urls.items():
+            if not url:
+                continue
+            cal = fetch_ical(url)
+            if cal and recurring_ical_events.of(cal).between(day_start, day_end):
+                return dtype
     except Exception:
         pass
     return None
 
 
-def get_day_type(d):
-    """Return 'red', 'white', or None for non-school days.
-    Checks official iCal feeds first; falls back to alternating-pattern cache."""
-    if not is_school_day(d):
+def get_day_type(d, school=None):
+    """Return the day-type name ('red', 'white', 'a', ...) or None for
+    non-school days. 'weekly' schools have no day types — school days return
+    'day'. Checks official iCal feeds first; falls back to rotation cache."""
+    school = school or _school_for()
+    if not is_school_day(d, school=school):
         return None
-    live = _get_day_type_from_ical(d)
+    if school.get("schedule_type") == "weekly" or not school.get("day_type_names"):
+        return "day"
+    live = _get_day_type_from_ical(d, school)
     if live:
         return live
-    return _DAY_TYPE_CACHE.get(d)
+    return _day_type_cache_for(school).get(d)
 
 
-def get_school_hours(d):
+def get_school_hours(d, school=None):
     """Return (start_hour, start_min, end_hour, end_min) for school on day d, or None."""
-    dtype = get_day_type(d)
+    school = school or _school_for()
+    dtype = get_day_type(d, school=school)
     if dtype is None:
         return None
-    dow = d.weekday()  # 0=Mon, 4=Fri
-    if dow == 4:  # Friday early release
-        return (7, 35, 10, 25) if dtype == "red" else (7, 35, 11, 30)
-    else:  # Mon-Thu
-        # Red day ends after History (12:53), White day ends after Entrepreneurship (14:25)
-        return (7, 35, 12, 53) if dtype == "red" else (7, 35, 14, 25)
+    bells = school.get("bell_schedules") or {}
+    if school.get("schedule_type") == "weekly" or dtype == "day":
+        dow_key = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[d.weekday()]
+        slot = bells.get(dow_key)
+        return tuple(slot) if slot else None
+    spec = bells.get(dtype) or {}
+    dow_key = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[d.weekday()]
+    slot = spec.get(dow_key) or (spec.get("fri") if d.weekday() == 4 else None) or spec.get("default")
+    return tuple(slot) if slot else None
 
 
-def get_day_calendar_url(d):
-    """Return the appropriate day calendar URL (red or white) based on the day type."""
-    dtype = get_day_type(d)
-    day_urls = {
-        "red": RED_DAY_ICAL_URL,
-        "white": WHITE_DAY_ICAL_URL,
-    }
-    return day_urls.get(dtype)
+def get_day_calendar_url(d, school=None):
+    """Return the school's iCal URL for d's day type, if configured."""
+    school = school or _school_for()
+    dtype = get_day_type(d, school=school)
+    return (school.get("day_type_ical_urls") or {}).get(dtype)
 
 
-def fetch_day_calendar_events(d, days_ahead=30):
-    """Fetch calendar events from the appropriate day-specific calendar.
-
-    Args:
-        d: date object to determine red/white day
-        days_ahead: number of days to fetch events for
-
-    Returns:
-        list of event dictionaries with source set to 'redday' or 'whiteday', or empty list if unavailable
-    """
-    day_type = get_day_type(d)
-    day_cal_url = get_day_calendar_url(d)
+def fetch_day_calendar_events(d, days_ahead=30, school=None):
+    """Fetch calendar events from the school's day-type calendar for d."""
+    school = school or _school_for()
+    day_type = get_day_type(d, school=school)
+    day_cal_url = get_day_calendar_url(d, school=school)
     events = []
 
     if day_cal_url:
@@ -635,6 +848,43 @@ def fetch_day_calendar_events(d, days_ahead=30):
                 events.append(e)
 
     return events
+
+
+def _school_prompt_block(uid=None):
+    """Human-readable school facts for AI prompts (replaces the hardcoded
+    Park City text)."""
+    school = _school_for(uid)
+    lines = [f"BELL SCHEDULE REFERENCE ({school['name']}) — "]
+    bells = school.get("bell_schedules") or {}
+
+    def _fmt(slot):
+        sh, sm, eh, em = slot
+        return "%d:%02d %s–%d:%02d %s" % (
+            sh % 12 or 12, sm, "AM" if sh < 12 else "PM",
+            eh % 12 or 12, em, "AM" if eh < 12 else "PM")
+
+    parts = []
+    if school.get("schedule_type") == "ab_alternating":
+        for dtype in school.get("day_type_names") or []:
+            spec = bells.get(dtype) or {}
+            if spec.get("default"):
+                parts.append("Mon-Thu %s: %s" % (dtype.title(), _fmt(spec["default"])))
+            if spec.get("fri"):
+                parts.append("Fri %s: %s" % (dtype.title(), _fmt(spec["fri"])))
+        parts.append("Day types alternate each school day (%s)." %
+                     "/".join(t.title() for t in school.get("day_type_names") or []))
+    else:
+        for dow_key, label in (("mon", "Mon"), ("tue", "Tue"), ("wed", "Wed"),
+                               ("thu", "Thu"), ("fri", "Fri")):
+            if bells.get(dow_key):
+                parts.append("%s: %s" % (label, _fmt(bells[dow_key])))
+    lines.append(", ".join(parts) + ". " if parts else "Bell times not configured. ")
+    ys, ye = school.get("year_start"), school.get("year_end")
+    if ys and ye:
+        lines.append("School year runs %s – %s. " % (
+            ys.strftime("%b %-d, %Y"), ye.strftime("%b %-d, %Y")))
+    lines.append("Timezone is %s." % school.get("timezone", "America/Denver"))
+    return "".join(lines)
 
 
 _DB_POOL = None
@@ -800,6 +1050,7 @@ def init_db():
             id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
             stripe_price_id TEXT NOT NULL DEFAULT '',
             monthly_cents INT NOT NULL DEFAULT 999,
+            open_signup BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at TIMESTAMPTZ DEFAULT NOW()
         )"""),
         ("pending_signups", """CREATE TABLE IF NOT EXISTS pending_signups (
@@ -818,6 +1069,22 @@ def init_db():
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             reviewed_at TIMESTAMPTZ,
             reviewed_by TEXT DEFAULT 'admin'
+        )"""),
+        ("schools", """CREATE TABLE IF NOT EXISTS schools (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name TEXT UNIQUE NOT NULL,
+            timezone TEXT NOT NULL DEFAULT 'America/Denver',
+            schedule_type TEXT NOT NULL DEFAULT 'weekly',
+            day_type_names TEXT NOT NULL DEFAULT '[]',
+            bell_schedules TEXT NOT NULL DEFAULT '{}',
+            year_start DATE,
+            year_end DATE,
+            no_school_dates TEXT NOT NULL DEFAULT '[]',
+            day_type_ical_urls TEXT NOT NULL DEFAULT '{}',
+            holiday_ical_url TEXT NOT NULL DEFAULT '',
+            created_by UUID REFERENCES users(id),
+            verified BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )"""),
     ]
 
@@ -1071,6 +1338,132 @@ ON CONFLICT (ip_address) DO NOTHING""")
             conn = get_db()
             cur = conn.cursor()
 
+    # Singleton tables were born as one-row tables with id INT PRIMARY KEY DEFAULT 1.
+    # For multi-tenant rows the id must auto-increment so a second user's row
+    # doesn't collide with id=1.
+    for _single_tbl in ("timer_state", "briefing_cache", "debrief_cache", "insight_cache"):
+        try:
+            cur.execute(f"CREATE SEQUENCE IF NOT EXISTS {_single_tbl}_id_seq")
+            cur.execute(f"SELECT setval('{_single_tbl}_id_seq', (SELECT COALESCE(MAX(id), 1) FROM {_single_tbl}))")
+            cur.execute(f"ALTER TABLE {_single_tbl} ALTER COLUMN id SET DEFAULT nextval('{_single_tbl}_id_seq')")
+            conn.commit()
+        except psycopg2.Error:
+            conn.rollback()
+            conn = get_db()
+            cur = conn.cursor()
+
+    # ── Composite tenant keys ──────────────────────────────────────────────────
+    # These tables were built with globally-unique natural keys; two tenants
+    # must be able to use the same symbol/uid/name/etc, so the uniqueness
+    # moves to (user_id, <key>). Old single-column constraints are dropped.
+    _composite_migrations = [
+        ("assignment_estimates", "assignment_estimates_pkey",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_assignment_estimates_user_uid ON assignment_estimates(user_id, uid) WHERE user_id IS NOT NULL"),
+        ("stock_notes", "stock_notes_pkey",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_notes_user_symbol ON stock_notes(user_id, symbol) WHERE user_id IS NOT NULL"),
+        ("canvas_assignments_cache", "canvas_assignments_cache_pkey",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_canvas_cache_user_uid ON canvas_assignments_cache(user_id, uid) WHERE user_id IS NOT NULL"),
+        ("chat_summaries", "chat_summaries_pkey",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_summaries_user_conv ON chat_summaries(user_id, conversation_id) WHERE user_id IS NOT NULL"),
+        ("personal_records", "personal_records_pkey",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_personal_records_user_key ON personal_records(user_id, record_key) WHERE user_id IS NOT NULL"),
+        ("people_profiles", "people_profiles_name_key",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_people_profiles_user_name ON people_profiles(user_id, name) WHERE user_id IS NOT NULL"),
+        ("notification_log", "notification_log_notification_key_key",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_notification_log_user_key ON notification_log((COALESCE(user_id::text, 'global')), notification_key)"),
+        ("news_preferences", "news_preferences_pkey",
+         "CREATE UNIQUE INDEX IF NOT EXISTS uq_news_prefs_user_hash ON news_preferences(user_id, url_hash) WHERE user_id IS NOT NULL"),
+    ]
+    try:
+        cur.execute("ALTER TABLE news_preferences ADD COLUMN IF NOT EXISTS user_id UUID")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+    for _tbl, _old_constraint, _new_index_sql in _composite_migrations:
+        try:
+            # A surrogate id keeps rows addressable once the natural PK is dropped.
+            cur.execute(f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS row_id SERIAL")
+            cur.execute(f"ALTER TABLE {_tbl} DROP CONSTRAINT IF EXISTS {_old_constraint}")
+            cur.execute(_new_index_sql)
+            conn.commit()
+        except psycopg2.Error as _cm_err:
+            log.warning("Composite key migration for %s failed: %s", _tbl, _cm_err)
+            conn.rollback()
+            conn = get_db()
+            cur = conn.cursor()
+
+    # ── Multi-school: users.school_id + Park City seed ─────────────────────────
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS school_id UUID REFERENCES schools(id)")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+    try:
+        _pc = PARK_CITY_SCHOOL
+        cur.execute("""
+INSERT INTO schools (name, timezone, schedule_type, day_type_names, bell_schedules,
+                     year_start, year_end, no_school_dates, day_type_ical_urls, verified)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+ON CONFLICT (name) DO NOTHING""",
+            (_pc["name"], _pc["timezone"], _pc["schedule_type"],
+             json.dumps(_pc["day_type_names"]), json.dumps(_pc["bell_schedules"]),
+             _pc["year_start"], _pc["year_end"], json.dumps(_pc["no_school_ranges"]),
+             json.dumps(_pc["day_type_ical_urls"])))
+        cur.execute("SELECT id FROM schools WHERE name = %s", (_pc["name"],))
+        _pc_row = cur.fetchone()
+        if _pc_row:
+            PARK_CITY_SCHOOL["id"] = str(_pc_row["id"])
+            # Existing users predate the school model — they are Park City students.
+            cur.execute("UPDATE users SET school_id = %s WHERE school_id IS NULL", (_pc_row["id"],))
+        conn.commit()
+    except psycopg2.Error as _sch_err:
+        log.warning("School seed failed: %s", _sch_err)
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
+    # ── Schema finalization: user_id NOT NULL + FK on user-data tables ─────────
+    # By this point every write path stamps user_id; stragglers from the
+    # single-user era are adopted by the default student first.
+    try:
+        cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1",
+                    (os.environ.get("AVERAGE_USER", "user").strip() or "user",))
+        _adopt_row = cur.fetchone()
+        if not _adopt_row:
+            cur.execute("SELECT id FROM users WHERE active = TRUE ORDER BY created_at ASC LIMIT 1")
+            _adopt_row = cur.fetchone()
+        _adopt_uid = str(_adopt_row["id"]) if _adopt_row else None
+    except Exception:
+        conn.rollback(); conn = get_db(); cur = conn.cursor()
+        _adopt_uid = None
+    for _tbl in _user_id_tables:
+        try:
+            if _adopt_uid:
+                cur.execute(f"UPDATE {_tbl} SET user_id = %s WHERE user_id IS NULL", (_adopt_uid,))
+            cur.execute(f"ALTER TABLE {_tbl} ALTER COLUMN user_id SET NOT NULL")
+            cur.execute(f"""DO $$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_{_tbl}_user') THEN
+    ALTER TABLE {_tbl} ADD CONSTRAINT fk_{_tbl}_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+END IF; END $$""")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{_tbl}_user ON {_tbl}(user_id)")
+            conn.commit()
+        except psycopg2.Error as _nn_err:
+            log.debug("NOT NULL finalization for %s: %s", _tbl, _nn_err)
+            conn.rollback()
+            conn = get_db()
+            cur = conn.cursor()
+
+    try:
+        cur.execute("ALTER TABLE pricing_config ADD COLUMN IF NOT EXISTS open_signup BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback(); conn = get_db(); cur = conn.cursor()
+
     # Initialize pricing_config singleton
     try:
         cur.execute("INSERT INTO pricing_config (id, stripe_price_id, monthly_cents) VALUES (1, '', 999) ON CONFLICT (id) DO NOTHING")
@@ -1126,7 +1519,7 @@ ON CONFLICT (user_id, key) DO NOTHING""", (_avg_uuid,))
             cur = conn.cursor()
 
     # Insert default config values
-    defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas", "app_mode": "school", "is_summer_school": "false", "has_summer_job": "false"}
+    defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "", "formal_signoff_name": "", "app_mode": "school", "is_summer_school": "false", "has_summer_job": "false"}
     for k, v in defaults.items():
         try:
             cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
@@ -1134,11 +1527,10 @@ ON CONFLICT (user_id, key) DO NOTHING""", (_avg_uuid,))
             pass
     conn.commit()
 
-    # Initialize singleton records
+    # Initialize singleton records. Per-user timer/briefing/debrief rows are
+    # created lazily via _init_user_singleton(); only the app-wide lockdown
+    # flag remains a true singleton.
     try:
-        cur.execute("INSERT INTO timer_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
-        cur.execute("INSERT INTO briefing_cache (id, content) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
-        cur.execute("INSERT INTO debrief_cache (id, content) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
         cur.execute("INSERT INTO lockdown_state (id, is_locked_down) VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING")
         conn.commit()
     except Exception as e:
@@ -1167,6 +1559,58 @@ _config_cache_lock = threading.Lock()
 CONFIG_CACHE_TTL = 30  # seconds
 
 
+# ── Sensitive config encryption ───────────────────────────────────────────────
+# Per-user secrets (API keys, OAuth tokens, passwords) are encrypted at rest
+# with a Fernet key from CONFIG_ENCRYPTION_KEY. Values are stored with an
+# "enc:v1:" prefix; plaintext legacy values pass through on read and get
+# re-encrypted the next time they are saved.
+
+SENSITIVE_CONFIG_KEYS = {
+    "anthropic_api_key", "canvas_api_token", "whoop_refresh_token",
+    "whoop_access_token", "google_refresh_token", "powerschool_password",
+}
+_ENC_PREFIX = "enc:v1:"
+_fernet = None
+
+
+def _get_fernet():
+    global _fernet
+    if _fernet is None:
+        key = os.environ.get("CONFIG_ENCRYPTION_KEY", "").strip()
+        if not key:
+            return None
+        try:
+            from cryptography.fernet import Fernet
+            _fernet = Fernet(key.encode())
+        except Exception as e:
+            log.error("CONFIG_ENCRYPTION_KEY invalid: %s", e)
+            return None
+    return _fernet
+
+
+def _encrypt_config_value(key, value):
+    if key not in SENSITIVE_CONFIG_KEYS or not value or value.startswith(_ENC_PREFIX):
+        return value
+    f = _get_fernet()
+    if f is None:
+        return value  # no key configured — store plaintext (dev mode)
+    return _ENC_PREFIX + f.encrypt(value.encode()).decode()
+
+
+def _decrypt_config_value(key, value):
+    if not isinstance(value, str) or not value.startswith(_ENC_PREFIX):
+        return value
+    f = _get_fernet()
+    if f is None:
+        log.error("Encrypted config value for %s but CONFIG_ENCRYPTION_KEY unset", key)
+        return ""
+    try:
+        return f.decrypt(value[len(_ENC_PREFIX):].encode()).decode()
+    except Exception:
+        log.error("Failed to decrypt config value for %s (wrong CONFIG_ENCRYPTION_KEY?)", key)
+        return ""
+
+
 def get_config():
     """Returns global config (used by scheduler and admin context)."""
     global _config_cache, _config_cache_ts
@@ -1179,7 +1623,7 @@ def get_config():
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    result = {r["key"]: r["value"] for r in rows}
+    result = {r["key"]: _decrypt_config_value(r["key"], r["value"]) for r in rows}
     with _config_cache_lock:
         _config_cache = result
         _config_cache_ts = time.monotonic()
@@ -1204,7 +1648,7 @@ def get_user_config(user_id=None):
     cur.close()
     conn.close()
     result = dict(get_config())  # start with global defaults
-    result.update({r["key"]: r["value"] for r in rows})  # overlay user-specific values
+    result.update({r["key"]: _decrypt_config_value(r["key"], r["value"]) for r in rows})  # overlay user-specific values
     return result
 
 
@@ -1215,7 +1659,7 @@ def set_config(updates):
     for k, v in updates.items():
         cur.execute("""
 INSERT INTO config (key, value) VALUES (%s, %s)
-ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""", (k, str(v)))
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""", (k, _encrypt_config_value(k, str(v))))
     conn.commit()
     cur.close()
     conn.close()
@@ -1239,10 +1683,56 @@ def set_user_config(updates, user_id=None):
     for k, v in updates.items():
         cur.execute("""
 INSERT INTO user_config (user_id, key, value) VALUES (%s, %s, %s)
-ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value""", (uid, k, str(v)))
+ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value""", (uid, k, _encrypt_config_value(k, str(v))))
     conn.commit()
     cur.close()
     conn.close()
+
+
+class MissingApiKeyError(RuntimeError):
+    """Raised when a Claude call is attempted for a user with no API key."""
+
+
+def _user_api_key(uid=None):
+    """Resolve the Anthropic API key for a user (BYOK).
+
+    Order: the user's own user_config key → the legacy global config key →
+    the ANTHROPIC_API_KEY env var (local-dev convenience only; production
+    should not set it so each customer pays for their own usage).
+    """
+    uid = uid or _uid()
+    try:
+        cfg = get_user_config(uid) if uid else get_config()
+        key = (cfg.get("anthropic_api_key") or "").strip()
+        if key:
+            return key
+    except Exception as e:
+        log.warning("_user_api_key lookup failed: %s", e)
+    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+
+def _anthropic_client_for(uid=None, *, max_retries=3, timeout=60.0):
+    """Return an Anthropic client bound to the user's own API key."""
+    key = _user_api_key(uid)
+    if not key:
+        raise MissingApiKeyError(
+            "No Anthropic API key on file. Add yours in Settings → AI."
+        )
+    return anthropic.Anthropic(api_key=key, max_retries=max_retries, timeout=timeout)
+
+
+def _ai_error_response(exc):
+    """Map an AI-call exception to a JSON error the UI can act on."""
+    if isinstance(exc, MissingApiKeyError):
+        return jsonify({"error": str(exc), "error_code": "no_api_key"}), 402
+    name = type(exc).__name__
+    if name == "AuthenticationError":
+        return jsonify({"error": "Your Anthropic API key was rejected. Update it in Settings.",
+                        "error_code": "bad_api_key"}), 402
+    if name in ("RateLimitError", "OverloadedError"):
+        return jsonify({"error": "Your Anthropic account is rate-limited or out of credits.",
+                        "error_code": "key_quota"}), 429
+    return jsonify({"error": str(exc)}), 500
 
 
 # ── Mem0 long-term memory ──────────────────────────────────────────────────────
@@ -1271,11 +1761,15 @@ def _google_configured():
     return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 
 
-def _get_google_credentials():
-    """Return refreshed google.oauth2.credentials.Credentials, or None if not authorized."""
+def _get_google_credentials(uid=None):
+    """Return refreshed google.oauth2.credentials.Credentials for the user,
+    or None if not authorized."""
     if not _google_configured():
         return None
-    refresh_token = get_config().get("google_refresh_token", "").strip()
+    uid = uid or _uid() or _default_student_uid()
+    if not uid:
+        return None
+    refresh_token = (get_user_config(uid).get("google_refresh_token") or "").strip()
     if not refresh_token:
         return None
     try:
@@ -1308,7 +1802,17 @@ def _google_client_config():
     }
 
 
-def _mem0_store_worker(user_content, assistant_content):
+def _mem0_user(uid=None):
+    """Mem0 identity for a user. The original single-user install stored all
+    memories under "student" — keep that identity for the default student so
+    existing memories survive; everyone else gets their uuid."""
+    uid = uid or _uid() or _default_student_uid()
+    if not uid:
+        return "student"
+    return "student" if uid == _default_student_uid() else str(uid)
+
+
+def _mem0_store_worker(user_content, assistant_content, uid=None):
     """Background: send user+assistant exchange to Mem0 for memory extraction."""
     try:
         client = _get_mem0_client()
@@ -1319,19 +1823,19 @@ def _mem0_store_worker(user_content, assistant_content):
                 {"role": "user", "content": user_content},
                 {"role": "assistant", "content": assistant_content},
             ],
-            user_id="student",
+            user_id=_mem0_user(uid),
         )
     except Exception as e:
         log.debug("Mem0 store error: %s", e)
 
 
-def _mem0_maybe_store_async(user_content, assistant_content):
+def _mem0_maybe_store_async(user_content, assistant_content, uid=None):
     """Fire-and-forget: extract and store memories from a chat exchange."""
     if not MEM0_API_KEY or not user_content or not assistant_content:
         return
     t = threading.Thread(
         target=_mem0_store_worker,
-        args=(user_content[:4000], assistant_content[:4000]),
+        args=(user_content[:4000], assistant_content[:4000], uid),
         daemon=True,
     )
     t.start()
@@ -1732,40 +2236,50 @@ WHOOP_CACHE_TTL = 900  # 15 minutes
 WHOOP_FAIL_TTL = 120  # 2 minutes
 
 
-def _whoop_clear_cache():
+def _whoop_uid(uid=None):
+    return uid or _uid() or _default_student_uid()
+
+
+def _whoop_clear_cache(uid=None):
     """Drop cached WHOOP records (and remembered failures) so a fresh
     connect/disconnect takes effect immediately instead of waiting out a TTL."""
+    uid = _whoop_uid(uid) or ""
     with _simple_cache_lock:
         for key in ("whoop:recovery", "whoop:sleep", "whoop:cycles", "whoop:workouts"):
-            _simple_cache.pop(key, None)
-            _simple_cache.pop(key + ":fail", None)
-        _simple_cache.pop("whoop:token_fail", None)
+            _simple_cache.pop(f"{key}:{uid}", None)
+            _simple_cache.pop(f"{key}:{uid}:fail", None)
+        _simple_cache.pop(f"whoop:token_fail:{uid}", None)
 
 
 def _whoop_configured():
     return bool(WHOOP_CLIENT_ID and WHOOP_CLIENT_SECRET)
 
 
-def _whoop_connected():
-    return bool(_whoop_configured() and get_config().get("whoop_refresh_token", "").strip())
+def _whoop_connected(uid=None):
+    uid = _whoop_uid(uid)
+    if not (_whoop_configured() and uid):
+        return False
+    return bool((get_user_config(uid).get("whoop_refresh_token") or "").strip())
 
 
-def _get_whoop_access_token():
-    """Return a valid WHOOP access token, refreshing it if expired. None if not connected."""
-    if not _whoop_configured():
+def _get_whoop_access_token(uid=None):
+    """Return a valid WHOOP access token for the user, refreshing it if expired.
+    None if not connected."""
+    uid = _whoop_uid(uid)
+    if not (_whoop_configured() and uid):
         return None
-    cfg = get_config()
-    refresh_token = cfg.get("whoop_refresh_token", "").strip()
+    cfg = get_user_config(uid)
+    refresh_token = (cfg.get("whoop_refresh_token") or "").strip()
     if not refresh_token:
         return None
-    access_token = cfg.get("whoop_access_token", "").strip()
+    access_token = (cfg.get("whoop_access_token") or "").strip()
     try:
         expires_at = float(cfg.get("whoop_token_expires_at", "0") or 0)
     except ValueError:
         expires_at = 0
     if access_token and expires_at - 60 > time.time():
         return access_token
-    if _cache_get("whoop:token_fail", WHOOP_FAIL_TTL):
+    if _cache_get(f"whoop:token_fail:{uid}", WHOOP_FAIL_TTL):
         return None
     try:
         # Refresh grants may only request scopes from the original consent, so
@@ -1782,20 +2296,20 @@ def _get_whoop_access_token():
         resp.raise_for_status()
         data = resp.json()
         new_access = data.get("access_token", "")
-        set_config({
+        set_user_config({
             "whoop_access_token": new_access,
             "whoop_refresh_token": data.get("refresh_token") or refresh_token,
             "whoop_token_expires_at": str(time.time() + float(data.get("expires_in", 3600))),
-        })
+        }, user_id=uid)
         return new_access or None
     except Exception as e:
         log.warning("WHOOP token refresh failed: %s", e)
-        _cache_set("whoop:token_fail", True)
+        _cache_set(f"whoop:token_fail:{uid}", True)
         return None
 
 
-def _whoop_get(path, params=None, timeout=12):
-    token = _get_whoop_access_token()
+def _whoop_get(path, params=None, timeout=12, uid=None):
+    token = _get_whoop_access_token(uid)
     if not token:
         return None
     url = WHOOP_API_BASE + (path if path.startswith("/") else "/" + path)
@@ -1809,7 +2323,9 @@ def _whoop_get(path, params=None, timeout=12):
         return None
 
 
-def _whoop_records(cache_key, path, limit):
+def _whoop_records(cache_key, path, limit, uid=None):
+    uid = _whoop_uid(uid) or ""
+    cache_key = f"{cache_key}:{uid}"
     """Fetch a WHOOP record list with success caching (WHOOP_CACHE_TTL) and
     short failure caching (WHOOP_FAIL_TTL). Failures must be remembered:
     with no failure cache, every minute-poll re-runs the full stack of
@@ -1820,7 +2336,7 @@ def _whoop_records(cache_key, path, limit):
         return cached
     if _cache_get(cache_key + ":fail", WHOOP_FAIL_TTL):
         return []
-    data = _whoop_get(path, params={"limit": limit})
+    data = _whoop_get(path, params={"limit": limit}, uid=uid)
     if data is None:
         _cache_set(cache_key + ":fail", True)
         return []
@@ -1829,20 +2345,20 @@ def _whoop_records(cache_key, path, limit):
     return records
 
 
-def whoop_recovery_recent(limit=10):
-    return _whoop_records("whoop:recovery", "/recovery", limit)
+def whoop_recovery_recent(limit=10, uid=None):
+    return _whoop_records("whoop:recovery", "/recovery", limit, uid=uid)
 
 
-def whoop_sleep_recent(limit=10):
-    return _whoop_records("whoop:sleep", "/activity/sleep", limit)
+def whoop_sleep_recent(limit=10, uid=None):
+    return _whoop_records("whoop:sleep", "/activity/sleep", limit, uid=uid)
 
 
-def whoop_cycles_recent(limit=10):
-    return _whoop_records("whoop:cycles", "/cycle", limit)
+def whoop_cycles_recent(limit=10, uid=None):
+    return _whoop_records("whoop:cycles", "/cycle", limit, uid=uid)
 
 
-def whoop_workouts_recent(limit=25):
-    return _whoop_records("whoop:workouts", "/activity/workout", limit)
+def whoop_workouts_recent(limit=25, uid=None):
+    return _whoop_records("whoop:workouts", "/activity/workout", limit, uid=uid)
 
 
 # Partial WHOOP sport_id → name map (v2 records usually carry sport_name; this
@@ -1923,11 +2439,11 @@ def _mock_whoop_workouts(days=14):
     return out
 
 
-def fitness_workouts(limit=25):
+def fitness_workouts(limit=25, uid=None):
     """Recent workouts for the Health dashboard: live WHOOP data when the
     account is connected, otherwise the mock pipeline. Returns (workouts, is_mock)."""
-    if _whoop_connected():
-        records = whoop_workouts_recent(limit=limit)
+    if _whoop_connected(uid):
+        records = whoop_workouts_recent(limit=limit, uid=uid)
         if records:
             return [_normalize_whoop_workout(r) for r in records], False
     return _mock_whoop_workouts(), True
@@ -1954,7 +2470,7 @@ def _mock_heart_rate_samples():
     return samples
 
 
-def fitness_heart_rate():
+def fitness_heart_rate(uid=None):
     """Recent/current heart-rate payload. Uses the latest WHOOP recovery (RHR)
     to anchor the numbers when connected; mock otherwise. This is polled every
     minute by the Health dashboard, so it only touches the recovery feed (one
@@ -1962,9 +2478,9 @@ def fitness_heart_rate():
     upstream calls could outlast the frontend's fetch timeout when WHOOP is slow."""
     samples = _mock_heart_rate_samples()
     source = "mock"
-    if _whoop_connected():
+    if _whoop_connected(uid):
         try:
-            scores = ((r.get("score") or {}) for r in whoop_recovery_recent())
+            scores = ((r.get("score") or {}) for r in whoop_recovery_recent(uid=uid))
             rhr = next((s.get("resting_heart_rate") for s in scores
                         if s.get("resting_heart_rate")), None)
             if rhr:
@@ -2041,14 +2557,14 @@ def compute_personal_records(workouts):
     return prs
 
 
-def whoop_daily_summary(days=7):
+def whoop_daily_summary(days=7, uid=None):
     """Merge recovery/sleep/strain records into one row per calendar day, newest first."""
-    if not _whoop_connected():
+    if not _whoop_connected(uid):
         return []
     limit = days + 3
-    recovery = whoop_recovery_recent(limit=limit)
-    sleep = whoop_sleep_recent(limit=limit)
-    cycles = whoop_cycles_recent(limit=limit)
+    recovery = whoop_recovery_recent(limit=limit, uid=uid)
+    sleep = whoop_sleep_recent(limit=limit, uid=uid)
+    cycles = whoop_cycles_recent(limit=limit, uid=uid)
 
     def day_key(iso):
         return iso[:10] if iso else None
@@ -2092,9 +2608,9 @@ def whoop_daily_summary(days=7):
     return [{"date": d, **vals} for d, vals in ordered]
 
 
-def whoop_context_line():
+def whoop_context_line(uid=None):
     """One-line snapshot of the most recent day's WHOOP data for AI prompts, or None."""
-    days = whoop_daily_summary(days=1)
+    days = whoop_daily_summary(days=1, uid=uid)
     if not days:
         return None
     d = days[0]
@@ -2176,7 +2692,7 @@ def _ai_categorize_titles(titles):
     Any parse/API failure returns {} so callers fall back to 'general'."""
     if not titles:
         return {}
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key()
     if not api_key:
         return {}
     try:
@@ -2311,14 +2827,15 @@ PS_ATTENDANCE_TTL = 3600   # 1 hour
 
 
 def _ps_configured():
-    return bool(POWER_USERN and POWER_PASS)
+    user, pw, _base = _ps_creds()
+    return bool(user and pw)
 
 
 def _ps_ask_claude(content: list) -> dict:
     """Send content blocks to Claude Haiku and parse the JSON grade/attendance result."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key()
     if not api_key:
-        return {"error": "ANTHROPIC_API_KEY not set"}
+        return {"error": "No Anthropic API key on file for this user"}
     try:
         client = anthropic.Anthropic(api_key=api_key)
         resp = client.messages.create(
@@ -2364,12 +2881,13 @@ def _ps_extract_via_playwright() -> dict:
             page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
 
             log.info("PowerSchool (playwright): navigating to login page")
-            page.goto(f"{PS_BASE_URL}/public/", timeout=30000)
+            _ps_user, _ps_pass, _ps_base = _ps_creds()
+            page.goto(f"{_ps_base}/public/", timeout=30000)
             page.wait_for_load_state("domcontentloaded")
 
-            page.fill('input[name="account"], input[id="fieldAccount"]', POWER_USERN, timeout=10000)
+            page.fill('input[name="account"], input[id="fieldAccount"]', _ps_user, timeout=10000)
             page.fill('input[name="ldappassword"], input[id="fieldPassword"], input[type="password"]',
-                      POWER_PASS, timeout=10000)
+                      _ps_pass, timeout=10000)
             page.click('input[type="submit"], button[type="submit"]', timeout=10000)
             page.wait_for_load_state("networkidle", timeout=30000)
 
@@ -2418,8 +2936,9 @@ def _ps_extract_via_requests() -> dict:
     })
 
     # GET login page and collect all hidden form fields
+    _ps_user, _ps_pass, _ps_base = _ps_creds()
     try:
-        r1 = sess.get(f"{PS_BASE_URL}/public/", timeout=20)
+        r1 = sess.get(f"{_ps_base}/public/", timeout=20)
         r1.raise_for_status()
     except Exception as e:
         return {"error": f"Could not reach PowerSchool: {e}"}
@@ -2431,7 +2950,7 @@ def _ps_extract_via_requests() -> dict:
 
     action = (form.get("action") or "/public/").strip()
     if not action.startswith("http"):
-        action = PS_BASE_URL + ("" if action.startswith("/") else "/") + action
+        action = _ps_base + ("" if action.startswith("/") else "/") + action
 
     # Echo all hidden inputs back, then overlay credentials
     payload: dict = {
@@ -2442,10 +2961,10 @@ def _ps_extract_via_requests() -> dict:
     pstoken = payload.get("pstoken", "")
     import hashlib
     def _md5(s): return hashlib.md5(s.encode()).hexdigest()
-    pw_hash = _md5(POWER_USERN.lower() + ":" + _md5(POWER_PASS) + ":" + pstoken)
+    pw_hash = _md5(_ps_user.lower() + ":" + _md5(_ps_pass) + ":" + pstoken)
     payload.update({
-        "account": POWER_USERN,
-        "ldappassword": POWER_PASS,
+        "account": _ps_user,
+        "ldappassword": _ps_pass,
         "pw": pw_hash,
         "dbpw": pw_hash,
     })
@@ -2470,7 +2989,7 @@ def _ps_extract_via_requests() -> dict:
     html = r2.text
     if len(html) < 2000 or "grades" not in html.lower():
         try:
-            r3 = sess.get(f"{PS_BASE_URL}/guardian/home.html", timeout=20)
+            r3 = sess.get(f"{_ps_base}/guardian/home.html", timeout=20)
             if len(r3.text) > len(html):
                 html = r3.text
                 home_url = r3.url
@@ -2504,7 +3023,7 @@ def _ps_screenshot_and_extract() -> dict:
     Returns {"grades": [...], "attendance": {...}} or {"error": "..."}.
     """
     if not _ps_configured():
-        return {"error": "POWER_USERN / POWER_PASS not configured"}
+        return {"error": "PowerSchool credentials not configured (Settings or POWER_USERN/POWER_PASS)"}
 
     result = _ps_extract_via_playwright()
     if result.get("error") == "playwright_not_installed":
@@ -2557,8 +3076,9 @@ def _ps_login():
     })
 
     # ── Step 1: GET login page ──────────────────────────────────────────────
+    _ps_user, _ps_pass, _ps_base = _ps_creds()
     try:
-        r1 = sess.get(f"{PS_BASE_URL}/public/", timeout=20)
+        r1 = sess.get(f"{_ps_base}/public/", timeout=20)
         r1.raise_for_status()
     except Exception as e:
         log.warning("PowerSchool: could not reach login page: %s", e)
@@ -2576,7 +3096,7 @@ def _ps_login():
     # Determine POST target from the form's action attribute
     action = (form.get("action") or "/public/").strip()
     if not action.startswith("http"):
-        action = PS_BASE_URL + ("" if action.startswith("/") else "/") + action
+        action = _ps_base + ("" if action.startswith("/") else "/") + action
     log.info("PowerSchool: login form action = %s", action)
 
     # ── Step 2: Collect ALL hidden inputs, then overlay credentials ─────────
@@ -2590,12 +3110,12 @@ def _ps_login():
         payload[name] = inp.get("value") or ""
 
     pstoken = payload.get("pstoken", "")
-    pw_hash = _ps_md5(POWER_USERN.lower() + ":" + _ps_md5(POWER_PASS) + ":" + pstoken)
+    pw_hash = _ps_md5(_ps_user.lower() + ":" + _ps_md5(_ps_pass) + ":" + pstoken)
 
     # Overlay the credential fields
     payload.update({
-        "account":      POWER_USERN,
-        "ldappassword": POWER_PASS,   # plaintext — used for LDAP / district SSO
+        "account":      _ps_user,
+        "ldappassword": _ps_pass,   # plaintext — used for LDAP / district SSO
         "pw":           pw_hash,       # MD5 hash — used for local PS accounts
         "dbpw":         pw_hash,
         "returnTo":     payload.get("returnTo", ""),
@@ -2711,7 +3231,7 @@ def _ps_parse_grades(html: str, source_url: str) -> list:
             if a:
                 raw  = a.get_text(strip=True)
                 href = a.get("href", "")
-                grade_url = (PS_BASE_URL + href) if href.startswith("/") else href
+                grade_url = (_ps_base + href) if href.startswith("/") else href
 
                 # "A (95.2%)" → letter="A", pct=95.2
                 m = re.match(r"^([A-F][+-]?)\s*\((\d{1,3}(?:\.\d+)?)%?\)$", raw)
@@ -3092,13 +3612,13 @@ def fetch_finnhub_company_news(symbol, days_back=14):
 
 # ── Stock notes (buy thesis / exit criteria) ─────────────────────────────────
 
-def get_all_stock_notes():
+def get_all_stock_notes(uid):
     conn = get_db()
     cur = conn.cursor()
     try:
         cur.execute(
             "SELECT symbol, thesis, exit_criteria, target_price, stop_loss, updated_at "
-            "FROM stock_notes ORDER BY symbol"
+            "FROM stock_notes WHERE user_id = %s ORDER BY symbol", (uid,)
         )
         out = []
         for r in cur.fetchall():
@@ -3116,15 +3636,15 @@ def get_all_stock_notes():
         conn.close()
 
 
-def upsert_stock_note(symbol, thesis=None, exit_criteria=None, target_price=None, stop_loss=None):
+def upsert_stock_note(symbol, thesis=None, exit_criteria=None, target_price=None, stop_loss=None, uid=None):
     symbol = (symbol or "").strip().upper()[:16]
-    if not symbol:
+    if not symbol or not uid:
         return None
     conn = get_db()
     cur = conn.cursor()
     try:
         # Merge with existing row so a partial update preserves the other fields.
-        cur.execute("SELECT thesis, exit_criteria, target_price, stop_loss FROM stock_notes WHERE symbol=%s", (symbol,))
+        cur.execute("SELECT thesis, exit_criteria, target_price, stop_loss FROM stock_notes WHERE symbol=%s AND user_id=%s", (symbol, uid))
         row = cur.fetchone()
         if row:
             new_thesis = thesis if thesis is not None else (row["thesis"] or "")
@@ -3137,11 +3657,11 @@ def upsert_stock_note(symbol, thesis=None, exit_criteria=None, target_price=None
             new_target = target_price
             new_stop = stop_loss
         cur.execute(
-            "INSERT INTO stock_notes (symbol, thesis, exit_criteria, target_price, stop_loss, updated_at) "
-            "VALUES (%s, %s, %s, %s, %s, NOW()) "
-            "ON CONFLICT (symbol) DO UPDATE SET thesis=EXCLUDED.thesis, exit_criteria=EXCLUDED.exit_criteria, "
+            "INSERT INTO stock_notes (symbol, thesis, exit_criteria, target_price, stop_loss, updated_at, user_id) "
+            "VALUES (%s, %s, %s, %s, %s, NOW(), %s) "
+            "ON CONFLICT (user_id, symbol) WHERE user_id IS NOT NULL DO UPDATE SET thesis=EXCLUDED.thesis, exit_criteria=EXCLUDED.exit_criteria, "
             "target_price=EXCLUDED.target_price, stop_loss=EXCLUDED.stop_loss, updated_at=NOW()",
-            (symbol, new_thesis[:4000], new_exit[:4000], new_target, new_stop)
+            (symbol, new_thesis[:4000], new_exit[:4000], new_target, new_stop, uid)
         )
         conn.commit()
         return {"symbol": symbol, "thesis": new_thesis, "exit_criteria": new_exit,
@@ -3288,21 +3808,25 @@ def _extract_keywords(text, limit=8):
     return out
 
 
-def _load_news_preferences():
+def _load_news_preferences(uid=None):
     """Return a profile dict: {outlet_score: {...}, liked_keywords: set, disliked_keywords: set, disliked_urls: set}."""
     profile = {"outlet_score": {}, "liked_keywords": set(), "disliked_keywords": set(), "disliked_urls": set()}
+    uid = uid or _uid() or _default_student_uid()
+    if not uid:
+        return profile
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
-            "SELECT outlet, rating, COUNT(*) AS n FROM news_preferences GROUP BY outlet, rating"
+            "SELECT outlet, rating, COUNT(*) AS n FROM news_preferences WHERE user_id = %s GROUP BY outlet, rating",
+            (uid,)
         )
         for r in cur.fetchall():
             outlet = r["outlet"] or ""
             rating = int(r["rating"])
             n = int(r["n"] or 0)
             profile["outlet_score"][outlet] = profile["outlet_score"].get(outlet, 0) + (rating * n)
-        cur.execute("SELECT rating, keywords, url_hash, url FROM news_preferences ORDER BY created_at DESC LIMIT 200")
+        cur.execute("SELECT rating, keywords, url_hash, url FROM news_preferences WHERE user_id = %s ORDER BY created_at DESC LIMIT 200", (uid,))
         for r in cur.fetchall():
             words = (r["keywords"] or "").split()
             target = profile["liked_keywords"] if int(r["rating"]) == 1 else profile["disliked_keywords"]
@@ -3408,16 +3932,18 @@ def fetch_quote_of_day():
 
 # ── Stock portfolio helpers ──────────────────────────────────────────────────
 
-def _compute_portfolio():
+def _compute_portfolio(uid=None):
     """Aggregate stock_transactions into current holdings.
     Returns {symbol: {qty, avg_cost, total_cost}}."""
+    if not uid:
+        return {}
     conn = get_db()
     cur = conn.cursor()
     holdings = {}
     try:
         cur.execute(
             "SELECT symbol, action, quantity, price FROM stock_transactions "
-            "ORDER BY transaction_date ASC, id ASC"
+            "WHERE user_id = %s ORDER BY transaction_date ASC, id ASC", (uid,)
         )
         for r in cur.fetchall():
             sym = (r["symbol"] or "").upper()
@@ -3449,9 +3975,9 @@ def _compute_portfolio():
         conn.close()
 
 
-def build_portfolio_snapshot():
+def build_portfolio_snapshot(uid=None):
     """Enrich holdings with live prices. Returns {holdings, total_value, total_day_change, total_day_change_pct}."""
-    holdings = _compute_portfolio()
+    holdings = _compute_portfolio(uid=uid)
     rows = []
     total_value = 0.0
     total_prev = 0.0
@@ -3534,9 +4060,9 @@ def parse_canvas_assignments(cal):
     return assignments
 
 
-def _cache_canvas_assignments(assignments):
+def _cache_canvas_assignments(assignments, user_id):
     """Persist seen Canvas assignments so overdue ones survive Canvas iCal pruning."""
-    if not assignments:
+    if not assignments or not user_id:
         return
     try:
         conn = get_db()
@@ -3545,9 +4071,9 @@ def _cache_canvas_assignments(assignments):
             uid = (a.get("uid") or "").strip() or a["title"]
             cur.execute("""
 INSERT INTO canvas_assignments_cache
-    (uid, title, class_name, due_iso, due_display, description, urgency, last_seen_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-ON CONFLICT (uid) DO UPDATE SET
+    (uid, title, class_name, due_iso, due_display, description, urgency, last_seen_at, user_id)
+VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+ON CONFLICT (user_id, uid) WHERE user_id IS NOT NULL DO UPDATE SET
     title       = EXCLUDED.title,
     class_name  = EXCLUDED.class_name,
     due_iso     = EXCLUDED.due_iso,
@@ -3557,14 +4083,14 @@ ON CONFLICT (uid) DO UPDATE SET
     last_seen_at = NOW()""",
                 (uid, a["title"], a.get("class_name", ""),
                  a.get("due_iso", ""), a.get("due_display", ""),
-                 a.get("description", "")[:1000], a.get("urgency", "low")))
+                 a.get("description", "")[:1000], a.get("urgency", "low"), user_id))
         conn.commit()
         cur.close(); conn.close()
     except Exception as e:
         log.warning("_cache_canvas_assignments failed: %s", e)
 
 
-def _promote_overdue_to_tasks():
+def _promote_overdue_to_tasks(user_id):
     """Auto-create a task for each overdue Canvas assignment not yet in the task list.
 
     Runs inside get_canvas_assignments_with_overdue() every time assignments are
@@ -3572,13 +4098,15 @@ def _promote_overdue_to_tasks():
     flag so concurrent calls (briefing job, notification job, chat tabs) cannot
     double-insert tasks. Already-completed assignments are claimed but no task is created.
     """
+    if not user_id:
+        return
     try:
         now_iso = datetime.now(TZ).isoformat()
         lookback_iso = (datetime.now(TZ) - timedelta(days=90)).isoformat()
         conn = get_db()
         cur = conn.cursor()
 
-        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (user_id,))
         done_titles = set(r["assignment_title"] for r in cur.fetchall())
 
         cur.execute("""
@@ -3587,8 +4115,9 @@ def _promote_overdue_to_tasks():
             WHERE due_iso < %s
               AND due_iso > %s
               AND promoted_to_task = FALSE
+              AND user_id = %s
             ORDER BY due_iso ASC""",
-            (now_iso, lookback_iso))
+            (now_iso, lookback_iso, user_id))
         candidates = cur.fetchall()
 
         promoted = 0
@@ -3597,8 +4126,8 @@ def _promote_overdue_to_tasks():
             # If we don't get a row back, another process already claimed it.
             cur.execute(
                 "UPDATE canvas_assignments_cache SET promoted_to_task = TRUE "
-                "WHERE uid = %s AND promoted_to_task = FALSE RETURNING uid",
-                (row["uid"],))
+                "WHERE uid = %s AND user_id = %s AND promoted_to_task = FALSE RETURNING uid",
+                (row["uid"], user_id))
             if not cur.fetchone():
                 continue
 
@@ -3608,8 +4137,8 @@ def _promote_overdue_to_tasks():
 
             # Skip if a matching incomplete task already exists (manual or prior promotion)
             cur.execute(
-                "SELECT id FROM tasks WHERE title = %s AND completed = FALSE LIMIT 1",
-                (row["title"],))
+                "SELECT id FROM tasks WHERE title = %s AND completed = FALSE AND user_id = %s LIMIT 1",
+                (row["title"], user_id))
             if cur.fetchone():
                 continue
 
@@ -3619,8 +4148,8 @@ def _promote_overdue_to_tasks():
                 due_date = None
             notes = f"Overdue Canvas assignment — {row['class_name']}" if row["class_name"] else "Overdue Canvas assignment"
             cur.execute(
-                "INSERT INTO tasks (title, urgency, due_date, notes) VALUES (%s, 'high', %s, %s)",
-                (row["title"], due_date, notes))
+                "INSERT INTO tasks (title, urgency, due_date, notes, user_id) VALUES (%s, 'high', %s, %s, %s)",
+                (row["title"], due_date, notes, user_id))
             promoted += 1
             log.info("Promoted overdue Canvas assignment to task: %r", row["title"])
 
@@ -3631,21 +4160,26 @@ def _promote_overdue_to_tasks():
         log.warning("_promote_overdue_to_tasks failed: %s", e)
 
 
-def get_canvas_assignments_with_overdue(cal):
+def get_canvas_assignments_with_overdue(cal, uid=None):
     """Return upcoming Canvas assignments PLUS any overdue ones not yet completed.
 
     Canvas drops past-due events from its iCal feed; this function caches every
     assignment seen from the live feed and re-surfaces overdue ones until the
     student explicitly marks them done via complete_assignment.
     """
+    uid = uid or _uid() or _default_student_uid()
+
     # 1. Live upcoming assignments from Canvas iCal
     live = parse_canvas_assignments(cal)
 
+    if not uid:
+        return live
+
     # 2. Persist them so we don't lose them after Canvas prunes the feed
-    _cache_canvas_assignments(live)
+    _cache_canvas_assignments(live, uid)
 
     # 3. Promote any newly overdue assignments to the task list
-    _promote_overdue_to_tasks()
+    _promote_overdue_to_tasks(uid)
 
     # 4. Merge in overdue assignments from cache that are not yet completed
     try:
@@ -3653,14 +4187,14 @@ def get_canvas_assignments_with_overdue(cal):
         lookback_iso = (datetime.now(TZ) - timedelta(days=90)).isoformat()
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (uid,))
         done_titles = set(r["assignment_title"] for r in cur.fetchall())
         cur.execute("""
             SELECT uid, title, class_name, due_iso, due_display, description
             FROM canvas_assignments_cache
-            WHERE due_iso < %s AND due_iso > %s
+            WHERE due_iso < %s AND due_iso > %s AND user_id = %s
             ORDER BY due_iso DESC""",
-            (now_iso, lookback_iso))
+            (now_iso, lookback_iso, uid))
         cached_overdue = cur.fetchall()
         cur.close(); conn.close()
 
@@ -3751,6 +4285,7 @@ def get_class_average(class_name):
         return None
     conn = get_db()
     cur = conn.cursor()
+    # GLOBAL-OK: aggregate average minutes per class name; exposes no row data.
     cur.execute("""
 SELECT AVG(duration_minutes) as avg FROM (
     SELECT duration_minutes FROM completions
@@ -3772,6 +4307,7 @@ def get_class_averages_batch(class_names):
     conn = get_db()
     cur = conn.cursor()
     # Get all class averages in a single query
+    # GLOBAL-OK: aggregate average minutes per class name; exposes no row data.
     cur.execute("""
 SELECT class_name, AVG(duration_minutes) as avg FROM (
     SELECT class_name, duration_minutes, ROW_NUMBER() OVER (PARTITION BY class_name ORDER BY completed_at DESC) as rn
@@ -3832,16 +4368,31 @@ def _is_big_work_assignment(a):
 _NTFY_PRIORITY_MAP = {"min": 1, "low": 2, "default": 3, "high": 4, "urgent": 5}
 
 
-def send_ntfy_notification(title, message, priority="default", tags=None):
-    """Send a push notification via ntfy. Returns True on success.
+def _user_ntfy_topic(uid=None):
+    """The user's private ntfy topic from user_config, falling back to the
+    legacy env topic (single-user installs)."""
+    uid = uid or _uid()
+    if uid:
+        try:
+            t = (get_user_config(uid).get("ntfy_topic") or "").strip()
+            if t:
+                return t
+        except Exception:
+            pass
+    return NTFY_TOPIC
+
+
+def send_ntfy_notification(title, message, priority="default", tags=None, uid=None):
+    """Send a push notification via ntfy to the user's topic. Returns True on success.
 
     Uses ntfy's JSON publish endpoint so UTF-8 titles/messages (em-dashes, emoji,
     accented characters) work without RFC-2047 encoding tricks.
     """
-    if not NTFY_TOPIC:
+    topic = _user_ntfy_topic(uid)
+    if not topic:
         return False
     payload = {
-        "topic": NTFY_TOPIC,
+        "topic": topic,
         "title": (title or "")[:255],
         "message": message or "",
         "priority": _NTFY_PRIORITY_MAP.get(priority, 3),
@@ -3898,7 +4449,7 @@ def send_email(to_addr, subject, body_html):
         return False
 
 
-def _ntfy_dedup(key, title="", max_age_hours=20):
+def _ntfy_dedup(key, title="", max_age_hours=20, uid=None):
     """Return True if this notification has NOT been sent within max_age_hours (and record it).
     Returns False if a duplicate was found (skip sending)."""
     try:
@@ -3906,16 +4457,18 @@ def _ntfy_dedup(key, title="", max_age_hours=20):
         cur = conn.cursor()
         cutoff = datetime.now(TZ) - timedelta(hours=max_age_hours)
         cur.execute(
-            "SELECT sent_at FROM notification_log WHERE notification_key = %s AND sent_at > %s",
-            (key, cutoff),
+            "SELECT sent_at FROM notification_log WHERE notification_key = %s "
+            "AND COALESCE(user_id::text, 'global') = COALESCE(%s, 'global') AND sent_at > %s",
+            (key, uid, cutoff),
         )
         if cur.fetchone():
             cur.close(); conn.close()
             return False
         cur.execute(
-            "INSERT INTO notification_log (notification_key, title, sent_at) VALUES (%s, %s, NOW()) "
-            "ON CONFLICT (notification_key) DO UPDATE SET sent_at = NOW(), title = EXCLUDED.title",
-            (key[:500], (title or key)[:255]),
+            "INSERT INTO notification_log (notification_key, title, sent_at, user_id) VALUES (%s, %s, NOW(), %s) "
+            "ON CONFLICT ((COALESCE(user_id::text, 'global')), notification_key) "
+            "DO UPDATE SET sent_at = NOW(), title = EXCLUDED.title",
+            (key[:500], (title or key)[:255], uid),
         )
         conn.commit()
         cur.close(); conn.close()
@@ -3925,18 +4478,22 @@ def _ntfy_dedup(key, title="", max_age_hours=20):
         return True  # default to allowing send
 
 
-def generate_briefing(force=False):
+def generate_briefing(force=False, uid=None):
     with _briefing_lock:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        uid = uid or _default_student_uid()
+        if not uid:
+            log.warning("Morning briefing: no user to generate for")
+            return
+        api_key = _user_api_key(uid)
         if not api_key:
-            log.warning("Morning briefing: ANTHROPIC_API_KEY not set")
+            log.warning("Morning briefing: no API key on file for user %s", uid)
             return
         cfg = get_config()
         name = cfg.get("name", "Jarvis")
         if not force:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT generated_at FROM briefing_cache WHERE id = 1")
+            cur.execute("SELECT generated_at FROM briefing_cache WHERE user_id = %s", (uid,))
             row = cur.fetchone()
             cur.close()
             conn.close()
@@ -3948,7 +4505,7 @@ def generate_briefing(force=False):
         assignments = []
         cal = fetch_ical(u_canvas_ical())
         if cal:
-            assignments = get_canvas_assignments_with_overdue(cal)
+            assignments = get_canvas_assignments_with_overdue(cal, uid=uid)
 
         events = []
         cal2 = fetch_ical(u_personal_ical())
@@ -3962,17 +4519,17 @@ def generate_briefing(force=False):
             except Exception as _e:
                 log.warning("briefing: job calendar fetch failed: %s", _e)
         today = datetime.now(TZ).date()
-        events.extend(fetch_day_calendar_events(today, days_ahead=1))
+        events.extend(fetch_day_calendar_events(today, days_ahead=1, school=_school_for(uid)))
 
         # Get completed assignment titles (ever) so we don't flag them
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (uid,))
         completed_titles = set(r["assignment_title"] for r in cur.fetchall())
         assignments = [a for a in assignments if a["title"] not in completed_titles]
 
         # Get tasks
-        cur.execute("SELECT title, urgency FROM tasks WHERE completed = FALSE ORDER BY urgency DESC, created_at ASC LIMIT 5")
+        cur.execute("SELECT title, urgency FROM tasks WHERE completed = FALSE AND user_id = %s ORDER BY urgency DESC, created_at ASC LIMIT 5", (uid,))
         tasks = [dict(r) for r in cur.fetchall()]
 
         cur.close()
@@ -4050,13 +4607,17 @@ def generate_briefing(force=False):
         tasks_text = "\n".join(["- [%s] %s" % (t["urgency"], t["title"]) for t in tasks]) or "- No pending tasks."
 
         # Get school schedule for today to recommend homework time
-        school_hrs = get_school_hours(today)
-        dtype = get_day_type(today)
+        _b_school = _school_for(uid)
+        school_hrs = get_school_hours(today, school=_b_school)
+        dtype = get_day_type(today, school=_b_school)
         if school_hrs:
             _, _, eh, em = school_hrs
             end_ampm = "AM" if eh < 12 else "PM"
             school_end_str = "%d:%02d %s" % (eh % 12 or 12, em, end_ampm)
-            schedule_note = "Today is a %s day. School ends at %s." % (dtype.title(), school_end_str)
+            if dtype == "day":
+                schedule_note = "Today is a school day. School ends at %s." % school_end_str
+            else:
+                schedule_note = "Today is a %s day. School ends at %s." % (dtype.title(), school_end_str)
         elif datetime.now(TZ).weekday() >= 5:
             schedule_note = "Today is a weekend — no school."
         else:
@@ -4064,7 +4625,7 @@ def generate_briefing(force=False):
 
         whoop_line = None
         try:
-            whoop_line = whoop_context_line()
+            whoop_line = whoop_context_line(uid=uid)
         except Exception:
             log.warning("briefing: could not load WHOOP data")
 
@@ -4117,7 +4678,7 @@ def generate_briefing(force=False):
 
         if MEM0_API_KEY:
             try:
-                _m0_hits = _get_mem0_client().search("student goals study habits priorities schedule energy", user_id="student", limit=5)
+                _m0_hits = _get_mem0_client().search("student goals study habits priorities schedule energy", user_id=_mem0_user(uid), limit=5)
                 if _m0_hits:
                     _mem_lines = "\n".join(f"- {h['memory']}" for h in _m0_hits if h.get("memory"))
                     if _mem_lines:
@@ -4138,11 +4699,11 @@ def generate_briefing(force=False):
             log.error("Anthropic API error: %s", e)
             content = "Could not generate briefing. Check your API key in Settings."
 
+        _init_user_singleton(uid, "briefing_cache")
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-INSERT INTO briefing_cache (id, generated_at, content) VALUES (1, NOW(), %s)
-ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content""", (content,))
+UPDATE briefing_cache SET generated_at = NOW(), content = %s WHERE user_id = %s""", (content, uid))
         conn.commit()
         cur.close()
         conn.close()
@@ -4178,12 +4739,16 @@ def _on_scheduler_job_error(event):
 scheduler.add_listener(_on_scheduler_job_error, EVENT_JOB_ERROR)
 
 
-def generate_evening_debrief():
+def generate_evening_debrief(uid=None):
     """Generate a 7 PM evening debrief summarizing the day."""
     with _debrief_lock:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        uid = uid or _default_student_uid()
+        if not uid:
+            log.warning("Evening debrief: no user to generate for")
+            return
+        api_key = _user_api_key(uid)
         if not api_key:
-            log.warning("Evening debrief: ANTHROPIC_API_KEY not set")
+            log.warning("Evening debrief: no API key on file for user %s", uid)
             return
         cfg = get_config()
         name = cfg.get("name", "Jarvis")
@@ -4192,9 +4757,9 @@ def generate_evening_debrief():
         today_start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
         cur.execute("""
 SELECT assignment_title, class_name, duration_minutes, timed
-FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_start,))
+FROM completions WHERE completed_at >= %s AND user_id = %s ORDER BY completed_at DESC""", (today_start, uid))
         done_today = [dict(r) for r in cur.fetchall()]
-        cur.execute("SELECT title, urgency FROM tasks WHERE completed = FALSE ORDER BY urgency DESC LIMIT 10")
+        cur.execute("SELECT title, urgency FROM tasks WHERE completed = FALSE AND user_id = %s ORDER BY urgency DESC LIMIT 10", (uid,))
         pending_tasks = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
@@ -4223,7 +4788,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         cal = fetch_ical(u_canvas_ical())
         remaining_asgn = []
         if cal:
-            all_asgn = get_canvas_assignments_with_overdue(cal)
+            all_asgn = get_canvas_assignments_with_overdue(cal, uid=uid)
             done_titles = {d["assignment_title"] for d in done_today}
             remaining_asgn = [a for a in all_asgn if a["title"] not in done_titles]
 
@@ -4233,7 +4798,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
 
         whoop_line = None
         try:
-            whoop_line = whoop_context_line()
+            whoop_line = whoop_context_line(uid=uid)
         except Exception:
             log.warning("debrief: could not load WHOOP data")
 
@@ -4257,7 +4822,7 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
 
         if MEM0_API_KEY:
             try:
-                _m0d_hits = _get_mem0_client().search("productivity accomplishments energy habits goals", user_id="student", limit=5)
+                _m0d_hits = _get_mem0_client().search("productivity accomplishments energy habits goals", user_id=_mem0_user(uid), limit=5)
                 if _m0d_hits:
                     _mem_lines_d = "\n".join(f"- {h['memory']}" for h in _m0d_hits if h.get("memory"))
                     if _mem_lines_d:
@@ -4274,23 +4839,27 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         except Exception as e:
             log.error("Evening debrief API error: %s", e)
             return
+        _init_user_singleton(uid, "debrief_cache")
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-INSERT INTO debrief_cache (id, generated_at, content) VALUES (1, NOW(), %s)
-ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content""", (content,))
+UPDATE debrief_cache SET generated_at = NOW(), content = %s WHERE user_id = %s""", (content, uid))
         conn.commit()
         cur.close()
         conn.close()
         log.info("Evening debrief generated.")
 
 
-def generate_weekly_insight(force=False):
+def generate_weekly_insight(force=False, uid=None):
     """Generate the Sunday-morning weekly insight: review of last 7 days and look ahead."""
     with _weekly_insight_lock:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        uid = uid or _default_student_uid()
+        if not uid:
+            log.warning("Weekly insight: no user to generate for")
+            return
+        api_key = _user_api_key(uid)
         if not api_key:
-            log.warning("Weekly insight: ANTHROPIC_API_KEY not set")
+            log.warning("Weekly insight: no API key on file for user %s", uid)
             return
         cfg = get_config()
         name = cfg.get("name", "Jarvis")
@@ -4299,7 +4868,7 @@ def generate_weekly_insight(force=False):
         if not force:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT generated_at FROM insight_cache WHERE id = 1")
+            cur.execute("SELECT generated_at FROM insight_cache WHERE user_id = %s", (uid,))
             row = cur.fetchone()
             cur.close()
             conn.close()
@@ -4321,31 +4890,31 @@ def generate_weekly_insight(force=False):
         cur.execute("""
 SELECT assignment_title, class_name, duration_minutes, completed_at
 FROM completions
-WHERE completed_at >= %s
-ORDER BY completed_at ASC""", (now_local - timedelta(days=7),))
+WHERE completed_at >= %s AND user_id = %s
+ORDER BY completed_at ASC""", (now_local - timedelta(days=7), uid))
         completions_week = [dict(r) for r in cur.fetchall()]
 
         # Last 7 days: tasks completed
         cur.execute("""
 SELECT title, urgency, completed_at
 FROM tasks
-WHERE completed = TRUE AND completed_at >= %s
-ORDER BY completed_at ASC""", (now_local - timedelta(days=7),))
+WHERE completed = TRUE AND completed_at >= %s AND user_id = %s
+ORDER BY completed_at ASC""", (now_local - timedelta(days=7), uid))
         tasks_done_week = [dict(r) for r in cur.fetchall()]
 
         # Currently pending tasks
         cur.execute("""
 SELECT title, urgency, due_date
 FROM tasks
-WHERE completed = FALSE
-ORDER BY urgency DESC, created_at ASC LIMIT 10""")
+WHERE completed = FALSE AND user_id = %s
+ORDER BY urgency DESC, created_at ASC LIMIT 10""", (uid,))
         tasks_open = [dict(r) for r in cur.fetchall()]
 
         # Projects needing check-in
         cur.execute("""
 SELECT id, title, status, last_checkin, checkin_interval_days
 FROM projects
-WHERE status = 'active'""")
+WHERE status = 'active' AND user_id = %s""", (uid,))
         projects = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
@@ -4365,7 +4934,7 @@ WHERE status = 'active'""")
         upcoming_assignments = []
         cal = fetch_ical(u_canvas_ical())
         if cal:
-            all_asgn = get_canvas_assignments_with_overdue(cal)
+            all_asgn = get_canvas_assignments_with_overdue(cal, uid=uid)
             for a in all_asgn:
                 d = _assignment_due_date_local(a)
                 if today <= d <= week_ahead:
@@ -4445,11 +5014,11 @@ WHERE status = 'active'""")
             log.error("Weekly insight API error: %s", e)
             return
 
+        _init_user_singleton(uid, "insight_cache")
         conn = get_db()
         cur = conn.cursor()
         cur.execute("""
-INSERT INTO insight_cache (id, generated_at, content) VALUES (1, NOW(), %s)
-ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content""", (content,))
+UPDATE insight_cache SET generated_at = NOW(), content = %s WHERE user_id = %s""", (content, uid))
         conn.commit()
         cur.close()
         conn.close()
@@ -4461,6 +5030,7 @@ def cleanup_old_data():
     try:
         conn = get_db()
         cur = conn.cursor()
+        # GLOBAL-OK: age-based prune across all tenants; deletes only stale rows.
         cur.execute("DELETE FROM daily_plans WHERE plan_date < CURRENT_DATE - INTERVAL '60 days'")
         deleted_plans = cur.rowcount
         cur.execute("DELETE FROM projects WHERE status = 'done' AND done_at < NOW() - INTERVAL '7 days'")
@@ -4476,18 +5046,64 @@ def cleanup_old_data():
         log.error("cleanup_old_data error: %s", e)
 
 
-def _notif_canvas_assignments():
-    """Return upcoming Canvas assignments not yet completed, or []."""
+def _active_user_ids():
+    """IDs of users the background jobs should serve: active accounts that are
+    comped or hold an active/past_due subscription. Cached 60s."""
+    global _active_users_cache, _active_users_cache_ts
+    now = time.monotonic()
+    with _active_users_cache_lock:
+        if _active_users_cache is not None and (now - _active_users_cache_ts) < 60:
+            return list(_active_users_cache)
+    ids = []
     try:
-        if not u_canvas_ical():
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""
+SELECT u.id FROM users u
+WHERE u.active = TRUE AND (
+    u.is_comped
+    OR EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = u.id
+               AND s.status IN ('active', 'past_due'))
+) ORDER BY u.created_at ASC""")
+        ids = [str(r["id"]) for r in cur.fetchall()]
+        cur.close(); conn.close()
+    except Exception as e:
+        log.warning("_active_user_ids failed: %s", e)
+    with _active_users_cache_lock:
+        _active_users_cache = list(ids)
+        _active_users_cache_ts = now
+    return ids
+
+
+_active_users_cache = None
+_active_users_cache_ts = 0.0
+_active_users_cache_lock = threading.Lock()
+
+
+def _for_each_active_user(fn, job_name):
+    """Run fn(uid) for every active user; one user's failure never stops the
+    rest (a bad API key or dead calendar feed is that user's problem alone)."""
+    for uid in _active_user_ids():
+        try:
+            fn(uid)
+        except MissingApiKeyError:
+            log.debug("%s: user %s has no API key — skipped", job_name, uid)
+        except Exception as e:
+            log.warning("%s failed for user %s: %s", job_name, uid, e)
+
+
+def _notif_canvas_assignments(uid):
+    """Return a user's upcoming Canvas assignments not yet completed, or []."""
+    try:
+        url = u_canvas_ical(uid)
+        if not url:
             return []
-        cal = fetch_ical(u_canvas_ical())
+        cal = fetch_ical(url)
         if not cal:
             return []
-        assignments = get_canvas_assignments_with_overdue(cal)
+        assignments = get_canvas_assignments_with_overdue(cal, uid=uid)
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (uid,))
         done = set(r["assignment_title"] for r in cur.fetchall())
         cur.close(); conn.close()
         return [a for a in assignments if a["title"] not in done]
@@ -4498,11 +5114,15 @@ def _notif_canvas_assignments():
 
 def check_assignment_due_notifications():
     """Tier 1 — send ntfy for assignments due in ~24 h and ~2 h."""
-    if not NTFY_TOPIC:
+    _for_each_active_user(_check_assignment_due_for_user, "notif_assignment_due")
+
+
+def _check_assignment_due_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        assignments = _notif_canvas_assignments()
-        now = datetime.now(TZ)
+        assignments = _notif_canvas_assignments(uid)
+        now = datetime.now(user_tz(uid))
         for a in assignments:
             due_iso = a.get("due_iso", "")
             if not due_iso:
@@ -4518,21 +5138,23 @@ def check_assignment_due_notifications():
 
             if 22.5 <= hours_until <= 25.5:
                 key = f"asgn_24h_{a['title']}_{due_dt.strftime('%Y-%m-%d')}"
-                if _ntfy_dedup(key, title=a["title"], max_age_hours=20):
+                if _ntfy_dedup(key, title=a["title"], max_age_hours=20, uid=uid):
                     send_ntfy_notification(
                         title="Assignment Due Tomorrow",
                         message=f"{a['title']} ({course}) — due {due_disp}",
                         priority="high",
                         tags=["books", "warning"],
+                        uid=uid,
                     )
             elif 1.5 <= hours_until <= 2.5:
                 key = f"asgn_2h_{a['title']}_{due_dt.strftime('%Y-%m-%d-%H')}"
-                if _ntfy_dedup(key, title=a["title"], max_age_hours=4):
+                if _ntfy_dedup(key, title=a["title"], max_age_hours=4, uid=uid):
                     send_ntfy_notification(
                         title="Assignment Due in ~2 Hours",
                         message=f"{a['title']} ({course}) — due {due_disp}",
                         priority="urgent",
                         tags=["rotating_light", "books"],
+                        uid=uid,
                     )
     except Exception as e:
         log.error("check_assignment_due_notifications error: %s", e)
@@ -4540,27 +5162,32 @@ def check_assignment_due_notifications():
 
 def check_overdue_tasks():
     """Tier 1 — send ntfy for tasks past their due date that haven't been completed."""
-    if not NTFY_TOPIC:
+    _for_each_active_user(_check_overdue_tasks_for_user, "notif_overdue_tasks")
+
+
+def _check_overdue_tasks_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        today = datetime.now(TZ).date()
+        today = datetime.now(user_tz(uid)).date()
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
             "SELECT id, title, due_date FROM tasks "
-            "WHERE completed = FALSE AND due_date < %s ORDER BY due_date ASC LIMIT 10",
-            (today,),
+            "WHERE completed = FALSE AND due_date < %s AND user_id = %s ORDER BY due_date ASC LIMIT 10",
+            (today, uid),
         )
         overdue = cur.fetchall()
         cur.close(); conn.close()
         for task in overdue:
             key = f"task_overdue_{task['id']}_{today}"
-            if _ntfy_dedup(key, title=task["title"], max_age_hours=20):
+            if _ntfy_dedup(key, title=task["title"], max_age_hours=20, uid=uid):
                 send_ntfy_notification(
                     title="Overdue Task",
                     message=f"{task['title']} — was due {task['due_date']}, still pending",
                     priority="high",
                     tags=["alarm_clock", "warning"],
+                    uid=uid,
                 )
     except Exception as e:
         log.error("check_overdue_tasks error: %s", e)
@@ -4568,11 +5195,15 @@ def check_overdue_tasks():
 
 def check_ap_test_countdown():
     """Tier 2 — warn 2 days before any AP exam found in Canvas."""
-    if not NTFY_TOPIC:
+    _for_each_active_user(_check_ap_countdown_for_user, "notif_ap_countdown")
+
+
+def _check_ap_countdown_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        assignments = _notif_canvas_assignments()
-        now = datetime.now(TZ)
+        assignments = _notif_canvas_assignments(uid)
+        now = datetime.now(user_tz(uid))
         for a in assignments:
             title_lc = a.get("title", "").lower()
             if not any(kw in title_lc for kw in ("ap exam", "ap test", " ap ", "ap calc", "ap spanish", "ap bio", "ap chem", "ap history", "ap lang", "ap lit", "ap physics", "ap stats", "ap gov")):
@@ -4588,12 +5219,13 @@ def check_ap_test_countdown():
                 continue
             if days_until in (1, 2, 7):
                 key = f"ap_countdown_{a['title']}_{due_dt.strftime('%Y-%m-%d')}_{days_until}d"
-                if _ntfy_dedup(key, title=a["title"], max_age_hours=20):
+                if _ntfy_dedup(key, title=a["title"], max_age_hours=20, uid=uid):
                     send_ntfy_notification(
                         title=f"AP Exam in {days_until} Day{'s' if days_until != 1 else ''}",
                         message=f"{a['title']} is in {days_until} day{'s' if days_until != 1 else ''}, sir. You have been warned.",
                         priority="high",
                         tags=["mortar_board", "warning"],
+                        uid=uid,
                     )
     except Exception as e:
         log.error("check_ap_test_countdown error: %s", e)
@@ -4601,13 +5233,17 @@ def check_ap_test_countdown():
 
 def check_meeting_reminders():
     """Tier 2 — send a 30-minute heads-up for upcoming calendar events."""
-    if not NTFY_TOPIC:
+    _for_each_active_user(_check_meeting_reminders_for_user, "notif_meetings")
+
+
+def _check_meeting_reminders_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        now = datetime.now(TZ)
+        now = datetime.now(user_tz(uid))
         window_start = now + timedelta(minutes=25)
         window_end = now + timedelta(minutes=40)
-        for url in filter(None, [u_personal_ical(), u_sports_ical(), u_job_schedule_ical()]):
+        for url in filter(None, [u_personal_ical(uid), u_sports_ical(uid), u_job_schedule_ical(uid)]):
             try:
                 cal = fetch_ical(url)
                 if not cal:
@@ -4623,12 +5259,13 @@ def check_meeting_reminders():
                         continue
                     if window_start <= start_dt <= window_end:
                         key = f"meeting_{ev['title']}_{start_dt.strftime('%Y-%m-%d-%H-%M')}"
-                        if _ntfy_dedup(key, title=ev["title"], max_age_hours=20):
+                        if _ntfy_dedup(key, title=ev["title"], max_age_hours=20, uid=uid):
                             send_ntfy_notification(
                                 title="Event Starting Soon",
                                 message=f"{ev['title']} at {ev['start_display']}",
                                 priority="high",
                                 tags=["calendar", "alarm_clock"],
+                                uid=uid,
                             )
             except Exception as _e:
                 log.warning("check_meeting_reminders url=%s: %s", url[:40], _e)
@@ -4638,11 +5275,15 @@ def check_meeting_reminders():
 
 def check_idle_detection():
     """Tier 3 — nudge if no task/assignment logged in 3+ hours on a school night."""
-    if not NTFY_TOPIC:
+    _for_each_active_user(_check_idle_for_user, "notif_idle")
+
+
+def _check_idle_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        now = datetime.now(TZ)
-        # Only Sun–Thu, 7 PM–11 PM
+        now = datetime.now(user_tz(uid))
+        # Only Sun–Thu, 7 PM–11 PM local
         if now.weekday() >= 4 and now.weekday() != 6:
             return
         if not (19 <= now.hour < 23):
@@ -4651,20 +5292,21 @@ def check_idle_detection():
         cur = conn.cursor()
         cutoff = now - timedelta(hours=3)
         cur.execute(
-            "SELECT MAX(completed_at) AS last FROM completions WHERE completed_at > %s",
-            (cutoff,),
+            "SELECT MAX(completed_at) AS last FROM completions WHERE completed_at > %s AND user_id = %s",
+            (cutoff, uid),
         )
         row = cur.fetchone()
         cur.close(); conn.close()
         if row and row["last"]:
             return
         key = f"idle_{now.strftime('%Y-%m-%d-%H')}"
-        if _ntfy_dedup(key, title="Idle check", max_age_hours=1):
+        if _ntfy_dedup(key, title="Idle check", max_age_hours=1, uid=uid):
             send_ntfy_notification(
                 title="Still with me, sir?",
                 message="No tasks logged in over 3 hours. Might be worth making a dent in that list.",
                 priority="default",
                 tags=["sleeping"],
+                uid=uid,
             )
     except Exception as e:
         log.error("check_idle_detection error: %s", e)
@@ -4672,13 +5314,17 @@ def check_idle_detection():
 
 def check_trash_recycling_reminder():
     """Tier 3 — remind about trash/recycling events from personal calendar at 7 PM."""
-    if not NTFY_TOPIC or not u_personal_ical():
+    _for_each_active_user(_check_trash_for_user, "notif_trash")
+
+
+def _check_trash_for_user(uid):
+    if not _user_ntfy_topic(uid) or not u_personal_ical(uid):
         return
     try:
-        now = datetime.now(TZ)
+        now = datetime.now(user_tz(uid))
         if not (19 <= now.hour < 20):
             return
-        cal = fetch_ical(u_personal_ical())
+        cal = fetch_ical(u_personal_ical(uid))
         if not cal:
             return
         events = parse_calendar_events(cal, days_ahead=1)
@@ -4687,24 +5333,33 @@ def check_trash_recycling_reminder():
             title_lc = ev.get("title", "").lower()
             if ev.get("date") == today_str and any(kw in title_lc for kw in ("trash", "recycling", "recycle", "garbage", "bin")):
                 key = f"trash_{ev['title']}_{today_str}"
-                if _ntfy_dedup(key, title=ev["title"], max_age_hours=20):
+                if _ntfy_dedup(key, title=ev["title"], max_age_hours=20, uid=uid):
                     send_ntfy_notification(
                         title="Trash Reminder",
                         message=f"{ev['title']} tonight — don't forget.",
                         priority="default",
                         tags=["wastebasket"],
+                        uid=uid,
                     )
     except Exception as e:
         log.error("check_trash_recycling_reminder error: %s", e)
 
 
 def check_weather_warning():
-    """Tier 3 — check NWS alerts for Park City and push severe/extreme warnings."""
-    if not NTFY_TOPIC:
+    """Tier 3 — check NWS alerts near each user and push severe/extreme warnings."""
+    _for_each_active_user(_check_weather_for_user, "notif_weather")
+
+
+def _check_weather_for_user(uid):
+    if not _user_ntfy_topic(uid):
+        return
+    # Opt-in: users set weather_latlon ("lat,lon") in their config.
+    latlon = (get_user_config(uid).get("weather_latlon") or "").strip()
+    if not latlon:
         return
     try:
         resp = requests.get(
-            "https://api.weather.gov/alerts/active?point=40.6461,-111.4980",
+            f"https://api.weather.gov/alerts/active?point={latlon}",
             headers={"User-Agent": "students-assistant/1.0 (contact: admin@localhost)"},
             timeout=12,
         )
@@ -4720,12 +5375,13 @@ def check_weather_warning():
             headline = (props.get("headline") or event)[:250]
             alert_id = props.get("id", event)
             key = f"weather_{alert_id}"
-            if _ntfy_dedup(key, title=event, max_age_hours=6):
+            if _ntfy_dedup(key, title=event, max_age_hours=6, uid=uid):
                 send_ntfy_notification(
                     title=f"Weather Alert: {event}",
                     message=headline,
                     priority="high" if severity in ("Extreme", "Severe") else "default",
                     tags=["cloud_lightning", "warning"],
+                    uid=uid,
                 )
     except Exception as e:
         log.error("check_weather_warning error: %s", e)
@@ -4733,11 +5389,17 @@ def check_weather_warning():
 
 def check_stock_alerts():
     """Tier 2 — alert on ±5% daily moves, target price hits, or stop-loss triggers."""
-    if not NTFY_TOPIC or not FINNHUB_API_KEY:
+    if not FINNHUB_API_KEY:
+        return
+    _for_each_active_user(_check_stock_alerts_for_user, "notif_stock_alerts")
+
+
+def _check_stock_alerts_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        now = datetime.now(TZ)
-        # Only during extended market hours Mon–Fri 8 AM–5 PM MT
+        now = datetime.now(user_tz(uid))
+        # Only during extended market hours Mon–Fri 8 AM–5 PM local
         if now.weekday() >= 5 or not (8 <= now.hour < 17):
             return
         conn = get_db()
@@ -4749,10 +5411,11 @@ def check_stock_alerts():
                 sn.target_price,
                 sn.stop_loss
             FROM stock_transactions st
-            LEFT JOIN stock_notes sn ON sn.symbol = st.symbol
+            LEFT JOIN stock_notes sn ON sn.symbol = st.symbol AND sn.user_id = st.user_id
+            WHERE st.user_id = %s
             GROUP BY st.symbol, sn.target_price, sn.stop_loss
             HAVING SUM(CASE WHEN st.action='buy' THEN st.quantity ELSE -st.quantity END) > 0
-        """)
+        """, (uid,))
         holdings = cur.fetchall()
         cur.close(); conn.close()
         if not holdings:
@@ -4795,12 +5458,13 @@ def check_stock_alerts():
 
                 if alert_reason:
                     key = f"stock_{symbol}_{now.strftime('%Y-%m-%d-%H')}"
-                    if _ntfy_dedup(key, title=symbol, max_age_hours=2):
+                    if _ntfy_dedup(key, title=symbol, max_age_hours=2, uid=uid):
                         send_ntfy_notification(
                             title=f"Stock Alert: {symbol}",
                             message=f"{symbol} {alert_reason}",
                             priority=priority,
                             tags=alert_tags,
+                            uid=uid,
                         )
             except Exception as ex:
                 log.warning("check_stock_alerts: %s error: %s", symbol, ex)
@@ -4808,31 +5472,76 @@ def check_stock_alerts():
         log.error("check_stock_alerts error: %s", e)
 
 
-def schedule_briefing():
-    cfg = get_config()
-    t = cfg.get("morning_briefing_time", "07:00")
+def _cache_row_local_date(table, uid, tzinfo):
+    """The local calendar date of a user's cache row (briefing/debrief/insight),
+    or None if the row is missing/empty."""
     try:
-        hour, minute = int(t.split(":")[0]), int(t.split(":")[1])
+        conn = get_db(); cur = conn.cursor()
+        cur.execute(f"SELECT generated_at, content FROM {table} WHERE user_id = %s", (uid,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if row and row["generated_at"] and (row.get("content") or "").strip():
+            return row["generated_at"].astimezone(tzinfo).date()
     except Exception:
-        hour, minute = 7, 0
+        pass
+    return None
+
+
+def hourly_user_tick():
+    """Once an hour: fire time-of-day jobs for each user in *their* timezone.
+
+    Replaces fixed Mountain-time crons so a student in New York gets their
+    briefing at 7 AM Eastern. Per-user cache rows provide the daily dedupe.
+    """
+    for uid in _active_user_ids():
+        try:
+            tz = user_tz(uid)
+            now_local = datetime.now(tz)
+            today_local = now_local.date()
+            cfg = get_user_config(uid)
+
+            # Morning briefing at the user's configured hour (minute granularity
+            # was dropped when briefings became per-timezone).
+            try:
+                brief_hour = int(str(cfg.get("morning_briefing_time", "07:00")).split(":")[0])
+            except Exception:
+                brief_hour = 7
+            if now_local.hour == brief_hour and _cache_row_local_date("briefing_cache", uid, tz) != today_local:
+                generate_briefing(force=True, uid=uid)
+
+            # Evening debrief at 18:00 local
+            if now_local.hour == 18 and _cache_row_local_date("debrief_cache", uid, tz) != today_local:
+                generate_evening_debrief(uid=uid)
+
+            # Tomorrow's plan at 22:00 local
+            if now_local.hour == 22:
+                try:
+                    _generate_daily_plan_for_date(today_local + timedelta(days=1), uid=uid)
+                except MissingApiKeyError:
+                    pass
+
+            # Weekly insight Sunday 08:00 local (self-guards on last-Sunday check)
+            if now_local.weekday() == 6 and now_local.hour == 8:
+                generate_weekly_insight(uid=uid)
+        except MissingApiKeyError:
+            log.debug("hourly tick: user %s has no API key — skipped", uid)
+        except Exception as e:
+            log.warning("hourly tick failed for user %s: %s", uid, e)
+
+
+def schedule_briefing():
     scheduler.remove_all_jobs()
-    scheduler.add_job(generate_briefing, "cron", hour=hour, minute=minute,
-                      id="morning_briefing", replace_existing=True)
-    # Evening debrief at 6:30 PM
-    scheduler.add_job(generate_evening_debrief, "cron", hour=18, minute=30,
-                      id="evening_debrief", replace_existing=True)
-    # Process recurring tasks daily at midnight
+    # One timezone-aware tick handles briefings/debriefs/plans/insights for
+    # every user at their local hour.
+    scheduler.add_job(hourly_user_tick, "cron", minute=0,
+                      id="hourly_user_tick", replace_existing=True)
+    # Process recurring tasks daily at midnight (server time; the scan carries
+    # each row's user_id so instances land with the right owner)
     scheduler.add_job(_process_recurring_tasks, "cron", hour=0, minute=0,
                       id="process_recurring_tasks", replace_existing=True)
-    # Weekly insight every Sunday at 8 AM
-    scheduler.add_job(generate_weekly_insight, "cron", day_of_week="sun", hour=8, minute=0,
-                      id="weekly_insight", replace_existing=True)
     # Nightly cleanup of stale daily_plans rows at 02:30 (quietest hour)
     scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=30,
                       id="cleanup_old_data", replace_existing=True)
-    # Auto-generate tomorrow's daily schedule at 10 PM
-    scheduler.add_job(auto_generate_plan_job, "cron", hour=22, minute=0,
-                      id="auto_daily_plan", replace_existing=True)
 
     # ── ntfy notification jobs ────────────────────────────────────────────────
     # Tier 1: assignment due-soon checks (24 h and 2 h windows) every 20 min
@@ -4841,8 +5550,8 @@ def schedule_briefing():
     # Tier 1: overdue tasks — once per hour
     scheduler.add_job(check_overdue_tasks, "interval", minutes=60,
                       id="notif_overdue_tasks", replace_existing=True)
-    # Tier 2: AP test countdown — daily at 7:05 AM
-    scheduler.add_job(check_ap_test_countdown, "cron", hour=7, minute=5,
+    # Tier 2: AP test countdown — hourly at :05, self-deduped per user/day
+    scheduler.add_job(check_ap_test_countdown, "cron", minute=5,
                       id="notif_ap_countdown", replace_existing=True)
     # Tier 2: meeting/event reminders — every 10 min
     scheduler.add_job(check_meeting_reminders, "interval", minutes=10,
@@ -4860,12 +5569,8 @@ def schedule_briefing():
     scheduler.add_job(check_weather_warning, "interval", minutes=120,
                       id="notif_weather", replace_existing=True)
 
-    log.info("Briefing scheduled for %02d:%02d Mountain", hour, minute)
-    log.info("Evening debrief scheduled for 18:30 Mountain")
-    log.info("Recurring tasks processor scheduled for 00:00 Mountain")
-    log.info("Weekly insight scheduled for Sun 08:00 Mountain")
-    log.info("Cleanup job scheduled for 02:30 Mountain")
-    log.info("Auto daily plan scheduled for 22:00 Mountain")
+    log.info("Hourly per-user tick registered (briefing/debrief/plan/insight in each user's timezone)")
+    log.info("Recurring tasks processor scheduled for 00:00 server time; cleanup at 02:30")
     log.info("ntfy notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather)")
 
 
@@ -5197,31 +5902,24 @@ def login():
     data = request.get_json(force=True) or {}
     username = data.get("username", "").strip()
     password = data.get("password")
-    security_code = data.get("security_code")
     is_locked_down = is_app_locked_down()
     ip_is_blocked = is_ip_blocked(ip_addr)
 
     if not username:
         return jsonify({"error": "Username required"}), 400
 
-    if ip_is_blocked and not security_code:
-        return jsonify({
-            "error": "This IP address is blocked. Please provide security code to access.",
-            "ip_blocked": True,
-            "message": "System requires security code for this IP"
-        }), 202
+    if ip_is_blocked:
+        return jsonify({"error": "Access from this address is blocked."}), 403
 
-    if password and not security_code:
+    if password:
         is_admin = username == ADMIN_USER
-        is_parent = username == PARENT_USER
-        is_env_student = (username == AVERAGE_USER)
+        # Parent portal is env-gated: only the configured family account exists.
+        is_parent = bool(PARENT_USER and PARENT_USER != "PARENT_USER" and username == PARENT_USER)
 
         if is_admin:
             expected_password = ADMIN_PASSWORD
         elif is_parent:
             expected_password = PARENT_PASSWORD
-        elif is_env_student:
-            expected_password = APP_PASSWORD
         else:
             expected_password = None
 
@@ -5255,7 +5953,7 @@ def login():
                     return jsonify({"error": "Your subscription is inactive. Please manage your billing.", "billing": True}), 403
 
                 if is_locked_down:
-                    return jsonify({"is_locked_down": True, "message": "System in lockdown. Please provide security code."}), 202
+                    return jsonify({"error": "The service is temporarily down for maintenance. Please try again shortly."}), 503
 
                 record_login_attempt(ip_addr, True, username)
                 session.permanent = True
@@ -5277,44 +5975,21 @@ def login():
 
                 return jsonify({"status": "ok", "redirect": "/"})
 
-        # Env-var login path (admin, parent, or legacy AVERAGE_USER)
+        # Env-var login path (break-glass admin + env-gated parent only)
         if expected_password and secrets.compare_digest(password.strip(), expected_password):
-            if is_locked_down:
-                return jsonify({
-                    "is_locked_down": True,
-                    "message": "System in lockdown. Please provide security code."
-                }), 202
+            # Admin may log in during maintenance mode; parent may not.
+            if is_locked_down and not is_admin:
+                return jsonify({"error": "The service is temporarily down for maintenance. Please try again shortly."}), 503
 
             record_login_attempt(ip_addr, True, username)
             session.permanent = True
             if is_admin:
                 session["admin_authenticated"] = True
                 session["is_admin"] = True
-            elif is_parent:
+            else:
                 session["parent_authenticated"] = True
-            else:
-                session["authenticated"] = True
-                # Try to fetch user_id from DB for the env-var student
-                try:
-                    _ec = get_db(); _ecur = _ec.cursor()
-                    _ecur.execute("SELECT id FROM users WHERE username = %s", (username,))
-                    _erow = _ecur.fetchone()
-                    _ecur.close(); _ec.close()
-                    if _erow:
-                        session["user_id"] = str(_erow["id"])
-                except Exception:
-                    pass
-                session["username"] = username
-                session["is_admin"] = False
             session.modified = True
-
-            if is_admin:
-                redirect_url = "/admin"
-            elif is_parent:
-                redirect_url = "/parent"
-            else:
-                redirect_url = "/"
-            return jsonify({"status": "ok", "redirect": redirect_url})
+            return jsonify({"status": "ok", "redirect": "/admin" if is_admin else "/parent"})
         else:
             lockout_info = record_login_attempt(ip_addr, False, username)
             if lockout_info["locked"]:
@@ -5324,60 +5999,6 @@ def login():
                     "minutes_remaining": lockout_info["minutes_remaining"]
                 }), 429
             return jsonify({"error": "Invalid username or password"}), 401
-
-    if password and security_code:
-        security_code_env = os.environ.get("SECURITY_CODE", "").strip()
-        if not security_code_env:
-            log.error("SECURITY_CODE environment variable not set. Cannot process security code.")
-            return jsonify({"error": "Security code not configured"}), 500
-
-        is_admin = username == ADMIN_USER
-        is_parent = username == PARENT_USER
-
-        if is_admin:
-            expected_password = ADMIN_PASSWORD
-        elif is_parent:
-            expected_password = PARENT_PASSWORD
-        else:
-            expected_password = APP_PASSWORD
-
-        # Allow login with security code if:
-        # 1. System is in lockdown, OR
-        # 2. IP is blocked
-        if is_locked_down or ip_is_blocked:
-            log.warning(
-                "Login security code attempt: username=%s, is_admin=%s, is_parent=%s, ip_blocked=%s, locked_down=%s",
-                username, is_admin, is_parent, ip_is_blocked, is_locked_down,
-            )
-            if expected_password and secrets.compare_digest(password.strip(), expected_password) and secrets.compare_digest(security_code.strip(), security_code_env):
-                record_login_attempt(ip_addr, True, username)
-                session.permanent = True
-                if is_admin:
-                    session["admin_authenticated"] = True
-                elif is_parent:
-                    session["parent_authenticated"] = True
-                else:
-                    session["authenticated"] = True
-                session.modified = True
-
-                if is_admin:
-                    redirect_url = "/admin"
-                elif is_parent:
-                    redirect_url = "/parent"
-                else:
-                    redirect_url = "/"
-                return jsonify({"status": "ok", "redirect": redirect_url})
-            else:
-                lockout_info = record_login_attempt(ip_addr, False, username)
-                if lockout_info["locked"]:
-                    return jsonify({
-                        "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
-                        "lockout": True,
-                        "minutes_remaining": lockout_info["minutes_remaining"]
-                    }), 429
-                return jsonify({"error": "Invalid username, password, or security code"}), 401
-        else:
-            return jsonify({"error": "Security code not required"}), 400
 
     return jsonify({"error": "Missing username or password"}), 400
 
@@ -5407,94 +6028,26 @@ def admin():
         }), 429
 
     password = data.get("password")
-    security_code = data.get("security_code")
-    is_locked_down = is_app_locked_down()
 
-    log.info(f"Admin login: password={bool(password)}, security_code={bool(security_code)}, locked_down={is_locked_down}")
-
-    if password and not security_code:
-        # Check if admin password
-        if secrets.compare_digest(password.strip(), ADMIN_PASSWORD):
-            if is_locked_down:
-                return jsonify({
-                    "is_locked_down": True,
-                    "message": "System in lockdown. Please provide security code."
-                }), 202
-
-            record_login_attempt(ip_addr, True, "admin")
-            session.permanent = True
-            session["admin_authenticated"] = True
-            session.modified = True
-            return jsonify({"status": "ok", "redirect": "/admin"})
-
-        # Check if app password
-        if APP_PASSWORD and secrets.compare_digest(password.strip(), APP_PASSWORD):
-            if is_locked_down:
-                return jsonify({
-                    "is_locked_down": True,
-                    "message": "System in lockdown. Please provide security code."
-                }), 202
-
-            record_login_attempt(ip_addr, True, "user")
-            session.permanent = True
-            session["authenticated"] = True
-            session.modified = True
-            return jsonify({"status": "ok", "redirect": "/"})
-
-        # Neither password matched
-        lockout_info = record_login_attempt(ip_addr, False, "")
-        if lockout_info["locked"]:
-            return jsonify({
-                "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
-                "lockout": True,
-                "minutes_remaining": lockout_info["minutes_remaining"]
-            }), 429
-        return jsonify({"error": "Wrong password"}), 401
-
-    # Handle security code for both app and admin
-    if password and security_code:
-        if is_locked_down:
-            security_code_env = os.environ.get("SECURITY_CODE", "").strip()
-            if not security_code_env:
-                log.error("SECURITY_CODE environment variable not set. Cannot process security code.")
-                return jsonify({"error": "Security code not configured"}), 500
-
-            # Check admin password with security code
-            if (
-                secrets.compare_digest(password.strip(), ADMIN_PASSWORD)
-                and secrets.compare_digest(security_code.strip(), security_code_env)
-            ):
-                record_login_attempt(ip_addr, True, "admin")
-                session.permanent = True
-                session["admin_authenticated"] = True
-                session.modified = True
-                return jsonify({"status": "ok", "redirect": "/admin"})
-
-            # Check app password with security code
-            if (
-                APP_PASSWORD
-                and secrets.compare_digest(password.strip(), APP_PASSWORD)
-                and secrets.compare_digest(security_code.strip(), security_code_env)
-            ):
-                record_login_attempt(ip_addr, True, "user")
-                session.permanent = True
-                session["authenticated"] = True
-                session.modified = True
-                return jsonify({"status": "ok", "redirect": "/"})
-
-            # Neither matched
-            lockout_info = record_login_attempt(ip_addr, False, "")
-            if lockout_info["locked"]:
-                return jsonify({
-                    "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
-                    "lockout": True,
-                    "minutes_remaining": lockout_info["minutes_remaining"]
-                }), 429
-            return jsonify({"error": "Wrong password or security code"}), 401
-        else:
-            return jsonify({"error": "Security code not required"}), 400
-
-    return jsonify({"error": "Missing password"}), 400
+    if not password:
+        return jsonify({"error": "Password required"}), 400
+    # Admin password only — the admin panel is never reachable with a student
+    # password, and maintenance mode does not block the operator.
+    if secrets.compare_digest(password.strip(), ADMIN_PASSWORD):
+        record_login_attempt(ip_addr, True, "admin")
+        session.permanent = True
+        session["admin_authenticated"] = True
+        session["is_admin"] = True
+        session.modified = True
+        return jsonify({"status": "ok", "redirect": "/admin"})
+    lockout_info = record_login_attempt(ip_addr, False, "")
+    if lockout_info["locked"]:
+        return jsonify({
+            "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
+            "lockout": True,
+            "minutes_remaining": lockout_info["minutes_remaining"]
+        }), 429
+    return jsonify({"error": "Wrong password"}), 401
 
 
 @app.route("/api/admin/login-attempts")
@@ -5602,7 +6155,7 @@ def api_admin_claude_usage():
         return jsonify({"error": "Not authenticated"}), 401
 
     try:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = _user_api_key()
         if not api_key:
             return jsonify({
                 "tokens_used": 0,
@@ -5650,42 +6203,6 @@ def is_localhost():
             or request.headers.get('CF-Connecting-IP') or request.headers.get('True-Client-IP'):
         return False
     return request.remote_addr in ('127.0.0.1', '::1')
-
-
-@app.route("/api/test-admin-password")
-def api_test_admin_password():
-    """Debug endpoint - localhost only - shows if ADMIN_PASSWORD is set"""
-    if not is_localhost():
-        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
-
-    if ADMIN_PASSWORD == "admin-change-me":
-        return jsonify({"status": "USING_DEFAULT", "message": "ADMIN_PASSWORD not set in environment, using default"})
-    else:
-        return jsonify({"status": "SET_FROM_ENV", "length": len(ADMIN_PASSWORD), "message": "ADMIN_PASSWORD is set from environment variable"})
-
-
-@app.route("/api/test-security-code")
-def api_test_security_code():
-    """Debug endpoint - localhost only - shows if SECURITY_CODE is set"""
-    if not is_localhost():
-        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
-
-    security_code = os.environ.get("SECURITY_CODE", "")
-    if not security_code:
-        return jsonify({"status": "NOT_SET", "message": "SECURITY_CODE environment variable not set"})
-    else:
-        return jsonify({"status": "SET_FROM_ENV", "length": len(security_code), "message": "SECURITY_CODE is set from environment variable"})
-
-
-@app.route("/api/test-lockdown-status")
-def api_test_lockdown_status():
-    """Debug endpoint - localhost only - shows current lockdown state"""
-    if not is_localhost():
-        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
-
-    is_locked = is_app_locked_down()
-    return jsonify({"is_locked_down": is_locked, "message": f"System is {'LOCKED DOWN' if is_locked else 'NORMAL'}"})
-
 
 
 @app.route("/api/admin/lockdown", methods=["POST"])
@@ -5842,12 +6359,13 @@ def api_sync_status():
     return jsonify({"issues": issues})
 
 
-def _pomodoro_row():
+def _pomodoro_row(uid):
+    _init_user_singleton(uid, "timer_state")
     conn = get_db()
     try:
         cur = conn.cursor()
         cur.execute("SELECT id, estimate_minutes, started_at, paused_at, accumulated_seconds, active "
-                    "FROM timer_state WHERE id = 1")
+                    "FROM timer_state WHERE user_id = %s", (uid,))
         row = cur.fetchone()
         cur.close()
         return row
@@ -5872,11 +6390,12 @@ def _pomodoro_state_payload(row):
 
 @app.route("/api/pomodoro/state")
 def api_pomodoro_state():
-    return jsonify(_pomodoro_state_payload(_pomodoro_row()))
+    return jsonify(_pomodoro_state_payload(_pomodoro_row(_require_uid())))
 
 
 @app.route("/api/pomodoro/start", methods=["POST"])
 def api_pomodoro_start():
+    uid = _require_uid()
     data = request.get_json(force=True, silent=True) or {}
     try:
         minutes = float(data.get("minutes", 25))
@@ -5884,6 +6403,7 @@ def api_pomodoro_start():
         minutes = 25.0
     if minutes <= 0 or minutes > 240:
         return jsonify({"error": "minutes must be between 0 and 240"}), 400
+    _init_user_singleton(uid, "timer_state")
     conn = get_db()
     try:
         cur = conn.cursor()
@@ -5891,22 +6411,23 @@ def api_pomodoro_start():
             "UPDATE timer_state SET estimate_minutes=%s, started_at=NOW(), "
             "paused_at=NULL, accumulated_seconds=0, active=TRUE, "
             "assignment_uid='', assignment_title='Pomodoro', class_name='' "
-            "WHERE id=1",
-            (minutes,),
+            "WHERE user_id=%s",
+            (minutes, uid),
         )
         conn.commit()
         cur.close()
     finally:
         conn.close()
-    return jsonify(_pomodoro_state_payload(_pomodoro_row()))
+    return jsonify(_pomodoro_state_payload(_pomodoro_row(uid)))
 
 
 @app.route("/api/pomodoro/pause", methods=["POST"])
 def api_pomodoro_pause():
+    uid = _require_uid()
     conn = get_db()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT active, paused_at, started_at, accumulated_seconds FROM timer_state WHERE id=1")
+        cur.execute("SELECT active, paused_at, started_at, accumulated_seconds FROM timer_state WHERE user_id=%s", (uid,))
         row = cur.fetchone()
         if not row or not row["active"]:
             cur.close()
@@ -5916,34 +6437,37 @@ def api_pomodoro_pause():
             if row["started_at"] is not None:
                 elapsed += (datetime.now(TZ) - row["started_at"]).total_seconds()
             cur.execute(
-                "UPDATE timer_state SET paused_at=NOW(), accumulated_seconds=%s WHERE id=1",
-                (elapsed,),
+                "UPDATE timer_state SET paused_at=NOW(), accumulated_seconds=%s WHERE user_id=%s",
+                (elapsed, uid),
             )
         else:
             cur.execute(
-                "UPDATE timer_state SET paused_at=NULL, started_at=NOW() WHERE id=1",
+                "UPDATE timer_state SET paused_at=NULL, started_at=NOW() WHERE user_id=%s",
+                (uid,),
             )
         conn.commit()
         cur.close()
     finally:
         conn.close()
-    return jsonify(_pomodoro_state_payload(_pomodoro_row()))
+    return jsonify(_pomodoro_state_payload(_pomodoro_row(uid)))
 
 
 @app.route("/api/pomodoro/stop", methods=["POST"])
 def api_pomodoro_stop():
+    uid = _require_uid()
     conn = get_db()
     try:
         cur = conn.cursor()
         cur.execute(
             "UPDATE timer_state SET active=FALSE, paused_at=NULL, started_at=NULL, "
-            "accumulated_seconds=0 WHERE id=1"
+            "accumulated_seconds=0 WHERE user_id=%s",
+            (uid,),
         )
         conn.commit()
         cur.close()
     finally:
         conn.close()
-    return jsonify(_pomodoro_state_payload(_pomodoro_row()))
+    return jsonify(_pomodoro_state_payload(_pomodoro_row(uid)))
 
 
 @app.route("/manifest.json")
@@ -5971,6 +6495,7 @@ def index():
 
 @app.route("/api/assignments")
 def api_assignments():
+    user_id = _require_uid()
     start = time.time()
     try:
         t1 = time.time()
@@ -5981,11 +6506,11 @@ def api_assignments():
         t2 = time.time()
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT assignment_title, submitted FROM completions")
+        cur.execute("SELECT assignment_title, submitted FROM completions WHERE user_id = %s", (user_id,))
         completion_rows = cur.fetchall()
         submitted_titles = set(r["assignment_title"] for r in completion_rows if r["submitted"])
         done_titles = set(r["assignment_title"] for r in completion_rows if not r["submitted"])
-        cur.execute("SELECT uid, minutes FROM assignment_estimates")
+        cur.execute("SELECT uid, minutes FROM assignment_estimates WHERE user_id = %s", (user_id,))
         custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
         cur.close()
         conn.close()
@@ -6017,6 +6542,7 @@ def api_assignments():
 
 @app.route("/api/assignments/<uid>/estimate", methods=["POST"])
 def api_set_estimate(uid):
+    user_id = _require_uid()
     data = request.get_json(force=True) or {}
     try:
         minutes = float(data.get("minutes", 30))
@@ -6026,10 +6552,10 @@ def api_set_estimate(uid):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-INSERT INTO assignment_estimates (uid, minutes, updated_at)
-VALUES (%s, %s, NOW())
-ON CONFLICT (uid) DO UPDATE SET minutes = EXCLUDED.minutes, updated_at = NOW()
-""", (uid, minutes))
+INSERT INTO assignment_estimates (uid, minutes, updated_at, user_id)
+VALUES (%s, %s, NOW(), %s)
+ON CONFLICT (user_id, uid) DO UPDATE SET minutes = EXCLUDED.minutes, updated_at = NOW()
+""", (uid, minutes, user_id))
     conn.commit()
     cur.close()
     conn.close()
@@ -6065,10 +6591,12 @@ def api_calendar():
     events = []
     today = datetime.now(TZ).date()
 
-    # Resolve user-scoped calendar URLs in the request thread. Flask's `session`
-    # is bound to the request context and is NOT accessible from worker threads,
-    # so calling u_*_ical() inside the ThreadPoolExecutor below silently falls
-    # back to the (usually empty) env vars and the user's saved URLs are ignored.
+    # Resolve user-scoped calendar URLs (and the user id) in the request thread.
+    # Flask's `session` is bound to the request context and is NOT accessible
+    # from worker threads, so calling u_*_ical() inside the ThreadPoolExecutor
+    # below silently falls back to the (usually empty) env vars and the user's
+    # saved URLs are ignored.
+    cal_uid      = _require_uid()
     personal_url = u_personal_ical()
     sports_url   = u_sports_ical()
     job_url      = u_job_schedule_ical()
@@ -6118,7 +6646,7 @@ def api_calendar():
             else:
                 log.info(f"/api/calendar: canvas took {elapsed:.2f}s")
             if cal:
-                for a in get_canvas_assignments_with_overdue(cal):
+                for a in get_canvas_assignments_with_overdue(cal, uid=cal_uid):
                     result.append({
                         "title": a["title"],
                         "start_display": a["due_display"],
@@ -6204,13 +6732,14 @@ def api_powerschool_debug():
 @app.route("/api/diagnostic")
 def api_diagnostic():
     """Diagnostic endpoint to check if debrief can be generated."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    uid = _require_uid()
+    api_key = _user_api_key(uid)
     has_db = True
     has_debrief = False
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT content FROM debrief_cache WHERE id = 1")
+        cur.execute("SELECT content FROM debrief_cache WHERE user_id = %s", (uid,))
         row = cur.fetchone()
         has_debrief = bool(row and row["content"])
         cur.close()
@@ -6227,11 +6756,12 @@ def api_diagnostic():
 
 @app.route("/api/briefing")
 def api_briefing():
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT content, generated_at FROM briefing_cache WHERE id = 1")
+    cur.execute("SELECT content, generated_at FROM briefing_cache WHERE user_id = %s", (uid,))
     row = cur.fetchone()
-    cur.execute("SELECT content, generated_at FROM debrief_cache WHERE id = 1")
+    cur.execute("SELECT content, generated_at FROM debrief_cache WHERE user_id = %s", (uid,))
     row_d = cur.fetchone()
     cur.close()
     conn.close()
@@ -6258,22 +6788,25 @@ def api_briefing():
 
 @app.route("/api/briefing/refresh", methods=["POST"])
 def api_briefing_refresh():
-    threading.Thread(target=generate_briefing, kwargs={"force": True}, daemon=True).start()
+    uid = _require_uid()
+    threading.Thread(target=generate_briefing, kwargs={"force": True, "uid": uid}, daemon=True).start()
     return jsonify({"status": "refreshing"})
 
 @app.route("/api/debrief/generate", methods=["GET", "POST"])
 def api_debrief_generate():
     """Manual trigger to generate debrief."""
-    threading.Thread(target=generate_evening_debrief, daemon=True).start()
+    uid = _require_uid()
+    threading.Thread(target=generate_evening_debrief, kwargs={"uid": uid}, daemon=True).start()
     return jsonify({"status": "generating", "message": "Debrief generation started"})
 
 
 @app.route("/api/insight/weekly", methods=["GET"])
 def api_insight_weekly():
     """Return the current weekly insight, if one is cached."""
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT generated_at, content FROM insight_cache WHERE id = 1")
+    cur.execute("SELECT generated_at, content FROM insight_cache WHERE user_id = %s", (uid,))
     row = cur.fetchone()
     cur.close()
     conn.close()
@@ -6288,10 +6821,11 @@ def api_insight_weekly():
 @app.route("/api/insight/weekly/generate", methods=["POST"])
 def api_insight_weekly_generate():
     """Force-generate a fresh weekly insight; returns the new row when ready."""
-    generate_weekly_insight(force=True)
+    uid = _require_uid()
+    generate_weekly_insight(force=True, uid=uid)
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT generated_at, content FROM insight_cache WHERE id = 1")
+    cur.execute("SELECT generated_at, content FROM insight_cache WHERE user_id = %s", (uid,))
     row = cur.fetchone()
     cur.close()
     conn.close()
@@ -6314,7 +6848,7 @@ def api_memories_get():
         client = _get_mem0_client()
         if not client:
             return jsonify({"memories": [], "configured": False})
-        all_mems = client.get_all(user_id="student")
+        all_mems = client.get_all(user_id=_mem0_user(_require_uid()))
         memories = [
             {
                 "id": m.get("id", ""),
@@ -6338,6 +6872,11 @@ def api_memories_delete(memory_id):
         client = _get_mem0_client()
         if not client:
             return jsonify({"error": "Mem0 client unavailable"}), 500
+        # Memory IDs are global in Mem0 — verify this one belongs to the
+        # requesting user before deleting.
+        own = client.get_all(user_id=_mem0_user(_require_uid())) or []
+        if not any(str(m.get("id", "")) == str(memory_id) for m in own):
+            return jsonify({"error": "Memory not found"}), 404
         client.delete(memory_id)
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -6351,9 +6890,10 @@ def api_memories_delete(memory_id):
 def api_people_list():
     """List all people Jarvis has built profiles for."""
     import json as _json
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, relationship, facts, created_at, updated_at FROM people_profiles ORDER BY updated_at DESC")
+    cur.execute("SELECT id, name, relationship, facts, created_at, updated_at FROM people_profiles WHERE user_id = %s ORDER BY updated_at DESC", (uid,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -6379,9 +6919,10 @@ def api_people_list():
 def api_people_get(person_id):
     """Get a single person's full profile by DB id."""
     import json as _json
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, name, relationship, facts, created_at, updated_at FROM people_profiles WHERE id = %s", (person_id,))
+    cur.execute("SELECT id, name, relationship, facts, created_at, updated_at FROM people_profiles WHERE id = %s AND user_id = %s", (person_id, uid))
     row = cur.fetchone()
     cur.close()
     conn.close()
@@ -6404,9 +6945,10 @@ def api_people_get(person_id):
 @app.route("/api/people/<int:person_id>", methods=["DELETE"])
 def api_people_delete(person_id):
     """Delete a person's profile."""
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM people_profiles WHERE id = %s", (person_id,))
+    cur.execute("DELETE FROM people_profiles WHERE id = %s AND user_id = %s", (person_id, uid))
     conn.commit()
     cur.close()
     conn.close()
@@ -6415,7 +6957,7 @@ def api_people_delete(person_id):
 
 @app.route("/api/complete", methods=["POST"])
 def api_complete():
-    uid = _uid()
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     title = str(data.get("title", ""))[:300]
     class_name = str(data.get("class_name", ""))[:100]
@@ -6428,26 +6970,15 @@ def api_complete():
 INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, user_id)
 VALUES (%s, %s, 0, %s, FALSE, %s)""", (title, class_name, estimate, uid))
     # Complete any auto-promoted task for this assignment
-    if uid:
-        cur.execute(
-            "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
-            "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%' AND user_id=%s",
-            (title, uid),
-        )
-        cur.execute(
-            "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s AND (user_id=%s OR user_id IS NULL)",
-            (title, uid),
-        )
-    else:
-        cur.execute(
-            "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
-            "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
-            (title,),
-        )
-        cur.execute(
-            "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
-            (title,),
-        )
+    cur.execute(
+        "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
+        "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%' AND user_id=%s",
+        (title, uid),
+    )
+    cur.execute(
+        "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s AND user_id=%s",
+        (title, uid),
+    )
     conn.commit()
     cur.close()
     conn.close()
@@ -6456,18 +6987,13 @@ VALUES (%s, %s, 0, %s, FALSE, %s)""", (title, class_name, estimate, uid))
 
 @app.route("/api/completions/today")
 def api_completions_today():
-    uid = _uid()
+    uid = _require_uid()
     today_start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
     conn = get_db()
     cur = conn.cursor()
-    if uid:
-        cur.execute("""
+    cur.execute("""
 SELECT assignment_title, class_name, duration_minutes, estimate_minutes, timed, completed_at
 FROM completions WHERE completed_at >= %s AND user_id = %s ORDER BY completed_at DESC""", (today_start, uid))
-    else:
-        cur.execute("""
-SELECT assignment_title, class_name, duration_minutes, estimate_minutes, timed, completed_at
-FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_start,))
     rows = [dict(r) for r in cur.fetchall()]
     cur.close()
     conn.close()
@@ -6495,13 +7021,13 @@ def api_uncomplete():
         cur = conn.cursor()
 
         # Delete the most recent completion record for this assignment from today
-        uid = _uid()
+        uid = _require_uid()
         today_start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-        uid_and = " AND user_id = %s" if uid else ""
-        uid_p = (uid,) if uid else ()
         cur.execute(
-            f"DELETE FROM completions WHERE assignment_title = %s AND class_name = %s AND completed_at >= %s{uid_and} ORDER BY completed_at DESC LIMIT 1",
-            (title, class_name, today_start) + uid_p
+            "DELETE FROM completions WHERE id = ("
+            "  SELECT id FROM completions WHERE assignment_title = %s AND class_name = %s"
+            "    AND completed_at >= %s AND user_id = %s ORDER BY completed_at DESC LIMIT 1)",
+            (title, class_name, today_start, uid)
         )
 
         conn.commit()
@@ -6517,6 +7043,7 @@ def api_uncomplete():
 @app.route("/api/submit", methods=["POST"])
 def api_submit():
     """Mark an assignment as submitted to Canvas (distinct from just 'done')."""
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     title = str(data.get("title", ""))[:300]
     class_name = str(data.get("class_name", ""))[:100]
@@ -6531,24 +7058,24 @@ def api_submit():
 UPDATE completions SET submitted = TRUE
 WHERE id = (
     SELECT id FROM completions
-    WHERE assignment_title = %s
+    WHERE assignment_title = %s AND user_id = %s
     ORDER BY completed_at DESC
     LIMIT 1
-)""", (title,))
+)""", (title, uid))
         # If no completion record existed yet, insert one directly as submitted
         if cur.rowcount == 0:
             cur.execute("""
-INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, submitted)
-VALUES (%s, %s, 0, %s, FALSE, TRUE)""", (title, class_name, estimate))
+INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, submitted, user_id)
+VALUES (%s, %s, 0, %s, FALSE, TRUE, %s)""", (title, class_name, estimate, uid))
         # Complete any auto-promoted overdue task for this assignment
         cur.execute(
             "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
-            "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
-            (title,),
+            "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%' AND user_id=%s",
+            (title, uid),
         )
         cur.execute(
-            "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
-            (title,),
+            "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s AND user_id=%s",
+            (title, uid),
         )
         conn.commit()
         cur.close()
@@ -6710,31 +7237,29 @@ def api_day_type():
 
 @app.route("/api/stats")
 def api_stats():
-    uid = _uid()
-    uid_and = " AND user_id = %s" if uid else ""
-    uid_p = (uid,) if uid else ()
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
     week_start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
     week_start -= timedelta(days=week_start.weekday())
-    cur.execute(f"SELECT SUM(duration_minutes) as total FROM completions WHERE completed_at >= %s AND timed=TRUE{uid_and}", (week_start,) + uid_p)
+    cur.execute("SELECT SUM(duration_minutes) as total FROM completions WHERE completed_at >= %s AND timed=TRUE AND user_id = %s", (week_start, uid))
     week_row = cur.fetchone()
     weekly_minutes = float(week_row["total"] or 0)
-    cur.execute(f"""
+    cur.execute("""
 SELECT class_name, AVG(duration_minutes) as avg, COUNT(*) as cnt
-FROM completions WHERE timed=TRUE AND duration_minutes>0 AND class_name!=''{uid_and}
-GROUP BY class_name ORDER BY avg DESC LIMIT 10""", uid_p)
+FROM completions WHERE timed=TRUE AND duration_minutes>0 AND class_name!='' AND user_id = %s
+GROUP BY class_name ORDER BY avg DESC LIMIT 10""", (uid,))
     by_class = [{"class_name": r["class_name"], "avg_minutes": round(float(r["avg"]), 1), "count": r["cnt"]} for r in cur.fetchall()]
-    cur.execute(f"""
+    cur.execute("""
 SELECT AVG(ABS(duration_minutes - estimate_minutes) / NULLIF(estimate_minutes, 0)) as err
-FROM completions WHERE timed=TRUE AND estimate_minutes>0 AND duration_minutes>0{uid_and}""", uid_p)
+FROM completions WHERE timed=TRUE AND estimate_minutes>0 AND duration_minutes>0 AND user_id = %s""", (uid,))
     acc_row = cur.fetchone()
     accuracy_pct = None
     if acc_row and acc_row["err"] is not None:
         accuracy_pct = round((1.0 - min(float(acc_row["err"]), 1.0)) * 100, 1)
-    cur.execute(f"""
+    cur.execute("""
 SELECT DISTINCT DATE(completed_at AT TIME ZONE 'America/Denver') as day
-FROM completions{' WHERE user_id = %s' if uid else ''} ORDER BY day DESC LIMIT 30""", uid_p)
+FROM completions WHERE user_id = %s ORDER BY day DESC LIMIT 30""", (uid,))
     streak_days = [r["day"] for r in cur.fetchall()]
     streak = 0
     check = date.today()
@@ -6758,27 +7283,18 @@ FROM completions{' WHERE user_id = %s' if uid else ''} ORDER BY day DESC LIMIT 3
 def api_tasks_get():
     start = time.time()
     try:
-        uid = _uid()
+        uid = _require_uid()
         conn = get_db()
         cur = conn.cursor()
-        if uid:
-            cur.execute("""
+        cur.execute("""
 SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
        NULL as project_id, NULL as project_title, category
 FROM tasks WHERE user_id = %s ORDER BY completed ASC,
     CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
     created_at ASC""", (uid,))
-        else:
-            cur.execute("""
-SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
-       NULL as project_id, NULL as project_title, category
-FROM tasks ORDER BY completed ASC,
-    CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
-    created_at ASC""")
         rows = [dict(r) for r in cur.fetchall()]
         # Sync all project tasks from active projects into the main task list.
-        if uid:
-            cur.execute("""
+        cur.execute("""
 SELECT pt.id, pt.title, pt.notes, 'medium' as urgency,
        (pt.status = 'done') as completed, NULL as completed_at, pt.due_date,
        pt.created_at, pt.project_id, pt.assignee, p.title as project_title
@@ -6786,15 +7302,6 @@ FROM project_tasks pt
 JOIN projects p ON p.id = pt.project_id
 WHERE p.status = 'active' AND p.user_id = %s
 ORDER BY pt.created_at ASC""", (uid,))
-        else:
-            cur.execute("""
-SELECT pt.id, pt.title, pt.notes, 'medium' as urgency,
-       (pt.status = 'done') as completed, NULL as completed_at, pt.due_date,
-       pt.created_at, pt.project_id, pt.assignee, p.title as project_title
-FROM project_tasks pt
-JOIN projects p ON p.id = pt.project_id
-WHERE p.status = 'active'
-ORDER BY pt.created_at ASC""")
         proj_rows = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
@@ -6842,7 +7349,7 @@ def api_tasks_create():
     if category not in TASK_CATEGORIES:
         category = categorize_task(title, notes)
 
-    uid = _uid()
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
 
@@ -6873,34 +7380,32 @@ INSERT INTO tasks (title, notes, urgency, due_date, user_id, category) VALUES (%
 
 @app.route("/api/tasks/<int:task_id>", methods=["PATCH"])
 def api_tasks_update(task_id):
-    uid = _uid()
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     conn = get_db()
     try:
         cur = conn.cursor()
-        uid_clause = " AND user_id = %s" if uid else ""
-        uid_params = (uid,) if uid else ()
         if "completed" in data:
             completed = bool(data["completed"])
             cur.execute(
-                f"UPDATE tasks SET completed=%s, completed_at=%s WHERE id=%s{uid_clause}",
-                (completed, datetime.now(TZ) if completed else None, task_id) + uid_params)
+                "UPDATE tasks SET completed=%s, completed_at=%s WHERE id=%s AND user_id=%s",
+                (completed, datetime.now(TZ) if completed else None, task_id, uid))
             # Mark today's plan as needing update if task is completed
             if completed:
                 today = datetime.now(TZ).date()
                 cur.execute("""
 UPDATE daily_plans SET needs_update = TRUE, last_updated_at = NOW()
-WHERE plan_date = %s""", (today,))
+WHERE plan_date = %s AND user_id = %s""", (today, uid))
         if "title" in data:
             title = str(data["title"])[:300]
             if title.strip():
-                cur.execute(f"UPDATE tasks SET title=%s WHERE id=%s{uid_clause}", (title, task_id) + uid_params)
+                cur.execute("UPDATE tasks SET title=%s WHERE id=%s AND user_id=%s", (title, task_id, uid))
         if "urgency" in data:
             urgency = str(data["urgency"]).lower()
             if urgency in ("high", "medium", "low"):
-                cur.execute(f"UPDATE tasks SET urgency=%s WHERE id=%s{uid_clause}", (urgency, task_id) + uid_params)
+                cur.execute("UPDATE tasks SET urgency=%s WHERE id=%s AND user_id=%s", (urgency, task_id, uid))
         if "notes" in data:
-            cur.execute(f"UPDATE tasks SET notes=%s WHERE id=%s{uid_clause}", (str(data["notes"])[:2000], task_id) + uid_params)
+            cur.execute("UPDATE tasks SET notes=%s WHERE id=%s AND user_id=%s", (str(data["notes"])[:2000], task_id, uid))
         if "due_date" in data:
             due_date = data["due_date"] or None
             if due_date:
@@ -6908,11 +7413,11 @@ WHERE plan_date = %s""", (today,))
                     datetime.strptime(due_date, "%Y-%m-%d")
                 except (ValueError, TypeError):
                     return jsonify({"error": "invalid due_date format"}), 400
-            cur.execute(f"UPDATE tasks SET due_date=%s WHERE id=%s{uid_clause}", (due_date, task_id) + uid_params)
+            cur.execute("UPDATE tasks SET due_date=%s WHERE id=%s AND user_id=%s", (due_date, task_id, uid))
         if "category" in data:
             category = str(data["category"]).lower().strip()
             if category in TASK_CATEGORIES:
-                cur.execute(f"UPDATE tasks SET category=%s WHERE id=%s{uid_clause}", (category, task_id) + uid_params)
+                cur.execute("UPDATE tasks SET category=%s WHERE id=%s AND user_id=%s", (category, task_id, uid))
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -6926,14 +7431,11 @@ WHERE plan_date = %s""", (today,))
 
 @app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
 def api_tasks_delete(task_id):
-    uid = _uid()
+    uid = _require_uid()
     conn = get_db()
     try:
         cur = conn.cursor()
-        if uid:
-            cur.execute("DELETE FROM tasks WHERE id=%s AND user_id=%s", (task_id, uid))
-        else:
-            cur.execute("DELETE FROM tasks WHERE id=%s", (task_id,))
+        cur.execute("DELETE FROM tasks WHERE id=%s AND user_id=%s", (task_id, uid))
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -6953,10 +7455,13 @@ def api_parent_tasks_get():
     conn = get_db()
     try:
         cur = conn.cursor()
+        # Parent portal is a single-family feature: it always targets the
+        # household's student account, never other tenants.
+        _student = _default_student_uid()
         cur.execute("""
 SELECT id, created_at, title, notes, urgency, completed, completed_at, due_date
-FROM tasks WHERE created_by_parent = TRUE
-ORDER BY completed ASC, created_at DESC""")
+FROM tasks WHERE created_by_parent = TRUE AND user_id = %s
+ORDER BY completed ASC, created_at DESC""", (_student,))
         rows = [dict(r) for r in cur.fetchall()]
 
         for row in rows:
@@ -7002,9 +7507,9 @@ def api_parent_tasks_create():
     try:
         cur = conn.cursor()
         cur.execute("""
-INSERT INTO tasks (title, urgency, due_date, notes, created_by_parent)
-VALUES (%s, %s, %s, %s, TRUE) RETURNING id, created_at""",
-            (title, urgency, due_date or None, notes))
+INSERT INTO tasks (title, urgency, due_date, notes, created_by_parent, user_id)
+VALUES (%s, %s, %s, %s, TRUE, %s) RETURNING id, created_at""",
+            (title, urgency, due_date or None, notes, _default_student_uid()))
         result = cur.fetchone()
         task_id = result["id"]
         created_at = result["created_at"]
@@ -7036,8 +7541,9 @@ def api_parent_task_update(task_id):
     try:
         cur = conn.cursor()
 
-        # Verify task was created by parent
-        cur.execute("SELECT created_by_parent FROM tasks WHERE id=%s", (task_id,))
+        # Verify task was created by parent (and belongs to the family student)
+        _student = _default_student_uid()
+        cur.execute("SELECT created_by_parent FROM tasks WHERE id=%s AND user_id=%s", (task_id, _student))
         row = cur.fetchone()
         if not row or not row["created_by_parent"]:
             return jsonify({"error": "Task not found or not created by parent"}), 404
@@ -7059,7 +7565,8 @@ def api_parent_task_update(task_id):
             return jsonify({"error": "Nothing to update"}), 400
 
         params.append(task_id)
-        query = f"UPDATE tasks SET {', '.join(updates)} WHERE id = %s"
+        params.append(_student)
+        query = f"UPDATE tasks SET {', '.join(updates)} WHERE id = %s AND user_id = %s"
         cur.execute(query, params)
         conn.commit()
         return jsonify({"status": "ok"})
@@ -7079,7 +7586,8 @@ def api_parent_daily_plan():
     conn = get_db()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s", (today,))
+        cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s AND user_id = %s",
+                    (today, _default_student_uid()))
         plan = cur.fetchone()
         if not plan:
             return jsonify({"exists": False, "items": []})
@@ -7113,12 +7621,13 @@ ORDER BY dpi.order_index ASC, dpi.scheduled_start_time ASC""", (plan["id"],))
 
 @app.route("/recurring-tasks", methods=["GET"])
 def api_recurring_tasks_get():
+    uid = _require_uid()
     conn = get_db()
     try:
         cur = conn.cursor()
         cur.execute("""
 SELECT id, title, notes, urgency, recurrence, last_created_at, active, created_at
-FROM recurring_tasks WHERE active = TRUE ORDER BY created_at DESC""")
+FROM recurring_tasks WHERE active = TRUE AND user_id = %s ORDER BY created_at DESC""", (uid,))
         rows = [dict(r) for r in cur.fetchall()]
         for r in rows:
             if r["last_created_at"]:
@@ -7149,21 +7658,22 @@ def api_recurring_tasks_create():
     if not title:
         return jsonify({"error": "Title required"}), 400
 
+    uid = _require_uid()
     conn = get_db()
     try:
         cur = conn.cursor()
         cur.execute("""
-INSERT INTO recurring_tasks (title, notes, urgency, recurrence, active)
-VALUES (%s, %s, %s, %s, TRUE) RETURNING id""",
-                    (title, notes, urgency, recurrence))
+INSERT INTO recurring_tasks (title, notes, urgency, recurrence, active, user_id)
+VALUES (%s, %s, %s, %s, TRUE, %s) RETURNING id""",
+                    (title, notes, urgency, recurrence, uid))
         task_id = cur.fetchone()["id"]
 
         # Create first instance
         due_date = _calculate_next_due_date(recurrence)
         cur.execute("""
-INSERT INTO tasks (title, notes, urgency, due_date)
-VALUES (%s, %s, %s, %s)""",
-                    (title, f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]", urgency, due_date))
+INSERT INTO tasks (title, notes, urgency, due_date, user_id)
+VALUES (%s, %s, %s, %s, %s)""",
+                    (title, f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]", urgency, due_date, uid))
         cur.execute("UPDATE recurring_tasks SET last_created_at = NOW() WHERE id = %s", (task_id,))
 
         conn.commit()
@@ -7179,13 +7689,14 @@ VALUES (%s, %s, %s, %s)""",
 
 @app.route("/api/recurring-tasks/<int:task_id>", methods=["PATCH"])
 def api_recurring_tasks_update(task_id):
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     conn = get_db()
     try:
         cur = conn.cursor()
 
         if "active" in data:
-            cur.execute("UPDATE recurring_tasks SET active=%s WHERE id=%s", (bool(data["active"]), task_id))
+            cur.execute("UPDATE recurring_tasks SET active=%s WHERE id=%s AND user_id=%s", (bool(data["active"]), task_id, uid))
 
         conn.commit()
         return jsonify({"status": "ok"})
@@ -7200,10 +7711,11 @@ def api_recurring_tasks_update(task_id):
 
 @app.route("/api/recurring-tasks/<int:task_id>", methods=["DELETE"])
 def api_recurring_tasks_delete(task_id):
+    uid = _require_uid()
     conn = get_db()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM recurring_tasks WHERE id=%s", (task_id,))
+        cur.execute("DELETE FROM recurring_tasks WHERE id=%s AND user_id=%s", (task_id, uid))
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -7218,8 +7730,9 @@ def api_recurring_tasks_delete(task_id):
 @app.route("/api/task-suggestions", methods=["GET"])
 def api_task_suggestions():
     """Generate AI-powered task suggestions based on pending assignments and calendar events."""
+    uid = _require_uid()
     start = time.time()
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key(uid)
     if not api_key:
         return jsonify({"suggestions": []}), 200
 
@@ -7251,10 +7764,10 @@ def api_task_suggestions():
             conn = get_db()
             cur = conn.cursor()
             # Filter out completed assignments
-            cur.execute("SELECT DISTINCT assignment_title FROM completions")
+            cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (uid,))
             completed_titles = set(r["assignment_title"] for r in cur.fetchall())
             # Get existing tasks to avoid duplicates
-            cur.execute("SELECT title FROM tasks WHERE completed = FALSE")
+            cur.execute("SELECT title FROM tasks WHERE completed = FALSE AND user_id = %s", (uid,))
             existing_task_titles = set(r["title"] for r in cur.fetchall())
             cur.close()
         except Exception as e:
@@ -7485,8 +7998,10 @@ def _process_recurring_tasks():
     today = date.today()
 
     # Find all active recurring tasks where last_created_at is older than recurrence interval
+    # GLOBAL-OK: intentional cross-user scan — each row carries its user_id and
+    # new instances are inserted with that owner.
     cur.execute("""
-SELECT id, title, notes, urgency, recurrence
+SELECT id, title, notes, urgency, recurrence, last_created_at, user_id
 FROM recurring_tasks
 WHERE active = TRUE
 AND (last_created_at IS NULL OR last_created_at::date < %s)""", (today,))
@@ -7519,9 +8034,9 @@ AND (last_created_at IS NULL OR last_created_at::date < %s)""", (today,))
             due_date = _calculate_next_due_date(recurrence)
             task_notes = f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]"
             cur.execute("""
-INSERT INTO tasks (title, notes, urgency, due_date)
-VALUES (%s, %s, %s, %s)""",
-                        (title, task_notes, urgency, due_date))
+INSERT INTO tasks (title, notes, urgency, due_date, user_id)
+VALUES (%s, %s, %s, %s, %s)""",
+                        (title, task_notes, urgency, due_date, task["user_id"]))
             cur.execute("UPDATE recurring_tasks SET last_created_at = NOW() WHERE id = %s", (task_id,))
 
     conn.commit()
@@ -7531,25 +8046,31 @@ VALUES (%s, %s, %s, %s)""",
 
 # ── Projects ─────────────────────────────────────────────────────────────────
 
+def _project_owned(cur, project_id, uid):
+    """True if the project belongs to this user. Sub-resource routes
+    (notes/tasks) key off project_id, so ownership must be checked once
+    at the top of each route."""
+    cur.execute("SELECT 1 FROM projects WHERE id=%s AND user_id=%s", (project_id, uid))
+    return cur.fetchone() is not None
+
+
 @app.route("/api/projects", methods=["GET"])
 def api_projects_get():
     start = time.time()
-    uid = _uid()
+    uid = _require_uid()
     try:
         conn = get_db()
         cur = conn.cursor()
-        uid_where = "WHERE user_id = %s" if uid else ""
-        uid_p = (uid,) if uid else ()
-        cur.execute(f"""
+        cur.execute("""
 SELECT id, title, description, status, lead, members, last_checkin,
        checkin_interval_days, created_at,
        CASE WHEN last_checkin IS NULL OR
            NOW() - last_checkin > make_interval(days => checkin_interval_days)
        THEN TRUE ELSE FALSE END as needs_checkin
 FROM projects
-{uid_where}
+WHERE user_id = %s
 ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
-         created_at DESC""", uid_p)
+         created_at DESC""", (uid,))
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
@@ -7566,7 +8087,7 @@ ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'done' THEN 
 
 @app.route("/api/projects", methods=["POST"])
 def api_projects_create():
-    uid = _uid()
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     title = str(data.get("title", "")).strip()[:300]
     if not title:
@@ -7590,9 +8111,13 @@ VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s) RETURNING id""",
 
 @app.route("/api/projects/<int:project_id>", methods=["PATCH"])
 def api_projects_update(project_id):
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     conn = get_db()
     cur = conn.cursor()
+    if not _project_owned(cur, project_id, uid):
+        cur.close(); conn.close()
+        return jsonify({"error": "project not found"}), 404
 
     # Validate status if provided
     if "status" in data:
@@ -7654,9 +8179,10 @@ def api_projects_update(project_id):
 
 @app.route("/api/projects/<int:project_id>", methods=["DELETE"])
 def api_projects_delete(project_id):
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM projects WHERE id=%s", (project_id,))
+    cur.execute("DELETE FROM projects WHERE id=%s AND user_id=%s", (project_id, uid))
     conn.commit()
     cur.close()
     conn.close()
@@ -7665,8 +8191,12 @@ def api_projects_delete(project_id):
 
 @app.route("/api/projects/<int:project_id>/notes", methods=["GET"])
 def api_project_notes_get(project_id):
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
+    if not _project_owned(cur, project_id, uid):
+        cur.close(); conn.close()
+        return jsonify({"error": "project not found"}), 404
     cur.execute("SELECT id, content, created_at FROM project_notes WHERE project_id=%s ORDER BY created_at DESC", (project_id,))
     rows = [dict(r) for r in cur.fetchall()]
     cur.close()
@@ -7678,12 +8208,16 @@ def api_project_notes_get(project_id):
 
 @app.route("/api/projects/<int:project_id>/notes", methods=["POST"])
 def api_project_notes_create(project_id):
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     content = str(data.get("content", "")).strip()
     if not content:
         return jsonify({"error": "content required"}), 400
     conn = get_db()
     cur = conn.cursor()
+    if not _project_owned(cur, project_id, uid):
+        cur.close(); conn.close()
+        return jsonify({"error": "project not found"}), 404
     cur.execute("INSERT INTO project_notes (project_id, content) VALUES (%s, %s) RETURNING id",
                 (project_id, content))
     new_id = cur.fetchone()["id"]
@@ -7697,8 +8231,12 @@ def api_project_notes_create(project_id):
 
 @app.route("/api/projects/<int:project_id>/notes/<int:note_id>", methods=["DELETE"])
 def api_project_notes_delete(project_id, note_id):
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
+    if not _project_owned(cur, project_id, uid):
+        cur.close(); conn.close()
+        return jsonify({"error": "project not found"}), 404
     cur.execute("DELETE FROM project_notes WHERE id=%s AND project_id=%s", (note_id, project_id))
     conn.commit()
     cur.close()
@@ -7710,10 +8248,13 @@ def api_project_notes_delete(project_id, note_id):
 
 @app.route("/api/projects/<int:project_id>/tasks", methods=["GET"])
 def api_project_tasks_get(project_id):
+    uid = _require_uid()
     conn = get_db()
     try:
         cur = conn.cursor()
         try:
+            if not _project_owned(cur, project_id, uid):
+                return jsonify({"error": "project not found"}), 404
             cur.execute("""
 SELECT id, title, notes, assignee, status, due_date, created_at
 FROM project_tasks WHERE project_id=%s ORDER BY created_at ASC""", (project_id,))
@@ -7731,6 +8272,7 @@ FROM project_tasks WHERE project_id=%s ORDER BY created_at ASC""", (project_id,)
 
 @app.route("/api/projects/<int:project_id>/tasks", methods=["POST"])
 def api_project_tasks_create(project_id):
+    uid = _require_uid()
     try:
         data = request.get_json(force=True) or {}
         title = str(data.get("title", "")).strip()[:300]
@@ -7744,6 +8286,8 @@ def api_project_tasks_create(project_id):
         try:
             cur = conn.cursor()
             try:
+                if not _project_owned(cur, project_id, uid):
+                    return jsonify({"error": "project not found"}), 404
                 cur.execute("""
 INSERT INTO project_tasks (project_id, title, notes, assignee, status, due_date)
 VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
@@ -7765,11 +8309,14 @@ VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
 
 @app.route("/api/projects/<int:project_id>/tasks/<int:task_id>", methods=["PATCH"])
 def api_project_tasks_update(project_id, task_id):
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     conn = get_db()
     try:
         cur = conn.cursor()
         try:
+            if not _project_owned(cur, project_id, uid):
+                return jsonify({"error": "project not found"}), 404
             # Build single UPDATE with all provided fields
             updates = {}
             if "title" in data:
@@ -7809,10 +8356,13 @@ def api_project_tasks_update(project_id, task_id):
 
 @app.route("/api/projects/<int:project_id>/tasks/<int:task_id>", methods=["DELETE"])
 def api_project_tasks_delete(project_id, task_id):
+    uid = _require_uid()
     conn = get_db()
     try:
         cur = conn.cursor()
         try:
+            if not _project_owned(cur, project_id, uid):
+                return jsonify({"error": "project not found"}), 404
             cur.execute("DELETE FROM project_tasks WHERE id=%s AND project_id=%s", (task_id, project_id))
             conn.commit()
         except Exception:
@@ -7825,22 +8375,63 @@ def api_project_tasks_delete(project_id, task_id):
     return jsonify({"status": "ok"})
 
 
+def _validate_anthropic_key(key):
+    """Make the cheapest possible live call with the submitted key.
+    Returns (ok, error_message)."""
+    key = (key or "").strip()
+    if not key:
+        return False, "API key is empty"
+    if not key.startswith("sk-ant-"):
+        return False, "That doesn't look like an Anthropic API key (should start with sk-ant-)"
+    try:
+        client = anthropic.Anthropic(api_key=key, max_retries=0, timeout=15.0)
+        client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        return True, ""
+    except anthropic.AuthenticationError:
+        return False, "Anthropic rejected this API key"
+    except Exception as e:
+        name = type(e).__name__
+        if name in ("RateLimitError", "OverloadedError"):
+            # Key is valid; the account is just busy/out of credits right now.
+            return True, ""
+        return False, f"Could not verify key: {e}"
+
+
+@app.route("/api/settings/test-anthropic-key", methods=["POST"])
+def api_test_anthropic_key():
+    """Validate an Anthropic API key without saving it. Uses the stored key
+    when none is submitted."""
+    uid = _require_uid()
+    data = request.get_json(force=True, silent=True) or {}
+    key = (data.get("api_key") or "").strip()
+    if not key or key.startswith("•"):
+        key = _user_api_key(uid)
+    ok, err = _validate_anthropic_key(key)
+    return jsonify({"ok": ok, "error": err or None}), (200 if ok else 400)
+
+
 @app.route("/api/config", methods=["GET"])
 def api_config_get():
-    uid = _uid()
-    cfg = get_user_config(uid) if uid else get_config()
+    uid = _require_uid()
+    cfg = get_user_config(uid)
     return jsonify({
         "name": cfg.get("name", "Jarvis"),
         "morning_briefing_time": cfg.get("morning_briefing_time", "07:00"),
         "timer_cutoff_multiplier": cfg.get("timer_cutoff_multiplier", "2.0"),
         "has_api_key": bool(cfg.get("anthropic_api_key", "")),
-        "weekly_recap_advisor": cfg.get("weekly_recap_advisor", "Mr. Goldberg"),
-        "formal_signoff_name": cfg.get("formal_signoff_name", "Finley Thomas"),
+        "weekly_recap_advisor": cfg.get("weekly_recap_advisor", ""),
+        "formal_signoff_name": cfg.get("formal_signoff_name", ""),
         "timezone": cfg.get("timezone", "America/Denver"),
         "app_mode": cfg.get("app_mode", "school"),
         "is_summer_school": cfg.get("is_summer_school", "false") == "true",
         "has_summer_job": cfg.get("has_summer_job", "false") == "true",
         "has_job_schedule": bool(u_job_schedule_ical()),
+        "ntfy_topic": cfg.get("ntfy_topic", ""),
+        "weather_latlon": cfg.get("weather_latlon", ""),
         # Calendar URLs (per-user)
         "personal_ical_url":     cfg.get("personal_ical_url", ""),
         "canvas_ical_url":       cfg.get("canvas_ical_url", ""),
@@ -7860,22 +8451,21 @@ def api_config_post():
         "app_mode", "is_summer_school", "has_summer_job",
         "personal_ical_url", "canvas_ical_url", "canvas_api_token",
         "canvas_base_url", "sports_ical_url", "job_schedule_ical_url",
+        "ntfy_topic", "weather_latlon",
     }
     updates = {k: str(v)[:2000] for k, v in data.items() if k in allowed}
-    # Skip masked Canvas token (UI sends •••••••• when unchanged)
-    if updates.get("canvas_api_token", "").strip().startswith("•"):
-        del updates["canvas_api_token"]
+    # Skip masked secrets (UI sends •••••••• when unchanged)
+    for _masked_key in ("canvas_api_token", "anthropic_api_key"):
+        if updates.get(_masked_key, "").strip().startswith("•"):
+            del updates[_masked_key]
     if updates:
         if "timezone" in updates:
             try:
                 ZoneInfo(updates["timezone"])
             except Exception:
                 return jsonify({"status": "error", "message": "Invalid timezone"}), 400
-        uid = _uid()
-        if uid:
-            set_user_config(updates, user_id=uid)
-        else:
-            set_config(updates)
+        uid = _require_uid()
+        set_user_config(updates, user_id=uid)
         if "morning_briefing_time" in updates:
             schedule_briefing()
         # A changed calendar URL should retry right away, not sit out the
@@ -7900,9 +8490,10 @@ def api_config_post():
 
 @app.route("/api/bucket-list", methods=["GET"])
 def api_bucket_list_get():
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, title, category, notes, completed, completed_at, created_at FROM bucket_list ORDER BY completed, created_at DESC")
+    cur.execute("SELECT id, title, category, notes, completed, completed_at, created_at FROM bucket_list WHERE user_id = %s ORDER BY completed, created_at DESC", (uid,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -7925,9 +8516,10 @@ def api_bucket_list_post():
     notes    = str(data.get("notes",    "")).strip()[:2000]
     if not title:
         return jsonify({"error": "title required"}), 400
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("INSERT INTO bucket_list (title, category, notes) VALUES (%s, %s, %s) RETURNING id, created_at", (title, category, notes))
+    cur.execute("INSERT INTO bucket_list (title, category, notes, user_id) VALUES (%s, %s, %s, %s) RETURNING id, created_at", (title, category, notes, uid))
     row = cur.fetchone()
     conn.commit()
     cur.close()
@@ -7937,18 +8529,19 @@ def api_bucket_list_post():
 
 @app.route("/api/bucket-list/<int:item_id>", methods=["PATCH"])
 def api_bucket_list_patch(item_id):
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     conn = get_db()
     cur = conn.cursor()
     if "completed" in data:
         now_ts = datetime.now(get_tz()) if data["completed"] else None
-        cur.execute("UPDATE bucket_list SET completed=%s, completed_at=%s WHERE id=%s", (bool(data["completed"]), now_ts, item_id))
+        cur.execute("UPDATE bucket_list SET completed=%s, completed_at=%s WHERE id=%s AND user_id=%s", (bool(data["completed"]), now_ts, item_id, uid))
     if "title" in data:
-        cur.execute("UPDATE bucket_list SET title=%s WHERE id=%s", (str(data["title"])[:500], item_id))
+        cur.execute("UPDATE bucket_list SET title=%s WHERE id=%s AND user_id=%s", (str(data["title"])[:500], item_id, uid))
     if "category" in data:
-        cur.execute("UPDATE bucket_list SET category=%s WHERE id=%s", (str(data["category"])[:100], item_id))
+        cur.execute("UPDATE bucket_list SET category=%s WHERE id=%s AND user_id=%s", (str(data["category"])[:100], item_id, uid))
     if "notes" in data:
-        cur.execute("UPDATE bucket_list SET notes=%s WHERE id=%s", (str(data["notes"])[:2000], item_id))
+        cur.execute("UPDATE bucket_list SET notes=%s WHERE id=%s AND user_id=%s", (str(data["notes"])[:2000], item_id, uid))
     conn.commit()
     cur.close()
     conn.close()
@@ -7957,9 +8550,10 @@ def api_bucket_list_patch(item_id):
 
 @app.route("/api/bucket-list/<int:item_id>", methods=["DELETE"])
 def api_bucket_list_delete(item_id):
+    uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM bucket_list WHERE id=%s", (item_id,))
+    cur.execute("DELETE FROM bucket_list WHERE id=%s AND user_id=%s", (item_id, uid))
     conn.commit()
     cur.close()
     conn.close()
@@ -8963,15 +9557,22 @@ JARVIS_WEB_TOOLS = [
 ANTHROPIC_SERVER_TOOL_NAMES = {"web_search", "web_fetch"}
 
 
-def _execute_jarvis_tool(name, inputs, conversation_id=None):
-    """Execute a Jarvis tool call and return a JSON-serializable result dict."""
+def _execute_jarvis_tool(name, inputs, conversation_id=None, uid=None):
+    """Execute a Jarvis tool call and return a JSON-serializable result dict.
+
+    uid is the chat user captured at request start — tool calls run inside the
+    SSE stream where the session may not be available, so it must be passed in.
+    """
+    if not uid:
+        return {"error": "no user context for tool call"}
     try:
         if name == "get_tasks":
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
                 "SELECT id, title, urgency, due_date, notes FROM tasks WHERE completed=FALSE "
-                "ORDER BY urgency DESC, created_at ASC LIMIT 25"
+                "AND user_id=%s ORDER BY urgency DESC, created_at ASC LIMIT 25",
+                (uid,)
             )
             tasks = []
             for r in cur.fetchall():
@@ -8994,8 +9595,8 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO tasks (title, urgency, due_date, notes) VALUES (%s,%s,%s,%s) RETURNING id",
-                (title, urgency, due_date, notes),
+                "INSERT INTO tasks (title, urgency, due_date, notes, user_id) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                (title, urgency, due_date, notes, uid),
             )
             task_id = cur.fetchone()["id"]
             conn.commit(); cur.close(); conn.close()
@@ -9010,15 +9611,16 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
                 try:
                     # Try regular tasks first
                     cur.execute(
-                        "UPDATE tasks SET completed=TRUE, completed_at=NOW() WHERE id=%s AND completed=FALSE RETURNING title",
-                        (task_id,),
+                        "UPDATE tasks SET completed=TRUE, completed_at=NOW() WHERE id=%s AND completed=FALSE AND user_id=%s RETURNING title",
+                        (task_id, uid),
                     )
                     row = cur.fetchone()
                     if not row:
                         # Fall back to project tasks (they use status='done' instead of a boolean)
                         cur.execute(
-                            "UPDATE project_tasks SET status='done' WHERE id=%s AND status!='done' RETURNING title",
-                            (task_id,),
+                            "UPDATE project_tasks SET status='done' WHERE id=%s AND status!='done' "
+                            "AND project_id IN (SELECT id FROM projects WHERE user_id=%s) RETURNING title",
+                            (task_id, uid),
                         )
                         row = cur.fetchone()
                     conn.commit()
@@ -9038,7 +9640,7 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             task_id = int(inputs.get("task_id", 0))
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("DELETE FROM tasks WHERE id=%s RETURNING title", (task_id,))
+            cur.execute("DELETE FROM tasks WHERE id=%s AND user_id=%s RETURNING title", (task_id, uid))
             row = cur.fetchone()
             conn.commit(); cur.close(); conn.close()
             if row:
@@ -9061,9 +9663,10 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             if not updates:
                 return {"status": "nothing_to_update"}
             params.append(task_id)
+            params.append(uid)
             conn = get_db()
             cur = conn.cursor()
-            cur.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id=%s RETURNING title", params)
+            cur.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id=%s AND user_id=%s RETURNING title", params)
             row = cur.fetchone()
             conn.commit(); cur.close(); conn.close()
             return {"status": "updated", "task_id": task_id, "title": row["title"] if row else None}
@@ -9075,10 +9678,10 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
                 cal = fetch_ical(u_canvas_ical())
                 if not cal:
                     return {"assignments": [], "error": "Could not fetch Canvas calendar"}
-                asgn_list = get_canvas_assignments_with_overdue(cal)
+                asgn_list = get_canvas_assignments_with_overdue(cal, uid=uid)
                 conn = get_db()
                 cur = conn.cursor()
-                cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id=%s", (uid,))
                 done = set(r["assignment_title"] for r in cur.fetchall())
                 cur.close(); conn.close()
                 asgn_list = [a for a in asgn_list if a["title"] not in done]
@@ -9096,19 +9699,19 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, submitted) VALUES (%s,%s,%s,0,FALSE,%s)",
-                (title, class_name, duration, submitted),
+                "INSERT INTO completions (assignment_title, class_name, duration_minutes, estimate_minutes, timed, submitted, user_id) VALUES (%s,%s,%s,0,FALSE,%s,%s)",
+                (title, class_name, duration, submitted, uid),
             )
             # Also complete any task that was auto-created from this overdue assignment
             cur.execute(
                 "UPDATE tasks SET completed=TRUE, completed_at=NOW() "
-                "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%'",
-                (title,),
+                "WHERE title=%s AND completed=FALSE AND notes LIKE 'Overdue Canvas assignment%%' AND user_id=%s",
+                (title, uid),
             )
             # Reset the cache flag so it won't re-promote if somehow re-fetched
             cur.execute(
-                "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s",
-                (title,),
+                "UPDATE canvas_assignments_cache SET promoted_to_task=FALSE WHERE title=%s AND user_id=%s",
+                (title, uid),
             )
             conn.commit(); cur.close(); conn.close()
             log.info(f"Jarvis tool: logged completion of '{title}' (submitted={submitted})")
@@ -9148,8 +9751,8 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO stock_transactions (symbol, action, quantity, price, transaction_date, notes) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
-                (symbol, action, qty, price, tx_date, notes),
+                "INSERT INTO stock_transactions (symbol, action, quantity, price, transaction_date, notes, user_id) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                (symbol, action, qty, price, tx_date, notes, uid),
             )
             tx_id = cur.fetchone()["id"]
             conn.commit(); cur.close(); conn.close()
@@ -9176,29 +9779,30 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
                 exit_criteria=(str(exit_criteria) if exit_criteria not in (None, "") else None),
                 target_price=target_price,
                 stop_loss=stop_loss,
+                uid=uid,
             )
             log.info(f"Jarvis tool: saved stock note for {symbol}")
             return {"status": "saved", "symbol": symbol}
 
         elif name == "get_portfolio":
-            port = _compute_portfolio()
+            port = _compute_portfolio(uid=uid)
             holdings = [{"symbol": sym, "quantity": h["qty"], "avg_cost": round(h["avg_cost"], 2)} for sym, h in port.items()]
             return {"holdings": holdings, "count": len(holdings)}
 
         elif name == "get_projects":
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT id, title, description, status FROM projects WHERE status='active' ORDER BY created_at DESC")
+            cur.execute("SELECT id, title, description, status FROM projects WHERE status='active' AND user_id=%s ORDER BY created_at DESC", (uid,))
             projects = [dict(r) for r in cur.fetchall()]
             cur.execute("""
 SELECT p.title as project, pt.id as task_id, pt.title as task, pt.assignee, pt.status, pt.notes
 FROM project_tasks pt JOIN projects p ON p.id=pt.project_id
-WHERE p.status='active' AND pt.status!='done' ORDER BY pt.created_at ASC LIMIT 20""")
+WHERE p.status='active' AND pt.status!='done' AND p.user_id=%s ORDER BY pt.created_at ASC LIMIT 20""", (uid,))
             proj_tasks = [dict(r) for r in cur.fetchall()]
             cur.execute("""
 SELECT p.title as project, pn.content as note
 FROM project_notes pn JOIN projects p ON p.id=pn.project_id
-WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
+WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 10""", (uid,))
             proj_notes = [dict(r) for r in cur.fetchall()]
             cur.close(); conn.close()
             return {"projects": projects, "tasks": proj_tasks, "notes": proj_notes}
@@ -9221,9 +9825,9 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             cur = conn.cursor()
             cur.execute(
                 "INSERT INTO projects (title, description, status, lead, members, "
-                "checkin_interval_days, last_checkin) "
-                "VALUES (%s, %s, 'active', '', '', %s, NOW()) RETURNING id",
-                (title, description, checkin),
+                "checkin_interval_days, last_checkin, user_id) "
+                "VALUES (%s, %s, 'active', '', '', %s, NOW(), %s) RETURNING id",
+                (title, description, checkin, uid),
             )
             project_id = cur.fetchone()["id"]
 
@@ -9261,7 +9865,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 return {"error": "title is required"}
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT id, title FROM projects WHERE id=%s", (project_id,))
+            cur.execute("SELECT id, title FROM projects WHERE id=%s AND user_id=%s", (project_id, uid))
             row = cur.fetchone()
             if not row:
                 cur.close(); conn.close()
@@ -9287,7 +9891,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             conn = get_db()
             cur = conn.cursor()
             today = datetime.now(TZ).date()
-            cur.execute("SELECT content, generated_at FROM briefing_cache WHERE briefing_date=%s", (today,))
+            cur.execute("SELECT content, generated_at FROM briefing_cache WHERE briefing_date=%s AND user_id=%s", (today, uid))
             row = cur.fetchone()
             cur.close(); conn.close()
             if row:
@@ -9338,7 +9942,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             try:
                 _get_mem0_client().add(
                     [{"role": "assistant", "content": memory_text}],
-                    user_id="student",
+                    user_id=_mem0_user(uid),
                 )
                 return {"status": "saved", "memory": memory_text}
             except Exception as e:
@@ -9355,7 +9959,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             conn = get_db()
             cur = conn.cursor()
             # Fetch existing profile
-            cur.execute("SELECT relationship, facts FROM people_profiles WHERE name = %s", (person_name,))
+            cur.execute("SELECT relationship, facts FROM people_profiles WHERE name = %s AND user_id = %s", (person_name, uid))
             row = cur.fetchone()
 
             # Skip entirely if profile already exists and there's nothing new to add
@@ -9374,16 +9978,16 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 merged_facts = existing_facts + [f for f in new_facts if f not in existing_facts]
                 final_relationship = relationship or existing_relationship
                 cur.execute(
-                    "UPDATE people_profiles SET relationship=%s, facts=%s, updated_at=NOW() WHERE name=%s",
-                    (final_relationship, _json.dumps(merged_facts), person_name)
+                    "UPDATE people_profiles SET relationship=%s, facts=%s, updated_at=NOW() WHERE name=%s AND user_id=%s",
+                    (final_relationship, _json.dumps(merged_facts), person_name, uid)
                 )
                 action = "updated"
             else:
                 merged_facts = new_facts
                 final_relationship = relationship
                 cur.execute(
-                    "INSERT INTO people_profiles (name, relationship, facts) VALUES (%s, %s, %s)",
-                    (person_name, final_relationship, _json.dumps(merged_facts))
+                    "INSERT INTO people_profiles (name, relationship, facts, user_id) VALUES (%s, %s, %s, %s)",
+                    (person_name, final_relationship, _json.dumps(merged_facts), uid)
                 )
                 action = "created"
             conn.commit()
@@ -9396,7 +10000,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                     _facts_text = f"About {person_name} ({final_relationship or 'person known to student'}): " + "; ".join(new_facts)
                     _get_mem0_client().add(
                         [{"role": "assistant", "content": _facts_text}],
-                        user_id="student",
+                        user_id=_mem0_user(uid),
                         metadata={"person": person_name},
                     )
                 except Exception as _e:
@@ -9418,8 +10022,8 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "SELECT name, relationship, facts, created_at, updated_at FROM people_profiles WHERE LOWER(name) = LOWER(%s)",
-                (person_name,)
+                "SELECT name, relationship, facts, created_at, updated_at FROM people_profiles WHERE LOWER(name) = LOWER(%s) AND user_id = %s",
+                (person_name, uid)
             )
             row = cur.fetchone()
             cur.close()
@@ -9436,14 +10040,14 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 try:
                     _hits = _get_mem0_client().search(
                         person_name,
-                        user_id="student",
+                        user_id=_mem0_user(uid),
                         filters={"AND": [{"metadata": {"person": person_name}}]},
                         limit=8,
                     )
                     mem0_mentions = [h["memory"] for h in (_hits or []) if h.get("memory")]
                 except Exception:
                     try:
-                        _hits = _get_mem0_client().search(f"about {person_name}", user_id="student", limit=8)
+                        _hits = _get_mem0_client().search(f"about {person_name}", user_id=_mem0_user(uid), limit=8)
                         mem0_mentions = [h["memory"] for h in (_hits or []) if h.get("memory") and person_name.lower() in h["memory"].lower()]
                     except Exception:
                         pass
@@ -9461,7 +10065,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             import json as _json
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT name, relationship, facts, updated_at FROM people_profiles ORDER BY updated_at DESC")
+            cur.execute("SELECT name, relationship, facts, updated_at FROM people_profiles WHERE user_id = %s ORDER BY updated_at DESC", (uid,))
             rows = cur.fetchall()
             cur.close()
             conn.close()
@@ -9481,7 +10085,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
 
         # ── Google Workspace tools ────────────────────────────────────────────
         elif name == "create_email_draft":
-            creds = _get_google_credentials()
+            creds = _get_google_credentials(uid)
             if creds is None:
                 if not _google_configured():
                     return {"error": "Google not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."}
@@ -9495,8 +10099,8 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO gmail_drafts (to_addr, cc_addr, subject, body, conversation_id) VALUES (%s,%s,%s,%s,%s) RETURNING id",
-                (to_addr, cc_addr, subject, body, conversation_id or ""),
+                "INSERT INTO gmail_drafts (to_addr, cc_addr, subject, body, conversation_id, user_id) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                (to_addr, cc_addr, subject, body, conversation_id or "", uid),
             )
             draft_id = cur.fetchone()["id"]
             conn.commit(); cur.close(); conn.close()
@@ -9522,7 +10126,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             "update_form_info", "update_form_question", "delete_form_question",
             "delete_slide",
         ):
-            creds = _get_google_credentials()
+            creds = _get_google_credentials(uid)
             if creds is None:
                 if not _google_configured():
                     return {"error": "Google not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables."}
@@ -10299,8 +10903,8 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             }
 
         elif name == "send_notification":
-            if not NTFY_TOPIC:
-                return {"status": "skipped", "reason": "NTFY_TOPIC environment variable not configured"}
+            if not _user_ntfy_topic(uid):
+                return {"status": "skipped", "reason": "No ntfy topic configured for this user"}
             title = str(inputs.get("title", "Jarvis")).strip()[:100]
             message = str(inputs.get("message", "")).strip()[:500]
             if not message:
@@ -10312,12 +10916,12 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             if not isinstance(tags, list):
                 tags = []
             tags = [str(t).strip() for t in tags if str(t).strip()]
-            ok = send_ntfy_notification(title, message, priority=priority, tags=tags)
+            ok = send_ntfy_notification(title, message, priority=priority, tags=tags, uid=uid)
             log.info("Jarvis tool send_notification: %r ok=%s", title, ok)
             return {"status": "sent" if ok else "failed", "title": title, "priority": priority}
 
         elif name in ("create_calendar_event", "update_calendar_event", "delete_calendar_event", "list_google_calendar_events"):
-            creds = _get_google_credentials()
+            creds = _get_google_credentials(uid)
             if creds is None:
                 if not _google_configured():
                     return {"error": "Google not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."}
@@ -10460,23 +11064,17 @@ def _chat_persist_message(conversation_id, role, content, user_id=None):
 
 def _chat_recent_summaries(exclude_conversation_id, limit=5, user_id=None):
     """Return [{'updated_at', 'summary'}] for the most recent prior conversations."""
+    if not user_id:
+        return []
     try:
         conn = get_db()
         cur = conn.cursor()
-        if user_id:
-            cur.execute(
-                "SELECT conversation_id, summary, updated_at FROM chat_summaries "
-                "WHERE conversation_id != %s AND summary != '' AND user_id = %s "
-                "ORDER BY updated_at DESC LIMIT %s",
-                (exclude_conversation_id or "", user_id, int(limit)),
-            )
-        else:
-            cur.execute(
-                "SELECT conversation_id, summary, updated_at FROM chat_summaries "
-                "WHERE conversation_id != %s AND summary != '' "
-                "ORDER BY updated_at DESC LIMIT %s",
-                (exclude_conversation_id or "", int(limit)),
-            )
+        cur.execute(
+            "SELECT conversation_id, summary, updated_at FROM chat_summaries "
+            "WHERE conversation_id != %s AND summary != '' AND user_id = %s "
+            "ORDER BY updated_at DESC LIMIT %s",
+            (exclude_conversation_id or "", user_id, int(limit)),
+        )
         rows = [dict(r) for r in cur.fetchall()]
         cur.close(); conn.close()
         return rows
@@ -10485,17 +11083,21 @@ def _chat_recent_summaries(exclude_conversation_id, limit=5, user_id=None):
         return []
 
 
-def _chat_last_messages(conversation_id, limit=6):
-    """Return the last N stored messages for this conversation, oldest-first."""
-    if not conversation_id:
+def _chat_last_messages(conversation_id, limit=6, user_id=None):
+    """Return the last N stored messages for this conversation, oldest-first.
+
+    conversation_id is client-supplied, so the user_id filter is what stops
+    one tenant paging through another's conversation by guessing IDs.
+    """
+    if not conversation_id or not user_id:
         return []
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
             "SELECT role, content, created_at FROM chat_messages "
-            "WHERE conversation_id=%s ORDER BY created_at DESC LIMIT %s",
-            (conversation_id, int(limit)),
+            "WHERE conversation_id=%s AND user_id=%s ORDER BY created_at DESC LIMIT %s",
+            (conversation_id, user_id, int(limit)),
         )
         rows = [dict(r) for r in cur.fetchall()]
         cur.close(); conn.close()
@@ -10506,16 +11108,16 @@ def _chat_last_messages(conversation_id, limit=6):
         return []
 
 
-def _chat_summary_status(conversation_id):
+def _chat_summary_status(conversation_id, user_id=None):
     """Return (message_count_in_db, existing_summary_row_or_none)."""
-    if not conversation_id:
+    if not conversation_id or not user_id:
         return (0, None)
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) AS n FROM chat_messages WHERE conversation_id=%s", (conversation_id,))
+        cur.execute("SELECT COUNT(*) AS n FROM chat_messages WHERE conversation_id=%s AND user_id=%s", (conversation_id, user_id))
         n = (cur.fetchone() or {}).get("n", 0)
-        cur.execute("SELECT summary, message_count, updated_at FROM chat_summaries WHERE conversation_id=%s", (conversation_id,))
+        cur.execute("SELECT summary, message_count, updated_at FROM chat_summaries WHERE conversation_id=%s AND user_id=%s", (conversation_id, user_id))
         existing = cur.fetchone()
         cur.close(); conn.close()
         return (int(n or 0), dict(existing) if existing else None)
@@ -10529,10 +11131,10 @@ def _chat_maybe_summarize_async(conversation_id, api_key, user_id=None):
     Eligibility: message_count >= 6 AND (no summary yet OR summary is >24h old AND >=4 new messages).
     Uses claude-haiku-4-5 (cheap) to roll the convo into 2-3 sentences.
     """
-    if not conversation_id or not api_key:
+    if not conversation_id or not api_key or not user_id:
         return
     try:
-        n_msgs, existing = _chat_summary_status(conversation_id)
+        n_msgs, existing = _chat_summary_status(conversation_id, user_id=user_id)
         if n_msgs < 6:
             return
         if existing:
@@ -10553,7 +11155,7 @@ def _chat_maybe_summarize_async(conversation_id, api_key, user_id=None):
 
 def _chat_summarize_worker(conversation_id, api_key, user_id=None):
     try:
-        msgs = _chat_last_messages(conversation_id, limit=40)
+        msgs = _chat_last_messages(conversation_id, limit=40, user_id=user_id)
         if not msgs:
             return
         transcript = "\n".join(
@@ -10623,7 +11225,7 @@ def _build_active_tools() -> list:
         name = t.get("name", "")
         if name in _GOOGLE_TOOL_NAMES and not google_on:
             continue
-        if name == "send_notification" and not NTFY_TOPIC:
+        if name == "send_notification" and not _user_ntfy_topic():
             continue
         if name == "get_climate_history" and not NOAA_API_TOKEN:
             continue
@@ -10636,13 +11238,14 @@ def _build_active_tools() -> list:
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
-    chat_user_id = _uid()
+    chat_user_id = _require_uid()
     data = request.get_json(force=True) or {}
     messages = data.get("messages", [])
     conversation_id = (data.get("conversation_id") or "").strip()[:64] or uuid.uuid4().hex
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key(chat_user_id)
     if not api_key:
-        return jsonify({"error": "ANTHROPIC_API_KEY not configured in Railway environment."}), 500
+        return jsonify({"error": "No Anthropic API key on file. Add yours in Settings → AI.",
+                        "error_code": "no_api_key"}), 402
     try:
         now_chat = datetime.now(TZ)
         system_static = (
@@ -10668,10 +11271,7 @@ def api_chat():
             "FORMATTING — Use **bold** for every important term, name, date, and key fact. "
             "Use ## for major sections, ### for sub-sections. Use - bullet points for lists of 2+ items. "
             "Never write more than two sentences in a row without a header, bullet, or bold term breaking it up.\n\n"
-            "BELL SCHEDULE REFERENCE (Park City High School) — "
-            "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
-            "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM. "
-            "School year runs Aug 18, 2025 – Jun 5, 2026. Timezone is America/Denver (Mountain Time).\n\n"
+            + _school_prompt_block(chat_user_id) + "\n\n"
             "TOOL USE — You have direct tools to take real actions in this app. Use them proactively and precisely:\n"
             "- TASKS vs PROJECTS — This distinction matters:\n"
             "  • A TASK is a single, atomic thing the student does in one sitting "
@@ -10748,18 +11348,19 @@ def api_chat():
 
         # Inject school schedule context (skip block-schedule in summer mode)
         try:
-            today = datetime.now(TZ).date()
+            _chat_school = _school_for(chat_user_id)
+            today = datetime.now(user_tz(chat_user_id)).date()
             if _app_mode == "school":
-                dtype = get_day_type(today)
-                school_hours = get_school_hours(today)
+                dtype = get_day_type(today, school=_chat_school)
+                school_hours = get_school_hours(today, school=_chat_school)
                 if school_hours:
                     sh, sm, eh, em = school_hours
                     system_dynamic += (
-                        "\n\nSCHOOL — Today is a %s day at Park City High School. "
-                        "School runs 7:%02d AM – %d:%02d %s. "
-                        "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
-                        "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM."
-                    ) % (dtype.title(), sm, eh % 12 or 12, em, "AM" if eh < 12 else "PM")
+                        "\n\nSCHOOL — Today is a %s day at %s. "
+                        "School runs %d:%02d %s – %d:%02d %s."
+                    ) % ("school" if dtype == "day" else dtype.title(), _chat_school["name"],
+                         sh % 12 or 12, sm, "AM" if sh < 12 else "PM",
+                         eh % 12 or 12, em, "AM" if eh < 12 else "PM")
                 else:
                     dow = today.weekday()
                     system_dynamic += "\n\nSCHOOL — " + ("Today is a weekend — no school." if dow >= 5 else "Today is a no-school day (holiday or break).")
@@ -10778,11 +11379,11 @@ def api_chat():
             if _canvas_active and u_canvas_ical():
                 cal = fetch_ical(u_canvas_ical())
                 if cal:
-                    asgn_list = get_canvas_assignments_with_overdue(cal)
+                    asgn_list = get_canvas_assignments_with_overdue(cal, uid=chat_user_id)
                     try:
                         _conn = get_db()
                         _cur = _conn.cursor()
-                        _cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                        _cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (chat_user_id,))
                         _done = set(r["assignment_title"] for r in _cur.fetchall())
                         _cur.close(); _conn.close()
                         asgn_list = [a for a in asgn_list if a["title"] not in _done]
@@ -10806,7 +11407,7 @@ def api_chat():
             try:
                 _bl_conn = get_db()
                 _bl_cur = _bl_conn.cursor()
-                _bl_cur.execute("SELECT title, category, completed FROM bucket_list ORDER BY completed, created_at DESC LIMIT 20")
+                _bl_cur.execute("SELECT title, category, completed FROM bucket_list WHERE user_id = %s ORDER BY completed, created_at DESC LIMIT 20", (chat_user_id,))
                 _bl_rows = _bl_cur.fetchall()
                 _bl_cur.close(); _bl_conn.close()
                 if _bl_rows:
@@ -10851,7 +11452,7 @@ def api_chat():
             try:
                 _sp_conn = get_db()
                 _sp_cur = _sp_conn.cursor()
-                _sp_cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s", (datetime.now(TZ).date(),))
+                _sp_cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s AND user_id = %s", (datetime.now(TZ).date(), chat_user_id))
                 _sp_plan = _sp_cur.fetchone()
                 if _sp_plan:
                     _sp_cur.execute("""
@@ -10879,19 +11480,19 @@ FROM daily_plan_items WHERE plan_id = %s ORDER BY order_index ASC LIMIT 20""", (
             conn = get_db()
             cur = conn.cursor()
             cur.execute(
-                "SELECT id, title, urgency, notes FROM tasks WHERE completed=FALSE "
-                "ORDER BY urgency DESC, created_at ASC LIMIT 15"
+                "SELECT id, title, urgency, notes FROM tasks WHERE completed=FALSE AND user_id=%s "
+                "ORDER BY urgency DESC, created_at ASC LIMIT 15", (chat_user_id,)
             )
             tasks = [dict(r) for r in cur.fetchall()]
             cur.execute("""
 SELECT p.title as project, pt.title as task, pt.assignee, pt.status, pt.notes
 FROM project_tasks pt JOIN projects p ON p.id=pt.project_id
-WHERE p.status='active' AND pt.status!='done' ORDER BY pt.created_at ASC LIMIT 10""")
+WHERE p.status='active' AND pt.status!='done' AND p.user_id=%s ORDER BY pt.created_at ASC LIMIT 10""", (chat_user_id,))
             proj_tasks = [dict(r) for r in cur.fetchall()]
             cur.execute("""
 SELECT p.title as project, pn.content as note
 FROM project_notes pn JOIN projects p ON p.id=pn.project_id
-WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
+WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 6""", (chat_user_id,))
             proj_notes = [dict(r) for r in cur.fetchall()]
             cur.close(); conn.close()
             if tasks:
@@ -10916,7 +11517,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
 
         # Inject stock portfolio and notes
         try:
-            port = _compute_portfolio()
+            port = _compute_portfolio(uid=chat_user_id)
             if port:
                 h_text = "; ".join(
                     "%s qty=%s avg_cost=$%.2f" % (sym, h["qty"], h["avg_cost"]) for sym, h in port.items()
@@ -10928,7 +11529,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
             log.warning("/api/chat could not load portfolio for context")
 
         try:
-            _notes = get_all_stock_notes()
+            _notes = get_all_stock_notes(chat_user_id)
             if _notes:
                 n_text = "; ".join(
                     "%s thesis=%s%s%s%s" % (
@@ -10977,7 +11578,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
 
         # Inject WHOOP recovery/sleep/strain data
         try:
-            whoop_line = whoop_context_line()
+            whoop_line = whoop_context_line(uid=chat_user_id)
             if whoop_line:
                 system_dynamic += "\n\n" + whoop_line + " Factor this into pacing/workload advice when relevant, but don't force it into every reply."
         except Exception:
@@ -10999,7 +11600,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
             # If client only sent a small history (e.g. fresh tab), pull a few recent
             # messages from this conversation so Jarvis doesn't lose mid-thread context.
             if len(messages) <= 1:
-                prior = _chat_last_messages(conversation_id, limit=6)
+                prior = _chat_last_messages(conversation_id, limit=6, user_id=chat_user_id)
                 # Drop the very latest if it duplicates the incoming user message.
                 if messages and prior and prior[-1].get("role") == "user" and \
                    prior[-1].get("content") == (messages[-1].get("content") if isinstance(messages[-1].get("content"), str) else ""):
@@ -11029,7 +11630,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                 if _latest_user_text:
                     from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TE
                     with _TPE(max_workers=1) as _ex:
-                        _fut = _ex.submit(_get_mem0_client().search, _latest_user_text, user_id="student", limit=6)
+                        _fut = _ex.submit(_get_mem0_client().search, _latest_user_text, user_id=_mem0_user(chat_user_id), limit=6)
                         try:
                             _hits = _fut.result(timeout=2.5)
                             if _hits:
@@ -11082,7 +11683,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
         try:
             _brief_conn = get_db()
             _brief_cur = _brief_conn.cursor()
-            _brief_cur.execute("SELECT content, generated_at FROM briefing_cache WHERE id = 1")
+            _brief_cur.execute("SELECT content, generated_at FROM briefing_cache WHERE user_id = %s", (chat_user_id,))
             _brief_row = _brief_cur.fetchone()
             _brief_cur.close(); _brief_conn.close()
             if _brief_row and _brief_row["content"]:
@@ -11247,7 +11848,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                                 if tname in ANTHROPIC_SERVER_TOOL_NAMES:
                                     continue
                                 log.info(f"Jarvis tool: {tname} inputs={json.dumps(block.input, default=str)}")
-                                result = _execute_jarvis_tool(tname, block.input, conversation_id=conversation_id)
+                                result = _execute_jarvis_tool(tname, block.input, conversation_id=conversation_id, uid=chat_user_id)
                                 actions_taken.append({"tool": tname, "result": result})
                                 tool_results.append({
                                     "type": "tool_result",
@@ -11325,7 +11926,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
                         if isinstance(_uv, list):
                             _uv = " ".join(b.get("text", "") for b in _uv if isinstance(b, dict) and b.get("type") == "text")
                         _user_text_for_mem0 = str(_uv)
-                    _mem0_maybe_store_async(_user_text_for_mem0, _final_text_box[0])
+                    _mem0_maybe_store_async(_user_text_for_mem0, _final_text_box[0], uid=chat_user_id)
                 except Exception:
                     pass
 
@@ -11348,12 +11949,13 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 6""")
 @app.route("/api/plan-my-day", methods=["GET"])
 def api_plan_my_day_get():
     """Get today's daily plan with all scheduled items."""
+    uid = _require_uid()
     start = time.time()
     today = datetime.now(TZ).date()
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT id, needs_update FROM daily_plans WHERE plan_date = %s", (today,))
+        cur.execute("SELECT id, needs_update FROM daily_plans WHERE plan_date = %s AND user_id = %s", (today, uid))
         plan_row = cur.fetchone()
         if not plan_row:
             cur.close()
@@ -11396,14 +11998,17 @@ ORDER BY order_index ASC""", (plan_id,))
         return jsonify({"error": str(e)}), 500
 
 
-def _generate_daily_plan_for_date(target_date):
+def _generate_daily_plan_for_date(target_date, uid=None):
     """Core plan generation logic. Returns dict {plan_id, items_count} or raises."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     today = target_date  # alias so the body below reads naturally
+    uid = uid or _default_student_uid()
+    if not uid:
+        raise RuntimeError("no user to plan for")
+    api_key = _user_api_key(uid)
 
     with _plan_lock:
         if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not configured")
+            raise MissingApiKeyError("No Anthropic API key on file for this user")
 
         # ── Phase 1: fetch all DB data then release the connection ──────
         completed_titles = set()
@@ -11414,19 +12019,19 @@ def _generate_daily_plan_for_date(target_date):
         try:
             cur = conn.cursor()
             try:
-                cur.execute("SELECT DISTINCT assignment_title FROM completions")
+                cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (uid,))
                 completed_titles = set(r["assignment_title"] for r in cur.fetchall())
-                cur.execute("SELECT uid, minutes FROM assignment_estimates")
+                cur.execute("SELECT uid, minutes FROM assignment_estimates WHERE user_id = %s", (uid,))
                 custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
 
                 urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
                 cur.execute("""
                     SELECT id, title, due_date, urgency FROM tasks
-                    WHERE completed = FALSE
+                    WHERE completed = FALSE AND user_id = %s
                     AND (due_date IS NULL OR due_date <= %s)
                     ORDER BY urgency DESC, due_date ASC
                     LIMIT 15
-                """, (today + timedelta(days=3),))
+                """, (uid, today + timedelta(days=3),))
                 for task_row in cur.fetchall():
                     due_date = task_row.get("due_date")
                     urgency = task_row.get("urgency", "medium")
@@ -11453,7 +12058,7 @@ def _generate_daily_plan_for_date(target_date):
         try:
             cal = fetch_ical(u_canvas_ical())
             if cal:
-                all_asgn = get_canvas_assignments_with_overdue(cal)
+                all_asgn = get_canvas_assignments_with_overdue(cal, uid=uid)
                 class_names = {a["class_name"] for a in all_asgn if a.get("class_name")}
                 class_avg_cache = get_class_averages_batch(class_names)
 
@@ -11475,14 +12080,14 @@ def _generate_daily_plan_for_date(target_date):
                             due_local = due_dt.astimezone(TZ)
                             due_date = due_local.date()
                             if due_date == today:
-                                uid = a.get("uid", "")
-                                if uid in custom_estimates:
-                                    est_mins = custom_estimates[uid]
+                                asgn_uid = a.get("uid", "")
+                                if asgn_uid in custom_estimates:
+                                    est_mins = custom_estimates[asgn_uid]
                                 else:
                                     est_mins = estimate_assignment(a.get("title", ""), a.get("class_name", ""), class_avg_cache=class_avg_cache)
                                 item = {
                                     "type": "assignment",
-                                    "id": uid,
+                                    "id": asgn_uid,
                                     "title": a.get("title", ""),
                                     "class": a.get("class_name", ""),
                                     "estimated_minutes": int(est_mins)
@@ -11732,17 +12337,17 @@ Rules:
         try:
             cur = conn.cursor()
             try:
-                cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
+                cur.execute("DELETE FROM daily_plans WHERE plan_date = %s AND user_id = %s", (today, uid))
                 cur.execute(
-                    "INSERT INTO daily_plans (plan_date, generated_at) VALUES (%s, NOW()) RETURNING id",
-                    (today,)
+                    "INSERT INTO daily_plans (plan_date, generated_at, user_id) VALUES (%s, NOW(), %s) RETURNING id",
+                    (today, uid)
                 )
                 plan_id = cur.fetchone()["id"]
                 for idx, item in enumerate(scheduled_items):
                     cur.execute("""
 INSERT INTO daily_plan_items (plan_id, item_type, item_id, item_title,
-                              scheduled_start_time, scheduled_end_time, estimated_minutes, order_index)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                              scheduled_start_time, scheduled_end_time, estimated_minutes, order_index, user_id)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
                             plan_id,
                             item.get("item_type", ""),
@@ -11751,7 +12356,8 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                             item.get("scheduled_start_time", "09:00"),
                             item.get("scheduled_end_time", "09:30"),
                             item.get("estimated_minutes", 30),
-                            idx
+                            idx,
+                            uid
                         )
                     )
                 conn.commit()
@@ -11779,8 +12385,9 @@ def auto_generate_plan_job():
 @app.route("/api/plan-my-day/generate", methods=["POST"])
 def api_plan_my_day_generate():
     """Generate a new daily plan using AI."""
+    uid = _require_uid()
     try:
-        result = _generate_daily_plan_for_date(datetime.now(TZ).date())
+        result = _generate_daily_plan_for_date(datetime.now(TZ).date(), uid=uid)
         return jsonify({"status": "ok", "plan_id": result["plan_id"], "items_count": result["items_count"]})
     except Exception as e:
         log.exception("Error generating daily plan")
@@ -11790,6 +12397,7 @@ def api_plan_my_day_generate():
 @app.route("/api/plan-my-day/reorder", methods=["PATCH"])
 def api_plan_my_day_reorder():
     """Reorder items in today's plan."""
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     try:
         with _plan_lock:
@@ -11797,7 +12405,7 @@ def api_plan_my_day_reorder():
             cur = conn.cursor()
 
             today = datetime.now(TZ).date()
-            cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s", (today,))
+            cur.execute("SELECT id FROM daily_plans WHERE plan_date = %s AND user_id = %s", (today, uid))
             plan_row = cur.fetchone()
 
             if not plan_row:
@@ -11828,6 +12436,7 @@ WHERE id = %s AND plan_id = %s""",
 @app.route("/api/plan-my-day/items/<int:item_id>", methods=["PATCH"])
 def api_plan_my_day_item_update(item_id):
     """Update a specific plan item's times."""
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     try:
         with _plan_lock:
@@ -11843,8 +12452,8 @@ SET scheduled_start_time = COALESCE(%s, scheduled_start_time),
     scheduled_end_time = COALESCE(%s, scheduled_end_time),
     user_edited = TRUE,
     updated_at = NOW()
-WHERE id = %s""",
-                (start_time, end_time, item_id)
+WHERE id = %s AND plan_id IN (SELECT id FROM daily_plans WHERE user_id = %s)""",
+                (start_time, end_time, item_id, uid)
             )
 
             conn.commit()
@@ -11859,11 +12468,12 @@ WHERE id = %s""",
 @app.route("/api/plan-my-day/items/<int:item_id>", methods=["DELETE"])
 def api_plan_my_day_item_delete(item_id):
     """Delete a single plan item."""
+    uid = _require_uid()
     try:
         with _plan_lock:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("DELETE FROM daily_plan_items WHERE id = %s", (item_id,))
+            cur.execute("DELETE FROM daily_plan_items WHERE id = %s AND plan_id IN (SELECT id FROM daily_plans WHERE user_id = %s)", (item_id, uid))
             conn.commit()
             cur.close()
             conn.close()
@@ -11876,12 +12486,13 @@ def api_plan_my_day_item_delete(item_id):
 @app.route("/api/plan-my-day", methods=["DELETE"])
 def api_plan_my_day_delete():
     """Delete today's plan."""
+    uid = _require_uid()
     today = datetime.now(TZ).date()
     try:
         with _plan_lock:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("DELETE FROM daily_plans WHERE plan_date = %s", (today,))
+            cur.execute("DELETE FROM daily_plans WHERE plan_date = %s AND user_id = %s", (today, uid))
             conn.commit()
             cur.close()
             conn.close()
@@ -11897,6 +12508,7 @@ def api_plan_my_day_delete():
 
 @app.route("/api/stocks/transaction", methods=["POST"])
 def api_stocks_transaction():
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     try:
         symbol = str(data.get("symbol", "")).strip().upper()[:16]
@@ -11910,9 +12522,9 @@ def api_stocks_transaction():
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO stock_transactions (symbol, action, quantity, price, transaction_date, notes) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-            (symbol, action, qty, price, tx_date, notes)
+            "INSERT INTO stock_transactions (symbol, action, quantity, price, transaction_date, notes, user_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (symbol, action, qty, price, tx_date, notes, uid)
         )
         new_id = cur.fetchone()["id"]
         conn.commit()
@@ -11926,12 +12538,14 @@ def api_stocks_transaction():
 
 @app.route("/api/stocks/transactions", methods=["GET"])
 def api_stocks_transactions_list():
+    uid = _require_uid()
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
             "SELECT id, symbol, action, quantity, price, transaction_date, notes, created_at "
-            "FROM stock_transactions ORDER BY transaction_date DESC, id DESC LIMIT 100"
+            "FROM stock_transactions WHERE user_id = %s ORDER BY transaction_date DESC, id DESC LIMIT 100",
+            (uid,)
         )
         rows = [{
             "id": r["id"],
@@ -11952,10 +12566,11 @@ def api_stocks_transactions_list():
 
 @app.route("/api/stocks/transaction/<int:tx_id>", methods=["DELETE"])
 def api_stocks_transaction_delete(tx_id):
+    uid = _require_uid()
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("DELETE FROM stock_transactions WHERE id = %s", (tx_id,))
+        cur.execute("DELETE FROM stock_transactions WHERE id = %s AND user_id = %s", (tx_id, uid))
         conn.commit()
         cur.close()
         conn.close()
@@ -11966,8 +12581,9 @@ def api_stocks_transaction_delete(tx_id):
 
 @app.route("/api/stocks/portfolio", methods=["GET"])
 def api_stocks_portfolio():
+    uid = _require_uid()
     try:
-        return jsonify(build_portfolio_snapshot())
+        return jsonify(build_portfolio_snapshot(uid=uid))
     except Exception as e:
         log.exception("portfolio fetch failed")
         return jsonify({"error": str(e)}), 500
@@ -11984,8 +12600,9 @@ def api_stocks_history():
 
 @app.route("/api/stocks/notes", methods=["GET"])
 def api_stocks_notes_list():
+    uid = _require_uid()
     try:
-        return jsonify({"notes": get_all_stock_notes()})
+        return jsonify({"notes": get_all_stock_notes(uid)})
     except Exception as e:
         log.exception("stock notes list failed")
         return jsonify({"error": str(e)}), 500
@@ -12017,6 +12634,7 @@ def api_stocks_notes_upsert():
             exit_criteria=(str(exit_criteria) if exit_criteria is not None else None),
             target_price=target_price,
             stop_loss=stop_loss,
+            uid=_require_uid(),
         )
         return jsonify({"status": "ok", "note": result})
     except Exception as e:
@@ -12026,13 +12644,14 @@ def api_stocks_notes_upsert():
 
 @app.route("/api/stocks/notes/<symbol>", methods=["DELETE"])
 def api_stocks_notes_delete(symbol):
+    uid = _require_uid()
     sym = (symbol or "").strip().upper()[:16]
     if not sym:
         return jsonify({"error": "symbol required"}), 400
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("DELETE FROM stock_notes WHERE symbol=%s", (sym,))
+        cur.execute("DELETE FROM stock_notes WHERE symbol=%s AND user_id=%s", (sym, uid))
         conn.commit()
         cur.close()
         conn.close()
@@ -12044,11 +12663,12 @@ def api_stocks_notes_delete(symbol):
 @app.route("/api/stocks/research", methods=["POST"])
 def api_stocks_research():
     """Claude-written research brief for a symbol, augmented with Finnhub data."""
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     symbol = str(data.get("symbol", "")).strip().upper()[:16]
     if not symbol:
         return jsonify({"error": "symbol required"}), 400
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key(uid)
     if not api_key:
         return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
 
@@ -12062,7 +12682,7 @@ def api_stocks_research():
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT thesis, exit_criteria, target_price, stop_loss FROM stock_notes WHERE symbol=%s", (symbol,))
+        cur.execute("SELECT thesis, exit_criteria, target_price, stop_loss FROM stock_notes WHERE symbol=%s AND user_id=%s", (symbol, uid))
         row = cur.fetchone()
         if row:
             existing_note = {
@@ -12079,7 +12699,7 @@ def api_stocks_research():
     # Current position info
     position = None
     try:
-        port = _compute_portfolio()
+        port = _compute_portfolio(uid=uid)
         if symbol in port:
             position = port[symbol]
     except Exception:
@@ -12178,16 +12798,17 @@ def api_news_rate():
     summary = str(data.get("summary", ""))
     if not (url or title):
         return jsonify({"error": "url or title required"}), 400
+    uid = _require_uid()
     url_hash = hashlib.sha256((url or title).encode("utf-8")).hexdigest()[:32]
     keywords = _extract_keywords(title + " " + summary)
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO news_preferences (url_hash, url, title, outlet, rating, keywords) "
-            "VALUES (%s, %s, %s, %s, %s, %s) "
-            "ON CONFLICT (url_hash) DO UPDATE SET rating=EXCLUDED.rating, created_at=NOW()",
-            (url_hash, url, title, outlet, rating, " ".join(keywords))
+            "INSERT INTO news_preferences (url_hash, url, title, outlet, rating, keywords, user_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (user_id, url_hash) WHERE user_id IS NOT NULL DO UPDATE SET rating=EXCLUDED.rating, created_at=NOW()",
+            (url_hash, url, title, outlet, rating, " ".join(keywords), uid)
         )
         conn.commit()
         cur.close()
@@ -12200,13 +12821,15 @@ def api_news_rate():
 
 @app.route("/api/news/preferences", methods=["GET"])
 def api_news_preferences():
+    uid = _require_uid()
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
             "SELECT outlet, SUM(CASE WHEN rating=1 THEN 1 ELSE 0 END) AS likes, "
             "SUM(CASE WHEN rating=-1 THEN 1 ELSE 0 END) AS dislikes "
-            "FROM news_preferences WHERE outlet <> '' GROUP BY outlet ORDER BY likes DESC, dislikes ASC"
+            "FROM news_preferences WHERE outlet <> '' AND user_id = %s GROUP BY outlet ORDER BY likes DESC, dislikes ASC",
+            (uid,)
         )
         outlets = [{
             "outlet": r["outlet"],
@@ -12214,7 +12837,8 @@ def api_news_preferences():
             "dislikes": int(r["dislikes"] or 0),
         } for r in cur.fetchall()]
         cur.execute(
-            "SELECT rating, COUNT(*) AS n FROM news_preferences GROUP BY rating"
+            "SELECT rating, COUNT(*) AS n FROM news_preferences WHERE user_id = %s GROUP BY rating",
+            (uid,)
         )
         totals = {"likes": 0, "dislikes": 0}
         for r in cur.fetchall():
@@ -12236,10 +12860,11 @@ def api_daily_outlook():
     today = datetime.now(TZ).date()
     today_iso = today.isoformat()
 
-    # Resolve user-scoped calendar URLs in the request thread; the worker
-    # threads below cannot access Flask's session-bound LocalProxy. Without
-    # this, u_*_ical() would silently fall back to env vars and the user's
-    # saved settings calendars would be ignored.
+    # Resolve user-scoped calendar URLs (and the user id itself) in the request
+    # thread; the worker threads below cannot access Flask's session-bound
+    # LocalProxy. Without this, u_*_ical() would silently fall back to env vars
+    # and the user's saved settings calendars would be ignored.
+    outlook_uid  = _require_uid()
     canvas_url   = u_canvas_ical()
     personal_url = u_personal_ical()
     sports_url   = u_sports_ical()
@@ -12252,12 +12877,12 @@ def api_daily_outlook():
                 return []
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT DISTINCT assignment_title FROM completions")
+            cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (outlook_uid,))
             done = set(r["assignment_title"] for r in cur.fetchall())
             cur.close()
             conn.close()
             out = []
-            for a in get_canvas_assignments_with_overdue(cal):
+            for a in get_canvas_assignments_with_overdue(cal, uid=outlook_uid):
                 if a["title"] in done:
                     continue
                 due_iso = a.get("due_iso", "")
@@ -12306,9 +12931,9 @@ def api_daily_outlook():
             cur = conn.cursor()
             cur.execute(
                 "SELECT id, title, urgency, due_date, notes FROM tasks "
-                "WHERE completed = FALSE AND (due_date IS NULL OR due_date <= %s) "
+                "WHERE completed = FALSE AND user_id = %s AND (due_date IS NULL OR due_date <= %s) "
                 "ORDER BY urgency DESC, due_date ASC NULLS LAST LIMIT 10",
-                (today,)
+                (outlook_uid, today)
             )
             rows = cur.fetchall()
             cur.close()
@@ -12326,7 +12951,7 @@ def api_daily_outlook():
 
     def _get_stocks():
         try:
-            return build_portfolio_snapshot()
+            return build_portfolio_snapshot(uid=outlook_uid)
         except Exception as e:
             log.warning("outlook: stocks failed: %s", e)
             return None
@@ -12416,7 +13041,7 @@ def api_outlook_news_detail():
     except Exception:
         pass
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = _user_api_key()
     if not api_key:
         return jsonify({"synthesis": "_(Claude synthesis unavailable — API key not configured.)_"}), 200
 
@@ -12473,45 +13098,94 @@ if not _SKIP_BOOT:
     except Exception as e:
         log.warning(f"Database initialization failed: {e}. Running in limited mode.")
 
-# Seed API key from env var into DB so it persists across deploys
+# One-time migration: adopt a legacy ANTHROPIC_API_KEY env var as the default
+# student's personal key (BYOK — the platform no longer supplies a shared key).
 if not _SKIP_BOOT:
     try:
-        _env_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if _env_api_key and not get_config().get("anthropic_api_key", ""):
-            set_config({"anthropic_api_key": _env_api_key})
-            log.info("Seeded ANTHROPIC_API_KEY from environment into DB config")
+        _env_api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if _env_api_key:
+            _mig_uid = _default_student_uid()
+            if _mig_uid:
+                _mig_conn = get_db(); _mig_cur = _mig_conn.cursor()
+                _mig_cur.execute("SELECT value FROM user_config WHERE user_id = %s AND key = 'anthropic_api_key'", (_mig_uid,))
+                _mig_row = _mig_cur.fetchone()
+                _mig_cur.close(); _mig_conn.close()
+                if not (_mig_row and (_mig_row["value"] or "").strip()):
+                    set_user_config({"anthropic_api_key": _env_api_key}, user_id=_mig_uid)
+                    log.info("Migrated ANTHROPIC_API_KEY from environment into the default student's user_config")
     except Exception as e:
-        log.warning(f"Could not seed API key: {e}")
+        log.warning(f"Could not migrate API key: {e}")
+
+# One-time migration: adopt a legacy NTFY_TOPIC env var as the default
+# student's personal notification topic.
+if not _SKIP_BOOT:
+    try:
+        if NTFY_TOPIC:
+            _mig_uid = _default_student_uid()
+            if _mig_uid and not (get_user_config(_mig_uid).get("ntfy_topic") or "").strip():
+                set_user_config({"ntfy_topic": NTFY_TOPIC}, user_id=_mig_uid)
+                log.info("Migrated NTFY_TOPIC from environment into the default student's user_config")
+    except Exception as e:
+        log.warning(f"Could not migrate ntfy topic: {e}")
+
+# One-time migration: legacy integration tokens lived in the global config
+# table; move them into the default student's per-user (encrypted) config.
+if not _SKIP_BOOT:
+    try:
+        _mig_uid = _default_student_uid()
+        if _mig_uid:
+            _gcfg = get_config()
+            _ucfg = get_user_config(_mig_uid)
+            _tok_updates = {}
+            for _tok_key in ("whoop_refresh_token", "whoop_access_token",
+                             "whoop_token_expires_at", "google_refresh_token"):
+                _gval = (_gcfg.get(_tok_key) or "").strip()
+                if _gval and not (_ucfg.get(_tok_key) or "").strip():
+                    _tok_updates[_tok_key] = _gval
+            if _tok_updates:
+                set_user_config(_tok_updates, user_id=_mig_uid)
+                set_config({k: "" for k in _tok_updates})
+                log.info("Migrated legacy integration tokens (%s) into the default student's user_config",
+                         ", ".join(_tok_updates))
+    except Exception as e:
+        log.warning(f"Could not migrate integration tokens: {e}")
 
 # Guard: only start scheduler and background briefing in the first/main worker.
 # With gunicorn --workers 1 this always runs. With multiple workers it only runs
 # in the first gunicorn worker (SERVER_SOFTWARE is set before fork).
+def _startup_catchup():
+    """After a (re)deploy, backfill anything the hourly tick would have done
+    earlier today for each user: today's briefing, and the debrief if we're
+    inside the evening window."""
+    try:
+        for uid in _active_user_ids():
+            try:
+                tz = user_tz(uid)
+                now_local = datetime.now(tz)
+                today_local = now_local.date()
+                cfg = get_user_config(uid)
+                try:
+                    brief_hour = int(str(cfg.get("morning_briefing_time", "07:00")).split(":")[0])
+                except Exception:
+                    brief_hour = 7
+                if now_local.hour >= brief_hour and _cache_row_local_date("briefing_cache", uid, tz) != today_local:
+                    generate_briefing(uid=uid)
+                if 18 <= now_local.hour < 20 and _cache_row_local_date("debrief_cache", uid, tz) != today_local:
+                    generate_evening_debrief(uid=uid)
+            except MissingApiKeyError:
+                continue
+            except Exception as e:
+                log.warning("startup catchup failed for user %s: %s", uid, e)
+    except Exception as e:
+        log.warning("startup catchup error: %s", e)
+
+
 try:
     _worker_id = os.environ.get("GUNICORN_WORKER_ID", "0")
     if not _SKIP_BOOT and _worker_id in ("", "0", "1"):
         schedule_briefing()
         scheduler.start()
-        threading.Thread(target=generate_briefing, daemon=True).start()
-
-        # Ensure debrief is generated if we're in the debrief window (6:30 PM - 7:30 PM)
-        now = datetime.now(TZ)
-        debrief_start = now.replace(hour=18, minute=30, second=0, microsecond=0)
-        debrief_end = now.replace(hour=19, minute=30, second=0, microsecond=0)
-        if debrief_start <= now <= debrief_end:
-            try:
-                conn = get_db()
-                cur = conn.cursor()
-                cur.execute("SELECT content FROM debrief_cache WHERE id = 1")
-                row = cur.fetchone()
-                cur.close()
-                conn.close()
-                # If no debrief or it's empty, generate it
-                if not row or not row["content"]:
-                    threading.Thread(target=generate_evening_debrief, daemon=True).start()
-                    log.info("Debrief window detected - generating debrief on startup")
-            except Exception as e:
-                log.warning(f"Could not check debrief status: {e}")
-
+        threading.Thread(target=_startup_catchup, daemon=True).start()
         log.info("Background scheduler started")
 except Exception as e:
     log.warning(f"Background scheduler failed to start: {e}")
@@ -12571,7 +13245,7 @@ def google_auth_callback():
         flow.fetch_token(authorization_response=auth_response)
         creds = flow.credentials
         if creds.refresh_token:
-            set_config({"google_refresh_token": creds.refresh_token})
+            set_user_config({"google_refresh_token": creds.refresh_token}, user_id=_require_uid())
             log.info("Google refresh token stored successfully")
         else:
             log.error("Google OAuth callback: no refresh_token returned — authorization incomplete")
@@ -12586,15 +13260,16 @@ def google_auth_callback():
 def google_auth_status():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
+    _g_uid = _require_uid()
     configured = _google_configured()
-    has_token = bool(configured and get_config().get("google_refresh_token", "").strip())
+    has_token = bool(configured and (get_user_config(_g_uid).get("google_refresh_token") or "").strip())
     refresh_error = None
     authorized = False
     if has_token:
         try:
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import Request as GoogleRequest
-            refresh_token = get_config().get("google_refresh_token", "").strip()
+            refresh_token = (get_user_config(_g_uid).get("google_refresh_token") or "").strip()
             creds = Credentials(
                 token=None,
                 refresh_token=refresh_token,
@@ -12619,7 +13294,7 @@ def google_auth_status():
 def google_disconnect():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    set_config({"google_refresh_token": ""})
+    set_user_config({"google_refresh_token": ""}, user_id=_require_uid())
     return jsonify({"status": "disconnected"})
 
 
@@ -12672,12 +13347,13 @@ def whoop_auth_callback():
         if not refresh_token:
             log.error("WHOOP OAuth callback: no refresh_token returned — authorization incomplete")
             return redirect("/?whoop_error=no_refresh_token")
-        set_config({
+        _cb_uid = _require_uid()
+        set_user_config({
             "whoop_refresh_token": refresh_token,
             "whoop_access_token": data.get("access_token", ""),
             "whoop_token_expires_at": str(time.time() + float(data.get("expires_in", 3600))),
-        })
-        _whoop_clear_cache()
+        }, user_id=_cb_uid)
+        _whoop_clear_cache(_cb_uid)
         log.info("WHOOP refresh token stored successfully")
         return redirect("/?whoop_connected=1")
     except Exception as e:
@@ -12689,9 +13365,10 @@ def whoop_auth_callback():
 def whoop_auth_status():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
+    uid = _require_uid()
     configured = _whoop_configured()
-    has_token = bool(configured and get_config().get("whoop_refresh_token", "").strip())
-    authorized = bool(has_token and _get_whoop_access_token())
+    has_token = _whoop_connected(uid)
+    authorized = bool(has_token and _get_whoop_access_token(uid))
     return jsonify({
         "configured": configured,
         "has_token": has_token,
@@ -12706,8 +13383,9 @@ def api_whoop_summary():
         return jsonify({"error": "Not authenticated"}), 401
     if not _whoop_configured():
         return jsonify({"configured": False, "connected": False, "days": []})
-    connected = _whoop_connected()
-    days = whoop_daily_summary(7) if connected else []
+    uid = _require_uid()
+    connected = _whoop_connected(uid)
+    days = whoop_daily_summary(7, uid=uid) if connected else []
     return jsonify({"configured": True, "connected": connected, "days": days})
 
 
@@ -12715,8 +13393,9 @@ def api_whoop_summary():
 def whoop_disconnect():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    set_config({"whoop_refresh_token": "", "whoop_access_token": "", "whoop_token_expires_at": ""})
-    _whoop_clear_cache()
+    uid = _require_uid()
+    set_user_config({"whoop_refresh_token": "", "whoop_access_token": "", "whoop_token_expires_at": ""}, user_id=uid)
+    _whoop_clear_cache(uid)
     return jsonify({"status": "disconnected"})
 
 
@@ -12726,10 +13405,11 @@ def whoop_disconnect():
 def api_whoop_workouts():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    workouts, is_mock = fitness_workouts(limit=25)
+    uid = _require_uid()
+    workouts, is_mock = fitness_workouts(limit=25, uid=uid)
     return jsonify({
         "configured": _whoop_configured(),
-        "connected": _whoop_connected(),
+        "connected": _whoop_connected(uid),
         "mock": is_mock,
         "workouts": workouts,
     })
@@ -12739,20 +13419,21 @@ def api_whoop_workouts():
 def api_whoop_heart_rate():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    return jsonify(fitness_heart_rate())
+    return jsonify(fitness_heart_rate(uid=_require_uid()))
 
 
 @app.route("/api/fitness/prs", methods=["GET"])
 def api_fitness_prs():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    workouts, is_mock = fitness_workouts(limit=25)
+    uid = _require_uid()
+    workouts, is_mock = fitness_workouts(limit=25, uid=uid)
     prs = compute_personal_records(workouts)
     # Manual overrides (or records predating the WHOOP history) win.
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute("SELECT record_key, label, value_display, value_numeric, achieved_on FROM personal_records")
+        cur.execute("SELECT record_key, label, value_display, value_numeric, achieved_on FROM personal_records WHERE user_id = %s", (uid,))
         for r in cur.fetchall():
             prs[r["record_key"]] = {
                 "label": r["label"],
@@ -12788,10 +13469,10 @@ def api_fitness_prs_set():
     cur.execute("""
 INSERT INTO personal_records (record_key, user_id, label, value_display, value_numeric, achieved_on, updated_at)
 VALUES (%s, %s, %s, %s, %s, %s, NOW())
-ON CONFLICT (record_key) DO UPDATE
+ON CONFLICT (user_id, record_key) WHERE user_id IS NOT NULL DO UPDATE
 SET value_display = EXCLUDED.value_display, value_numeric = EXCLUDED.value_numeric,
     achieved_on = EXCLUDED.achieved_on, updated_at = NOW()""",
-                (key, _uid(), label, value_display, data.get("value_numeric"), achieved_on))
+                (key, _require_uid(), label, value_display, data.get("value_numeric"), achieved_on))
     conn.commit()
     cur.close()
     conn.close()
@@ -12807,8 +13488,8 @@ def api_planned_workouts_get():
     cur.execute("""
 SELECT id, title, sport, planned_date, planned_time, duration_min, notes, completed
 FROM planned_workouts
-WHERE completed = FALSE OR planned_date >= CURRENT_DATE - 7
-ORDER BY planned_date ASC, planned_time ASC NULLS LAST""")
+WHERE (completed = FALSE OR planned_date >= CURRENT_DATE - 7) AND user_id = %s
+ORDER BY planned_date ASC, planned_time ASC NULLS LAST""", (_require_uid(),))
     rows = [dict(r) for r in cur.fetchall()]
     cur.close()
     conn.close()
@@ -12848,7 +13529,7 @@ def api_planned_workouts_create():
     cur.execute("""
 INSERT INTO planned_workouts (user_id, title, sport, planned_date, planned_time, duration_min, notes)
 VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                (_uid(), title, sport, planned_date, planned_time, duration_min, notes))
+                (_require_uid(), title, sport, planned_date, planned_time, duration_min, notes))
     workout_id = cur.fetchone()["id"]
     conn.commit()
     cur.close()
@@ -12860,13 +13541,14 @@ VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
 def api_planned_workouts_update(workout_id):
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
+    uid = _require_uid()
     data = request.get_json(force=True) or {}
     conn = get_db()
     cur = conn.cursor()
     if "completed" in data:
-        cur.execute("UPDATE planned_workouts SET completed=%s WHERE id=%s", (bool(data["completed"]), workout_id))
+        cur.execute("UPDATE planned_workouts SET completed=%s WHERE id=%s AND user_id=%s", (bool(data["completed"]), workout_id, uid))
     if "title" in data and str(data["title"]).strip():
-        cur.execute("UPDATE planned_workouts SET title=%s WHERE id=%s", (str(data["title"]).strip()[:200], workout_id))
+        cur.execute("UPDATE planned_workouts SET title=%s WHERE id=%s AND user_id=%s", (str(data["title"]).strip()[:200], workout_id, uid))
     conn.commit()
     cur.close()
     conn.close()
@@ -12879,7 +13561,7 @@ def api_planned_workouts_delete(workout_id):
         return jsonify({"error": "Not authenticated"}), 401
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM planned_workouts WHERE id=%s", (workout_id,))
+    cur.execute("DELETE FROM planned_workouts WHERE id=%s AND user_id=%s", (workout_id, _require_uid()))
     conn.commit()
     cur.close()
     conn.close()
@@ -12894,7 +13576,8 @@ def gmail_list_drafts():
     cur = conn.cursor()
     cur.execute(
         "SELECT id, to_addr, cc_addr, subject, body, created_at FROM gmail_drafts "
-        "WHERE status='pending' ORDER BY created_at DESC"
+        "WHERE status='pending' AND user_id=%s ORDER BY created_at DESC",
+        (_require_uid(),)
     )
     rows = [dict(r) for r in cur.fetchall()]
     cur.close(); conn.close()
@@ -12908,14 +13591,15 @@ def gmail_list_drafts():
 def gmail_send_draft(draft_id):
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    creds = _get_google_credentials()
+    _draft_uid = _require_uid()
+    creds = _get_google_credentials(_draft_uid)
     if not creds:
         return jsonify({"error": "Google not authorized. Visit /google-auth/start."}), 400
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT to_addr, cc_addr, subject, body, conversation_id FROM gmail_drafts WHERE id=%s AND status='pending'",
-        (draft_id,),
+        "SELECT to_addr, cc_addr, subject, body, conversation_id FROM gmail_drafts WHERE id=%s AND status='pending' AND user_id=%s",
+        (draft_id, _draft_uid),
     )
     row = cur.fetchone()
     if not row:
@@ -12933,7 +13617,7 @@ def gmail_send_draft(draft_id):
         from googleapiclient.discovery import build as _gbuild
         svc = _gbuild("gmail", "v1", credentials=creds, cache_discovery=False)
         svc.users().messages().send(userId="me", body={"raw": raw}).execute()
-        cur.execute("UPDATE gmail_drafts SET status='sent' WHERE id=%s", (draft_id,))
+        cur.execute("UPDATE gmail_drafts SET status='sent' WHERE id=%s AND user_id=%s", (draft_id, _draft_uid))
         conn.commit()
         log.info(f"Gmail draft {draft_id} sent to {row['to_addr']!r}")
         # Inject a note so Jarvis knows this draft was handled and won't recreate it
@@ -12942,6 +13626,7 @@ def gmail_send_draft(draft_id):
                 row["conversation_id"],
                 "user",
                 f"[Notification: Email draft '{row['subject']}' to {row['to_addr']} was sent by the student.]",
+                user_id=_draft_uid,
             )
     except Exception as e:
         conn.rollback()
@@ -12956,19 +13641,20 @@ def gmail_send_draft(draft_id):
 def gmail_discard_draft(draft_id):
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
+    _draft_uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT subject, to_addr, conversation_id FROM gmail_drafts WHERE id=%s AND status='pending'",
-        (draft_id,),
+        "SELECT subject, to_addr, conversation_id FROM gmail_drafts WHERE id=%s AND status='pending' AND user_id=%s",
+        (draft_id, _draft_uid),
     )
     row = cur.fetchone()
     if not row:
         cur.close(); conn.close()
         return jsonify({"error": "Draft not found or already processed"}), 404
     cur.execute(
-        "UPDATE gmail_drafts SET status='discarded' WHERE id=%s",
-        (draft_id,),
+        "UPDATE gmail_drafts SET status='discarded' WHERE id=%s AND user_id=%s",
+        (draft_id, _draft_uid),
     )
     conn.commit()
     if row.get("conversation_id"):
@@ -12976,6 +13662,7 @@ def gmail_discard_draft(draft_id):
             row["conversation_id"],
             "user",
             f"[Notification: Email draft '{row['subject']}' to {row['to_addr']} was discarded by the student.]",
+            user_id=_draft_uid,
         )
     cur.close(); conn.close()
     return jsonify({"status": "discarded"})
@@ -13043,6 +13730,128 @@ def _save_calendar_urls(user_id, data):
         cals["canvas_base_url"] = cals["canvas_base_url"].rstrip("/")
     if cals:
         set_user_config(cals, user_id=user_id)
+    # BYOK: the signup payload carries the (already-encrypted) Anthropic key
+    # through the Stripe round trip; store it as the user's own key.
+    _sk = str(data.get("anthropic_api_key", "")).strip()
+    if _sk:
+        set_user_config({"anthropic_api_key": _sk}, user_id=user_id)
+
+
+@app.route("/api/signup/test-key", methods=["POST"])
+def api_signup_test_key():
+    """Public key check used by the signup form (the caller submits their own key)."""
+    data = request.get_json(force=True, silent=True) or {}
+    ok, err = _validate_anthropic_key(data.get("api_key", ""))
+    return jsonify({"ok": ok, "error": err or None}), (200 if ok else 400)
+
+
+@app.route("/api/signup/open", methods=["GET"])
+def api_signup_open():
+    """Whether self-serve signup (no access code) is enabled."""
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT open_signup FROM pricing_config WHERE id = 1")
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        return jsonify({"open_signup": bool(row and row["open_signup"])})
+    except Exception:
+        return jsonify({"open_signup": False})
+
+
+@app.route("/api/signup/schools", methods=["GET"])
+def api_signup_schools():
+    """Public list of established schools for the signup picker."""
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT id, name, timezone, schedule_type FROM schools ORDER BY verified DESC, name ASC")
+        rows = [{"id": str(r["id"]), "name": r["name"], "timezone": r["timezone"],
+                 "schedule_type": r["schedule_type"]} for r in cur.fetchall()]
+        cur.close(); conn.close()
+        return jsonify({"schools": rows})
+    except Exception as e:
+        log.warning("signup schools list failed: %s", e)
+        return jsonify({"schools": []})
+
+
+_VALID_DOW_KEYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+
+
+def _resolve_signup_school(data, creator_uid=None):
+    """Return a school_id for a signup: an existing school_id, or create the
+    school the user described. Returns None when nothing was specified."""
+    school_id = str(data.get("school_id", "")).strip()
+    if school_id:
+        try:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("SELECT id FROM schools WHERE id = %s", (school_id,))
+            row = cur.fetchone()
+            cur.close(); conn.close()
+            return str(row["id"]) if row else None
+        except Exception:
+            return None
+
+    ns = data.get("new_school") or {}
+    name = str(ns.get("name", "")).strip()[:200]
+    if not name:
+        return None
+    tz_str = str(ns.get("timezone", "America/Denver")).strip()
+    if not is_valid_timezone(tz_str):
+        tz_str = "America/Denver"
+
+    # Simple weekly schedule: one start/end applied Mon–Fri unless per-day
+    # bells were provided.
+    bells = ns.get("bell_schedules")
+    if not isinstance(bells, dict) or not bells:
+        bells = {}
+        try:
+            sh, sm = [int(x) for x in str(ns.get("start_time", "08:00")).split(":")]
+            eh, em = [int(x) for x in str(ns.get("end_time", "15:00")).split(":")]
+            for dow in ("mon", "tue", "wed", "thu", "fri"):
+                bells[dow] = [sh, sm, eh, em]
+        except Exception:
+            bells = {dow: [8, 0, 15, 0] for dow in ("mon", "tue", "wed", "thu", "fri")}
+    bells = {k: v for k, v in bells.items() if k in _VALID_DOW_KEYS and isinstance(v, list) and len(v) == 4}
+
+    def _parse_date(v):
+        try:
+            return date.fromisoformat(str(v))
+        except Exception:
+            return None
+    year_start = _parse_date(ns.get("year_start"))
+    year_end = _parse_date(ns.get("year_end"))
+
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""
+INSERT INTO schools (name, timezone, schedule_type, day_type_names, bell_schedules,
+                     year_start, year_end, no_school_dates, day_type_ical_urls, created_by)
+VALUES (%s, %s, 'weekly', '[]', %s, %s, %s, '[]', '{}', %s)
+ON CONFLICT (name) DO NOTHING""",
+            (name, tz_str, json.dumps(bells), year_start, year_end, creator_uid))
+        cur.execute("SELECT id FROM schools WHERE name = %s", (name,))
+        row = cur.fetchone()
+        conn.commit()
+        cur.close(); conn.close()
+        _invalidate_school_cache()
+        return str(row["id"]) if row else None
+    except Exception as e:
+        log.warning("_resolve_signup_school create failed: %s", e)
+        return None
+
+
+def _attach_user_school(user_id, school_id):
+    if not (user_id and school_id):
+        return
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("UPDATE users SET school_id = %s WHERE id = %s", (school_id, user_id))
+        cur.execute("UPDATE schools SET created_by = %s WHERE id = %s AND created_by IS NULL AND verified = FALSE",
+                    (user_id, school_id))
+        conn.commit()
+        cur.close(); conn.close()
+        _invalidate_school_cache()
+    except Exception as e:
+        log.warning("_attach_user_school failed: %s", e)
 
 
 @app.route("/api/signup/create-checkout", methods=["POST"])
@@ -13054,16 +13863,33 @@ def api_signup_create_checkout():
     email   = str(data.get("email", "")).strip().lower()
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", "")).strip()
+    api_key  = str(data.get("anthropic_api_key", "")).strip()
 
     if not all([code, email, username, password]):
         return jsonify({"error": "All fields are required"}), 400
     if len(username) < 3 or len(password) < 6:
         return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
+    _key_ok, _key_err = _validate_anthropic_key(api_key)
+    if not _key_ok:
+        return jsonify({"error": f"Anthropic API key check failed: {_key_err}"}), 400
 
-    # Validate code
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT id, bypass_payment, redeemed_by, expires_at FROM access_codes WHERE code = %s", (code,))
-    ac = cur.fetchone()
+    # Self-serve mode: when open_signup is on and no code was supplied, mint a
+    # one-time paid code on the fly so the rest of the flow (pending_signups,
+    # /signup/success redemption) works unchanged.
+    if not code:
+        cur.execute("SELECT open_signup FROM pricing_config WHERE id = 1")
+        _pc = cur.fetchone()
+        if not (_pc and _pc["open_signup"]):
+            cur.close(); conn.close()
+            return jsonify({"error": "Access code required"}), 400
+        code = "OPEN-" + secrets.token_urlsafe(9).upper().replace("_", "").replace("-", "")[:9]
+        cur.execute("INSERT INTO access_codes (code, bypass_payment, notes) VALUES (%s, FALSE, 'self-serve') RETURNING id, bypass_payment, redeemed_by, expires_at", (code,))
+        ac = cur.fetchone()
+        conn.commit()
+    else:
+        cur.execute("SELECT id, bypass_payment, redeemed_by, expires_at FROM access_codes WHERE code = %s", (code,))
+        ac = cur.fetchone()
     if not ac or ac["redeemed_by"]:
         cur.close(); conn.close()
         return jsonify({"error": "Invalid or already-used access code"}), 400
@@ -13088,8 +13914,12 @@ def api_signup_create_checkout():
     if not price_id:
         return jsonify({"error": "Pricing not configured. Contact admin."}), 503
 
-    # Stash calendar URLs in pending_signups so they survive the Stripe round trip
-    cals_json = json.dumps({k: str(data.get(k, "")).strip() for k in _CAL_KEYS})
+    # Stash calendar URLs + the (encrypted) API key in pending_signups so they
+    # survive the Stripe round trip. Never put secrets in Stripe metadata.
+    _signup_payload = {k: str(data.get(k, "")).strip() for k in _CAL_KEYS}
+    _signup_payload["anthropic_api_key"] = _encrypt_config_value("anthropic_api_key", api_key)
+    _signup_payload["school_id"] = _resolve_signup_school(data) or ""
+    cals_json = json.dumps(_signup_payload)
     pconn = get_db(); pcur = pconn.cursor()
     try:
         pcur.execute("""
@@ -13129,6 +13959,7 @@ def api_signup_create_free():
     email    = str(data.get("email", "")).strip().lower()
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", "")).strip()
+    api_key  = str(data.get("anthropic_api_key", "")).strip()
 
     if not all([code, email, username, password]):
         return jsonify({"error": "All fields are required"}), 400
@@ -13136,6 +13967,9 @@ def api_signup_create_free():
         return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
     if not _basic_email_ok(email):
         return jsonify({"error": "Invalid email"}), 400
+    _key_ok, _key_err = _validate_anthropic_key(api_key)
+    if not _key_ok:
+        return jsonify({"error": f"Anthropic API key check failed: {_key_err}"}), 400
 
     user_id = str(uuid.uuid4())
     conn = get_db(); cur = conn.cursor()
@@ -13176,6 +14010,8 @@ VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
 
     _init_user_defaults(user_id)
     _save_calendar_urls(user_id, data)
+    set_user_config({"anthropic_api_key": api_key}, user_id=user_id)
+    _attach_user_school(user_id, _resolve_signup_school(data, creator_uid=user_id))
     log.info("Free signup: user %s (%s) created via code %s", username, email, code)
     return jsonify({"status": "ok", "redirect": "/login"})
 
@@ -13209,16 +14045,19 @@ def signup_success():
     pw_hash = checkout.metadata.get("password_hash", generate_password_hash(secrets.token_urlsafe(16)))
     un = checkout.metadata.get("username") or username
 
-    # Create user
+    # Create user. A pre-existing account with this email must NOT silently
+    # absorb the new subscription — surface it instead.
     user_id = str(uuid.uuid4())
+    cur.execute("SELECT id FROM users WHERE email = %s OR username = %s", (email, un))
+    _existing_user = cur.fetchone()
+    if _existing_user:
+        cur.close(); conn.close()
+        log.warning("Paid signup for existing account %s — manual review needed", email)
+        return render_template("signup_success.html", already_exists=True)
     cur.execute("""
 INSERT INTO users (id, email, username, password_hash, display_name, is_comped, active)
-VALUES (%s, %s, %s, %s, %s, FALSE, TRUE)
-ON CONFLICT (email) DO UPDATE SET last_login_at = NOW() RETURNING id""",
+VALUES (%s, %s, %s, %s, %s, FALSE, TRUE)""",
         (user_id, email, un, pw_hash, un.title()))
-    result = cur.fetchone()
-    if result:
-        user_id = str(result["id"])
 
     # Create subscription record
     stripe_sub_id = None
@@ -13259,6 +14098,7 @@ ON CONFLICT (stripe_customer_id) DO UPDATE SET status='active', updated_at=NOW()
     _init_user_defaults(user_id)
     if cal_data:
         _save_calendar_urls(user_id, cal_data)
+        _attach_user_school(user_id, cal_data.get("school_id"))
     log.info("Paid signup success: user %s (%s)", un, email)
     return render_template("signup_success.html", username=un, email=email)
 
@@ -13284,24 +14124,23 @@ def stripe_webhook():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+    etype = event["type"]
+    obj = event["data"]["object"]
+
     conn = get_db(); cur = conn.cursor()
     try:
+        # Event record + handler run in ONE transaction: if handling fails,
+        # the billing_events row rolls back too, so Stripe's retry is not
+        # rejected as "already processed" with the work half-done.
         cur.execute("""INSERT INTO billing_events (stripe_event_id, event_type, payload)
 VALUES (%s, %s, %s) ON CONFLICT (stripe_event_id) DO NOTHING RETURNING id""",
                     (event["id"], event["type"], json.dumps(dict(event))))
         if not cur.fetchone():
+            conn.rollback()
             cur.close(); conn.close()
             return jsonify({"status": "already_processed"})
-        conn.commit()
-    except Exception as e:
-        log.warning("billing_events insert: %s", e)
-        conn.rollback()
 
-    etype = event["type"]
-    obj = event["data"]["object"]
-
-    try:
-        if etype == "customer.subscription.updated":
+        if etype in ("customer.subscription.updated", "customer.subscription.created"):
             sub_id = obj["id"]
             status = obj["status"]
             period_end = datetime.fromtimestamp(obj["current_period_end"], tz=TZ)
@@ -13313,6 +14152,11 @@ WHERE stripe_subscription_id=%s""", (status, period_end, sub_id))
             cur.execute("""UPDATE subscriptions SET status='canceled', canceled_at=NOW(), updated_at=NOW()
 WHERE stripe_subscription_id=%s""", (sub_id,))
 
+        elif etype == "invoice.paid":
+            customer_id = obj.get("customer")
+            if customer_id:
+                cur.execute("UPDATE subscriptions SET status='active', updated_at=NOW() WHERE stripe_customer_id=%s", (customer_id,))
+
         elif etype == "invoice.payment_failed":
             customer_id = obj.get("customer")
             if customer_id:
@@ -13322,8 +14166,13 @@ WHERE stripe_subscription_id=%s""", (sub_id,))
     except Exception as e:
         log.error("Stripe webhook handler error (%s): %s", etype, e)
         conn.rollback()
-    finally:
         cur.close(); conn.close()
+        return jsonify({"error": "handler failed; retry"}), 500
+    finally:
+        try:
+            cur.close(); conn.close()
+        except Exception:
+            pass
 
     return jsonify({"status": "ok"})
 
@@ -13389,15 +14238,23 @@ def api_admin_pricing():
 
     conn = get_db(); cur = conn.cursor()
     if request.method == "GET":
-        cur.execute("SELECT stripe_price_id, monthly_cents FROM pricing_config WHERE id = 1")
+        cur.execute("SELECT stripe_price_id, monthly_cents, open_signup FROM pricing_config WHERE id = 1")
         row = cur.fetchone()
         cur.close(); conn.close()
         if row:
             return jsonify({"stripe_price_id": row["stripe_price_id"], "monthly_cents": row["monthly_cents"],
-                            "monthly_display": f"${row['monthly_cents']/100:.2f}"})
-        return jsonify({"stripe_price_id": "", "monthly_cents": 999, "monthly_display": "$9.99"})
+                            "monthly_display": f"${row['monthly_cents']/100:.2f}",
+                            "open_signup": bool(row["open_signup"])})
+        return jsonify({"stripe_price_id": "", "monthly_cents": 999, "monthly_display": "$9.99", "open_signup": False})
 
     data = request.get_json(force=True) or {}
+    # Standalone open_signup toggle (no price change required)
+    if "open_signup" in data and "monthly_dollars" not in data:
+        cur.execute("""INSERT INTO pricing_config (id, open_signup, updated_at)
+VALUES (1, %s, NOW()) ON CONFLICT (id) DO UPDATE SET open_signup=EXCLUDED.open_signup, updated_at=NOW()""",
+                    (bool(data["open_signup"]),))
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({"status": "ok", "open_signup": bool(data["open_signup"])})
     monthly_dollars = float(data.get("monthly_dollars", 9.99))
     monthly_cents = int(round(monthly_dollars * 100))
 
@@ -13786,6 +14643,10 @@ def api_signup_complete_approved():
         return jsonify({"error": "Username must be ≥3 chars and password ≥6 chars"}), 400
     if not _basic_email_ok(email):
         return jsonify({"error": "Invalid email"}), 400
+    _appr_key = str(data.get("anthropic_api_key", "")).strip()
+    _key_ok, _key_err = _validate_anthropic_key(_appr_key)
+    if not _key_ok:
+        return jsonify({"error": f"Anthropic API key check failed: {_key_err}"}), 400
 
     conn = get_db(); cur = conn.cursor()
     try:
@@ -13819,8 +14680,12 @@ def api_signup_complete_approved():
         if not price_id:
             return jsonify({"error": "Pricing not configured. Contact admin."}), 503
 
-        # Stash calendar URLs under the token (reuses pending_signups keyed by access_code)
-        cals_json = json.dumps({k: str(data.get(k, "")).strip() for k in _CAL_KEYS})
+        # Stash calendar URLs + encrypted API key under the token
+        # (reuses pending_signups keyed by access_code)
+        _appr_payload = {k: str(data.get(k, "")).strip() for k in _CAL_KEYS}
+        _appr_payload["anthropic_api_key"] = _encrypt_config_value("anthropic_api_key", _appr_key)
+        _appr_payload["school_id"] = _resolve_signup_school(data) or ""
+        cals_json = json.dumps(_appr_payload)
         sconn = get_db(); scur = sconn.cursor()
         try:
             scur.execute("""
@@ -13882,6 +14747,8 @@ VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
 
     _init_user_defaults(user_id)
     _save_calendar_urls(user_id, data)
+    set_user_config({"anthropic_api_key": _appr_key}, user_id=user_id)
+    _attach_user_school(user_id, _resolve_signup_school(data, creator_uid=user_id))
     log.info("Approved signup (no Stripe): %s (%s)", username, email)
     return jsonify({"status": "ok", "redirect": "/login"})
 
@@ -13965,6 +14832,7 @@ ON CONFLICT (stripe_customer_id) DO UPDATE SET status='active', updated_at=NOW()
     _init_user_defaults(user_id)
     if cal_data:
         _save_calendar_urls(user_id, cal_data)
+        _attach_user_school(user_id, cal_data.get("school_id"))
     log.info("Approved+paid signup success: %s (%s)", un, email)
     return render_template("signup_success.html", username=un, email=email)
 
