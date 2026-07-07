@@ -240,7 +240,6 @@ def _scheduler_last_error_get():
 _CSRF_EXEMPT_PATHS = {
     '/login', '/logout', '/admin', '/parent',
     '/api/login', '/api/csrf-token',
-    '/api/test-admin-password', '/api/test-security-code', '/api/test-lockdown-status',
 }
 
 
@@ -333,17 +332,29 @@ def require_auth():
     path = request.path.rstrip('/')
     if path == '/healthz':
         return None
+    # Maintenance mode: admins (and the login/admin pages themselves) only.
+    if path not in ('/login', '/logout', '/admin') and not path.startswith('/api/admin/') \
+            and not session.get("admin_authenticated"):
+        try:
+            if is_app_locked_down():
+                if path.startswith('/api/'):
+                    return jsonify({"error": "Down for maintenance. Back shortly."}), 503
+                return "<h1>Down for maintenance</h1><p>Jarvis will be back shortly.</p>", 503
+        except Exception:
+            pass
     if path in ('/login', '/logout', '/admin', '/parent', '/manifest.json', '/sw.js'):
         return None
     if path.startswith('/signup'):
         return None
-    if path in ('/api/lockdown-status', '/api/test-lockdown-status', '/api/test-security-code', '/api/test-admin-password', '/api/csrf-token'):
+    if path in ('/api/lockdown-status', '/api/csrf-token'):
         return None
     if path.startswith('/api/signup/') or path.startswith('/api/webhooks/'):
         return None
     if path.startswith('/api/admin/'):
         return None
     if path.startswith('/api/parent/'):
+        if not PARENT_USER or PARENT_USER == "PARENT_USER":
+            return jsonify({"error": "Not found"}), 404
         if not session.get("parent_authenticated"):
             return jsonify({"error": "Not authenticated"}), 401
         return None
@@ -5827,31 +5838,24 @@ def login():
     data = request.get_json(force=True) or {}
     username = data.get("username", "").strip()
     password = data.get("password")
-    security_code = data.get("security_code")
     is_locked_down = is_app_locked_down()
     ip_is_blocked = is_ip_blocked(ip_addr)
 
     if not username:
         return jsonify({"error": "Username required"}), 400
 
-    if ip_is_blocked and not security_code:
-        return jsonify({
-            "error": "This IP address is blocked. Please provide security code to access.",
-            "ip_blocked": True,
-            "message": "System requires security code for this IP"
-        }), 202
+    if ip_is_blocked:
+        return jsonify({"error": "Access from this address is blocked."}), 403
 
-    if password and not security_code:
+    if password:
         is_admin = username == ADMIN_USER
-        is_parent = username == PARENT_USER
-        is_env_student = (username == AVERAGE_USER)
+        # Parent portal is env-gated: only the configured family account exists.
+        is_parent = bool(PARENT_USER and PARENT_USER != "PARENT_USER" and username == PARENT_USER)
 
         if is_admin:
             expected_password = ADMIN_PASSWORD
         elif is_parent:
             expected_password = PARENT_PASSWORD
-        elif is_env_student:
-            expected_password = APP_PASSWORD
         else:
             expected_password = None
 
@@ -5885,7 +5889,7 @@ def login():
                     return jsonify({"error": "Your subscription is inactive. Please manage your billing.", "billing": True}), 403
 
                 if is_locked_down:
-                    return jsonify({"is_locked_down": True, "message": "System in lockdown. Please provide security code."}), 202
+                    return jsonify({"error": "The service is temporarily down for maintenance. Please try again shortly."}), 503
 
                 record_login_attempt(ip_addr, True, username)
                 session.permanent = True
@@ -5907,44 +5911,21 @@ def login():
 
                 return jsonify({"status": "ok", "redirect": "/"})
 
-        # Env-var login path (admin, parent, or legacy AVERAGE_USER)
+        # Env-var login path (break-glass admin + env-gated parent only)
         if expected_password and secrets.compare_digest(password.strip(), expected_password):
-            if is_locked_down:
-                return jsonify({
-                    "is_locked_down": True,
-                    "message": "System in lockdown. Please provide security code."
-                }), 202
+            # Admin may log in during maintenance mode; parent may not.
+            if is_locked_down and not is_admin:
+                return jsonify({"error": "The service is temporarily down for maintenance. Please try again shortly."}), 503
 
             record_login_attempt(ip_addr, True, username)
             session.permanent = True
             if is_admin:
                 session["admin_authenticated"] = True
                 session["is_admin"] = True
-            elif is_parent:
+            else:
                 session["parent_authenticated"] = True
-            else:
-                session["authenticated"] = True
-                # Try to fetch user_id from DB for the env-var student
-                try:
-                    _ec = get_db(); _ecur = _ec.cursor()
-                    _ecur.execute("SELECT id FROM users WHERE username = %s", (username,))
-                    _erow = _ecur.fetchone()
-                    _ecur.close(); _ec.close()
-                    if _erow:
-                        session["user_id"] = str(_erow["id"])
-                except Exception:
-                    pass
-                session["username"] = username
-                session["is_admin"] = False
             session.modified = True
-
-            if is_admin:
-                redirect_url = "/admin"
-            elif is_parent:
-                redirect_url = "/parent"
-            else:
-                redirect_url = "/"
-            return jsonify({"status": "ok", "redirect": redirect_url})
+            return jsonify({"status": "ok", "redirect": "/admin" if is_admin else "/parent"})
         else:
             lockout_info = record_login_attempt(ip_addr, False, username)
             if lockout_info["locked"]:
@@ -5954,60 +5935,6 @@ def login():
                     "minutes_remaining": lockout_info["minutes_remaining"]
                 }), 429
             return jsonify({"error": "Invalid username or password"}), 401
-
-    if password and security_code:
-        security_code_env = os.environ.get("SECURITY_CODE", "").strip()
-        if not security_code_env:
-            log.error("SECURITY_CODE environment variable not set. Cannot process security code.")
-            return jsonify({"error": "Security code not configured"}), 500
-
-        is_admin = username == ADMIN_USER
-        is_parent = username == PARENT_USER
-
-        if is_admin:
-            expected_password = ADMIN_PASSWORD
-        elif is_parent:
-            expected_password = PARENT_PASSWORD
-        else:
-            expected_password = APP_PASSWORD
-
-        # Allow login with security code if:
-        # 1. System is in lockdown, OR
-        # 2. IP is blocked
-        if is_locked_down or ip_is_blocked:
-            log.warning(
-                "Login security code attempt: username=%s, is_admin=%s, is_parent=%s, ip_blocked=%s, locked_down=%s",
-                username, is_admin, is_parent, ip_is_blocked, is_locked_down,
-            )
-            if expected_password and secrets.compare_digest(password.strip(), expected_password) and secrets.compare_digest(security_code.strip(), security_code_env):
-                record_login_attempt(ip_addr, True, username)
-                session.permanent = True
-                if is_admin:
-                    session["admin_authenticated"] = True
-                elif is_parent:
-                    session["parent_authenticated"] = True
-                else:
-                    session["authenticated"] = True
-                session.modified = True
-
-                if is_admin:
-                    redirect_url = "/admin"
-                elif is_parent:
-                    redirect_url = "/parent"
-                else:
-                    redirect_url = "/"
-                return jsonify({"status": "ok", "redirect": redirect_url})
-            else:
-                lockout_info = record_login_attempt(ip_addr, False, username)
-                if lockout_info["locked"]:
-                    return jsonify({
-                        "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
-                        "lockout": True,
-                        "minutes_remaining": lockout_info["minutes_remaining"]
-                    }), 429
-                return jsonify({"error": "Invalid username, password, or security code"}), 401
-        else:
-            return jsonify({"error": "Security code not required"}), 400
 
     return jsonify({"error": "Missing username or password"}), 400
 
@@ -6037,94 +5964,26 @@ def admin():
         }), 429
 
     password = data.get("password")
-    security_code = data.get("security_code")
-    is_locked_down = is_app_locked_down()
 
-    log.info(f"Admin login: password={bool(password)}, security_code={bool(security_code)}, locked_down={is_locked_down}")
-
-    if password and not security_code:
-        # Check if admin password
-        if secrets.compare_digest(password.strip(), ADMIN_PASSWORD):
-            if is_locked_down:
-                return jsonify({
-                    "is_locked_down": True,
-                    "message": "System in lockdown. Please provide security code."
-                }), 202
-
-            record_login_attempt(ip_addr, True, "admin")
-            session.permanent = True
-            session["admin_authenticated"] = True
-            session.modified = True
-            return jsonify({"status": "ok", "redirect": "/admin"})
-
-        # Check if app password
-        if APP_PASSWORD and secrets.compare_digest(password.strip(), APP_PASSWORD):
-            if is_locked_down:
-                return jsonify({
-                    "is_locked_down": True,
-                    "message": "System in lockdown. Please provide security code."
-                }), 202
-
-            record_login_attempt(ip_addr, True, "user")
-            session.permanent = True
-            session["authenticated"] = True
-            session.modified = True
-            return jsonify({"status": "ok", "redirect": "/"})
-
-        # Neither password matched
-        lockout_info = record_login_attempt(ip_addr, False, "")
-        if lockout_info["locked"]:
-            return jsonify({
-                "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
-                "lockout": True,
-                "minutes_remaining": lockout_info["minutes_remaining"]
-            }), 429
-        return jsonify({"error": "Wrong password"}), 401
-
-    # Handle security code for both app and admin
-    if password and security_code:
-        if is_locked_down:
-            security_code_env = os.environ.get("SECURITY_CODE", "").strip()
-            if not security_code_env:
-                log.error("SECURITY_CODE environment variable not set. Cannot process security code.")
-                return jsonify({"error": "Security code not configured"}), 500
-
-            # Check admin password with security code
-            if (
-                secrets.compare_digest(password.strip(), ADMIN_PASSWORD)
-                and secrets.compare_digest(security_code.strip(), security_code_env)
-            ):
-                record_login_attempt(ip_addr, True, "admin")
-                session.permanent = True
-                session["admin_authenticated"] = True
-                session.modified = True
-                return jsonify({"status": "ok", "redirect": "/admin"})
-
-            # Check app password with security code
-            if (
-                APP_PASSWORD
-                and secrets.compare_digest(password.strip(), APP_PASSWORD)
-                and secrets.compare_digest(security_code.strip(), security_code_env)
-            ):
-                record_login_attempt(ip_addr, True, "user")
-                session.permanent = True
-                session["authenticated"] = True
-                session.modified = True
-                return jsonify({"status": "ok", "redirect": "/"})
-
-            # Neither matched
-            lockout_info = record_login_attempt(ip_addr, False, "")
-            if lockout_info["locked"]:
-                return jsonify({
-                    "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
-                    "lockout": True,
-                    "minutes_remaining": lockout_info["minutes_remaining"]
-                }), 429
-            return jsonify({"error": "Wrong password or security code"}), 401
-        else:
-            return jsonify({"error": "Security code not required"}), 400
-
-    return jsonify({"error": "Missing password"}), 400
+    if not password:
+        return jsonify({"error": "Password required"}), 400
+    # Admin password only — the admin panel is never reachable with a student
+    # password, and maintenance mode does not block the operator.
+    if secrets.compare_digest(password.strip(), ADMIN_PASSWORD):
+        record_login_attempt(ip_addr, True, "admin")
+        session.permanent = True
+        session["admin_authenticated"] = True
+        session["is_admin"] = True
+        session.modified = True
+        return jsonify({"status": "ok", "redirect": "/admin"})
+    lockout_info = record_login_attempt(ip_addr, False, "")
+    if lockout_info["locked"]:
+        return jsonify({
+            "error": f"Too many failed attempts. Locked for {lockout_info['minutes_remaining']} minute(s).",
+            "lockout": True,
+            "minutes_remaining": lockout_info["minutes_remaining"]
+        }), 429
+    return jsonify({"error": "Wrong password"}), 401
 
 
 @app.route("/api/admin/login-attempts")
@@ -6280,42 +6139,6 @@ def is_localhost():
             or request.headers.get('CF-Connecting-IP') or request.headers.get('True-Client-IP'):
         return False
     return request.remote_addr in ('127.0.0.1', '::1')
-
-
-@app.route("/api/test-admin-password")
-def api_test_admin_password():
-    """Debug endpoint - localhost only - shows if ADMIN_PASSWORD is set"""
-    if not is_localhost():
-        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
-
-    if ADMIN_PASSWORD == "admin-change-me":
-        return jsonify({"status": "USING_DEFAULT", "message": "ADMIN_PASSWORD not set in environment, using default"})
-    else:
-        return jsonify({"status": "SET_FROM_ENV", "length": len(ADMIN_PASSWORD), "message": "ADMIN_PASSWORD is set from environment variable"})
-
-
-@app.route("/api/test-security-code")
-def api_test_security_code():
-    """Debug endpoint - localhost only - shows if SECURITY_CODE is set"""
-    if not is_localhost():
-        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
-
-    security_code = os.environ.get("SECURITY_CODE", "")
-    if not security_code:
-        return jsonify({"status": "NOT_SET", "message": "SECURITY_CODE environment variable not set"})
-    else:
-        return jsonify({"status": "SET_FROM_ENV", "length": len(security_code), "message": "SECURITY_CODE is set from environment variable"})
-
-
-@app.route("/api/test-lockdown-status")
-def api_test_lockdown_status():
-    """Debug endpoint - localhost only - shows current lockdown state"""
-    if not is_localhost():
-        return jsonify({"error": "Debug endpoints only available on localhost"}), 403
-
-    is_locked = is_app_locked_down()
-    return jsonify({"is_locked_down": is_locked, "message": f"System is {'LOCKED DOWN' if is_locked else 'NORMAL'}"})
-
 
 
 @app.route("/api/admin/lockdown", methods=["POST"])
