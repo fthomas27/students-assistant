@@ -1050,6 +1050,7 @@ def init_db():
             id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
             stripe_price_id TEXT NOT NULL DEFAULT '',
             monthly_cents INT NOT NULL DEFAULT 999,
+            open_signup BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at TIMESTAMPTZ DEFAULT NOW()
         )"""),
         ("pending_signups", """CREATE TABLE IF NOT EXISTS pending_signups (
@@ -1424,6 +1425,44 @@ ON CONFLICT (name) DO NOTHING""",
         conn.rollback()
         conn = get_db()
         cur = conn.cursor()
+
+    # ── Schema finalization: user_id NOT NULL + FK on user-data tables ─────────
+    # By this point every write path stamps user_id; stragglers from the
+    # single-user era are adopted by the default student first.
+    try:
+        cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1",
+                    (os.environ.get("AVERAGE_USER", "user").strip() or "user",))
+        _adopt_row = cur.fetchone()
+        if not _adopt_row:
+            cur.execute("SELECT id FROM users WHERE active = TRUE ORDER BY created_at ASC LIMIT 1")
+            _adopt_row = cur.fetchone()
+        _adopt_uid = str(_adopt_row["id"]) if _adopt_row else None
+    except Exception:
+        conn.rollback(); conn = get_db(); cur = conn.cursor()
+        _adopt_uid = None
+    for _tbl in _user_id_tables:
+        try:
+            if _adopt_uid:
+                cur.execute(f"UPDATE {_tbl} SET user_id = %s WHERE user_id IS NULL", (_adopt_uid,))
+            cur.execute(f"ALTER TABLE {_tbl} ALTER COLUMN user_id SET NOT NULL")
+            cur.execute(f"""DO $$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_{_tbl}_user') THEN
+    ALTER TABLE {_tbl} ADD CONSTRAINT fk_{_tbl}_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+END IF; END $$""")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{_tbl}_user ON {_tbl}(user_id)")
+            conn.commit()
+        except psycopg2.Error as _nn_err:
+            log.debug("NOT NULL finalization for %s: %s", _tbl, _nn_err)
+            conn.rollback()
+            conn = get_db()
+            cur = conn.cursor()
+
+    try:
+        cur.execute("ALTER TABLE pricing_config ADD COLUMN IF NOT EXISTS open_signup BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback(); conn = get_db(); cur = conn.cursor()
 
     # Initialize pricing_config singleton
     try:
@@ -13706,6 +13745,19 @@ def api_signup_test_key():
     return jsonify({"ok": ok, "error": err or None}), (200 if ok else 400)
 
 
+@app.route("/api/signup/open", methods=["GET"])
+def api_signup_open():
+    """Whether self-serve signup (no access code) is enabled."""
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT open_signup FROM pricing_config WHERE id = 1")
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        return jsonify({"open_signup": bool(row and row["open_signup"])})
+    except Exception:
+        return jsonify({"open_signup": False})
+
+
 @app.route("/api/signup/schools", methods=["GET"])
 def api_signup_schools():
     """Public list of established schools for the signup picker."""
@@ -13821,10 +13873,23 @@ def api_signup_create_checkout():
     if not _key_ok:
         return jsonify({"error": f"Anthropic API key check failed: {_key_err}"}), 400
 
-    # Validate code
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT id, bypass_payment, redeemed_by, expires_at FROM access_codes WHERE code = %s", (code,))
-    ac = cur.fetchone()
+    # Self-serve mode: when open_signup is on and no code was supplied, mint a
+    # one-time paid code on the fly so the rest of the flow (pending_signups,
+    # /signup/success redemption) works unchanged.
+    if not code:
+        cur.execute("SELECT open_signup FROM pricing_config WHERE id = 1")
+        _pc = cur.fetchone()
+        if not (_pc and _pc["open_signup"]):
+            cur.close(); conn.close()
+            return jsonify({"error": "Access code required"}), 400
+        code = "OPEN-" + secrets.token_urlsafe(9).upper().replace("_", "").replace("-", "")[:9]
+        cur.execute("INSERT INTO access_codes (code, bypass_payment, notes) VALUES (%s, FALSE, 'self-serve') RETURNING id, bypass_payment, redeemed_by, expires_at", (code,))
+        ac = cur.fetchone()
+        conn.commit()
+    else:
+        cur.execute("SELECT id, bypass_payment, redeemed_by, expires_at FROM access_codes WHERE code = %s", (code,))
+        ac = cur.fetchone()
     if not ac or ac["redeemed_by"]:
         cur.close(); conn.close()
         return jsonify({"error": "Invalid or already-used access code"}), 400
@@ -14173,15 +14238,23 @@ def api_admin_pricing():
 
     conn = get_db(); cur = conn.cursor()
     if request.method == "GET":
-        cur.execute("SELECT stripe_price_id, monthly_cents FROM pricing_config WHERE id = 1")
+        cur.execute("SELECT stripe_price_id, monthly_cents, open_signup FROM pricing_config WHERE id = 1")
         row = cur.fetchone()
         cur.close(); conn.close()
         if row:
             return jsonify({"stripe_price_id": row["stripe_price_id"], "monthly_cents": row["monthly_cents"],
-                            "monthly_display": f"${row['monthly_cents']/100:.2f}"})
-        return jsonify({"stripe_price_id": "", "monthly_cents": 999, "monthly_display": "$9.99"})
+                            "monthly_display": f"${row['monthly_cents']/100:.2f}",
+                            "open_signup": bool(row["open_signup"])})
+        return jsonify({"stripe_price_id": "", "monthly_cents": 999, "monthly_display": "$9.99", "open_signup": False})
 
     data = request.get_json(force=True) or {}
+    # Standalone open_signup toggle (no price change required)
+    if "open_signup" in data and "monthly_dollars" not in data:
+        cur.execute("""INSERT INTO pricing_config (id, open_signup, updated_at)
+VALUES (1, %s, NOW()) ON CONFLICT (id) DO UPDATE SET open_signup=EXCLUDED.open_signup, updated_at=NOW()""",
+                    (bool(data["open_signup"]),))
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({"status": "ok", "open_signup": bool(data["open_signup"])})
     monthly_dollars = float(data.get("monthly_dollars", 9.99))
     monthly_cents = int(round(monthly_dollars * 100))
 

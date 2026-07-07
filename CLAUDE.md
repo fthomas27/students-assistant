@@ -2,6 +2,19 @@
 
 An intelligent student assistant application powered by Claude AI that helps high school students manage assignments, tasks, and schedules with the persona of Jarvis from Iron Man.
 
+## Multi-Tenant SaaS Architecture (READ FIRST)
+
+This is a **multi-tenant SaaS**, not a single-user app. Every row of student data belongs to a user (`users.id`), and the codebase enforces strict tenant isolation. When editing `app.py`, follow these non-negotiable conventions:
+
+- **Every query on a user-data table MUST filter by `user_id`.** Use `_require_uid()` (aborts 401 if no session user) in request handlers; pass `uid` explicitly into background/scheduler code. A static test (`tests/test_isolation_static.py`) fails the build if any query on a user table lacks `user_id` and lacks an explicit `# GLOBAL-OK` (intentional cross-tenant aggregate) or `# PHASE5` comment. Do not add new `# GLOBAL-OK` exemptions without care — the counts are pinned.
+- **Bring-your-own key (BYOK):** every Claude call uses the *user's* Anthropic API key, resolved via `_user_api_key(uid)` / `_anthropic_client_for(uid)`. Never read `os.environ["ANTHROPIC_API_KEY"]` for tenant traffic. Missing/invalid keys raise `MissingApiKeyError` and surface to the UI via `error_code` (`no_api_key` / `bad_api_key` / `key_quota`).
+- **Sensitive per-user config is encrypted at rest** (Fernet, `CONFIG_ENCRYPTION_KEY`). `SENSITIVE_CONFIG_KEYS` (API keys, OAuth tokens, PowerSchool password) are transparently encrypted by `set_user_config`/`get_user_config`.
+- **Schools, not hardcoded Park City:** each user belongs to a `schools` row (timezone, bell schedule, year dates). Use `_school_for(uid)`, `user_tz(uid)`, and `_school_prompt_block(uid)` — never hardcode schedule facts. Park City High School is seeded; users create their school at signup if they're the first.
+- **Per-user integrations:** WHOOP, Google, PowerSchool, Mem0, and ntfy notification topics are all keyed by user. Pass `uid` through their helpers.
+- **Scheduler is multi-user:** background jobs iterate `_active_user_ids()` via `_for_each_active_user()`; one user's failure never stops the others. A single hourly tick (`hourly_user_tick`) fires briefings/debriefs/plans at each user's *local* hour.
+
+See `DEPLOY.md` for the Railway + Stripe launch runbook.
+
 ## Overview
 
 This Flask-based web application provides a comprehensive student management system featuring:
@@ -76,8 +89,14 @@ The UI is four dense, above-the-fold grid dashboards (each widget scrolls intern
 
 ## Database Schema
 
-Key tables include:
-- `config` - User settings (name, timezone, morning briefing time)
+SaaS/multi-tenant tables:
+- `users` - Accounts (UUID id, email, username, password_hash, is_comped, `school_id`)
+- `user_config` - Per-user settings (name, timezone, API key, OAuth tokens, ntfy topic); sensitive values encrypted
+- `schools` - Per-school schedule (timezone, bell schedules, year dates, day-type rotation, calendar feeds)
+- `subscriptions` / `billing_events` / `pricing_config` / `access_codes` / `pending_signups` - Stripe billing + signup
+- `config` - **Legacy global** key/value store; per-user settings live in `user_config`
+
+Per-user data tables (all `user_id`-scoped, NOT NULL + FK to `users`):
 - `tasks` - Pending user tasks with urgency, due dates, and dashboard `category`
 - `calendar_categories` - Persistent cache for the calendar categorization engine
 - `planned_workouts` - Workout planner entries (Health dashboard)
@@ -95,27 +114,18 @@ Key tables include:
 
 ## Environment Variables
 
+These are now **app-level only** — per-student settings (API keys, calendars, integration tokens, school) live in `user_config`/`schools`, set through signup and Settings. See `DEPLOY.md` for the full list.
+
 Required:
-- `ANTHROPIC_API_KEY` - Claude API key
 - `DATABASE_URL` - PostgreSQL connection string
 - `SECRET_KEY` - Flask session secret
+- `CONFIG_ENCRYPTION_KEY` - Fernet key encrypting sensitive per-user config at rest (losing it bricks all stored keys/tokens)
+- `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` - Stripe billing
+- `ADMIN_USER` / `ADMIN_PASSWORD` - Break-glass admin login (boot refuses the default password)
 
-Optional:
-- `APP_PASSWORD` - User login password (default: "finn2025")
-- `ADMIN_PASSWORD` - Admin panel password
-- `AVERAGE_USER` - Standard user username
-- `ADMIN_USER` - Admin user username
-- `PERSONAL_ICAL_URL` - User's personal calendar
-- `CANVAS_ICAL_URL` - Canvas/LMS assignment calendar (titles + due dates only)
-- `CANVAS_API_TOKEN` - Canvas personal access token; unlocks live grades, course names, and full assignment descriptions/rubrics for Jarvis
-- `CANVAS_BASE_URL` - Canvas instance root, e.g. `https://parkcityschools.instructure.com` (no trailing slash)
-- `WHOOP_CLIENT_ID` / `WHOOP_CLIENT_SECRET` - WHOOP developer app credentials (from developer.whoop.com); required to show the "Connect WHOOP" flow
-- `WHOOP_REDIRECT_URI` - Override for the OAuth callback URL; defaults to `<app root>/whoop-auth/callback`
-- `SPORTS_ICAL_URL` - Sports/activities calendar
-- `RED_DAY_ICAL_URL` - Park City Schools Red Day schedule
-- `WHITE_DAY_ICAL_URL` - Park City Schools White Day schedule
-- `NOAA_API_TOKEN` - NOAA Climate Data Online API token for historical weather/snow data (free at www.ncdc.noaa.gov/cdo-web/token)
-- `GUARDIAN_API_KEY` - The Guardian Open Platform API key for news search (free at open-platform.theguardian.com)
+Optional (app-level shared): `GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI`, `WHOOP_CLIENT_ID/SECRET/REDIRECT_URI` (one OAuth app each; users connect their own accounts), `MEM0_API_KEY` (owner-paid), `NTFY_SERVER`, `FINNHUB_API_KEY`, `NOAA_API_TOKEN`, `GUARDIAN_API_KEY`, `PARENT_USER`/`PARENT_PASSWORD` (single-family parent portal).
+
+**Removed / no longer used:** `ANTHROPIC_API_KEY` (BYOK — each user supplies their own), `APP_PASSWORD`, `AVERAGE_USER`, `NTFY_TOPIC`, `SECURITY_CODE`, `POWER_USERN`/`POWER_PASS`, all `*_ICAL_URL` and `CANVAS_*` (per-user now), `RED_DAY_ICAL_URL`/`WHITE_DAY_ICAL_URL` (seeded into the Park City school row).
 
 ## Park City School Specific
 

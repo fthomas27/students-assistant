@@ -660,7 +660,6 @@ def test_sync_status_only_reports_configured_feeds(client, monkeypatch):
         sess["authenticated"] = True
         sess["user_id"] = "00000000-0000-0000-0000-000000000001"
         sess["_sub_checked_at"] = 9999999999
-        s["_sub_checked_at"] = 9999999999
     resp = c.get("/api/sync-status")
     assert resp.status_code == 200
     feeds = [i["feed"] for i in resp.get_json()["issues"]]
