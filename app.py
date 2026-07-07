@@ -140,6 +140,8 @@ if os.environ.get("FLASK_BOOT_DEV") != "1":
         _bad_secrets.append("ADMIN_PASSWORD")
     if not PARENT_PASSWORD or PARENT_PASSWORD == "PARENT_PASSWORD":
         _bad_secrets.append("PARENT_PASSWORD")
+    if not os.environ.get("DATABASE_URL", "").strip():
+        _bad_secrets.append("DATABASE_URL")
     if _bad_secrets:
         raise RuntimeError(
             "Refusing to start: missing or default-valued secrets: "
@@ -304,9 +306,33 @@ def require_csrf():
     return None
 
 
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    """Unauthenticated health check for the hosting platform (Railway)."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.close()
+        conn.close()
+        db_ok = True
+    except Exception:
+        db_ok = False
+    try:
+        sched_running = bool(scheduler.running)
+    except Exception:
+        sched_running = False
+    status = 200 if db_ok else 503
+    return jsonify({"status": "ok" if db_ok else "degraded",
+                    "db": db_ok, "scheduler": sched_running}), status
+
+
 @app.before_request
 def require_auth():
     path = request.path.rstrip('/')
+    if path == '/healthz':
+        return None
     if path in ('/login', '/logout', '/admin', '/parent', '/manifest.json', '/sw.js'):
         return None
     if path.startswith('/signup'):
@@ -347,11 +373,13 @@ def _init_user_singleton(user_id, table, extra_cols=""):
     conn = get_db()
     cur = conn.cursor()
     try:
+        if not user_id:
+            return
         if table == "timer_state":
             cur.execute("""INSERT INTO timer_state (assignment_uid, assignment_title, class_name, estimate_minutes, accumulated_seconds, active, user_id)
-VALUES ('', '', '', 30, 0, FALSE, %s) ON CONFLICT (user_id) DO NOTHING WHERE user_id IS NOT NULL""", (user_id,))
+VALUES ('', '', '', 30, 0, FALSE, %s) ON CONFLICT (user_id) WHERE user_id IS NOT NULL DO NOTHING""", (user_id,))
         elif table in ("briefing_cache", "debrief_cache", "insight_cache"):
-            cur.execute(f"INSERT INTO {table} (content, user_id) VALUES ('', %s) ON CONFLICT (user_id) DO NOTHING WHERE user_id IS NOT NULL", (user_id,))
+            cur.execute(f"INSERT INTO {table} (content, user_id) VALUES ('', %s) ON CONFLICT (user_id) WHERE user_id IS NOT NULL DO NOTHING", (user_id,))
         conn.commit()
     except Exception as e:
         log.debug("_init_user_singleton %s %s: %s", table, user_id, e)

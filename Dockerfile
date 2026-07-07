@@ -11,4 +11,6 @@ COPY . .
 
 EXPOSE 5000
 
-CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 120"]
+# --workers must stay 1: the in-process APScheduler would double-fire jobs
+# with multiple workers. Scale with --threads instead (AI calls block threads).
+CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 8 --timeout 120 --worker-tmp-dir /dev/shm"]
