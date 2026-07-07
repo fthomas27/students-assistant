@@ -362,6 +362,31 @@ def require_auth():
         if path.startswith('/api/'):
             return jsonify({"error": "Not authenticated"}), 401
         return redirect("/login")
+    # Continuous subscription enforcement (checked at most every 5 minutes):
+    # a canceled subscriber loses access mid-session, not just at next login.
+    if path not in ('/billing',) and not path.startswith('/api/billing'):
+        _sub_check_ts = session.get("_sub_checked_at", 0)
+        if time.time() - _sub_check_ts > 300:
+            _sub_uid = session.get("user_id")
+            if _sub_uid:
+                try:
+                    _c = get_db(); _cu = _c.cursor()
+                    _cu.execute("""
+SELECT u.is_comped, s.status FROM users u
+LEFT JOIN subscriptions s ON s.user_id = u.id
+WHERE u.id = %s AND u.active = TRUE
+ORDER BY s.created_at DESC LIMIT 1""", (_sub_uid,))
+                    _row = _cu.fetchone()
+                    _cu.close(); _c.close()
+                    _ok = bool(_row and (_row["is_comped"] or (_row["status"] in ("active", "past_due"))))
+                    if not _ok:
+                        session.clear()
+                        if path.startswith('/api/'):
+                            return jsonify({"error": "Your subscription is inactive.", "billing": True}), 403
+                        return redirect("/login")
+                    session["_sub_checked_at"] = time.time()
+                except Exception as _sub_err:
+                    log.debug("subscription re-check failed: %s", _sub_err)
 
 _plan_lock = threading.Lock()
 
@@ -13955,16 +13980,19 @@ def signup_success():
     pw_hash = checkout.metadata.get("password_hash", generate_password_hash(secrets.token_urlsafe(16)))
     un = checkout.metadata.get("username") or username
 
-    # Create user
+    # Create user. A pre-existing account with this email must NOT silently
+    # absorb the new subscription — surface it instead.
     user_id = str(uuid.uuid4())
+    cur.execute("SELECT id FROM users WHERE email = %s OR username = %s", (email, un))
+    _existing_user = cur.fetchone()
+    if _existing_user:
+        cur.close(); conn.close()
+        log.warning("Paid signup for existing account %s — manual review needed", email)
+        return render_template("signup_success.html", already_exists=True)
     cur.execute("""
 INSERT INTO users (id, email, username, password_hash, display_name, is_comped, active)
-VALUES (%s, %s, %s, %s, %s, FALSE, TRUE)
-ON CONFLICT (email) DO UPDATE SET last_login_at = NOW() RETURNING id""",
+VALUES (%s, %s, %s, %s, %s, FALSE, TRUE)""",
         (user_id, email, un, pw_hash, un.title()))
-    result = cur.fetchone()
-    if result:
-        user_id = str(result["id"])
 
     # Create subscription record
     stripe_sub_id = None
@@ -14031,24 +14059,23 @@ def stripe_webhook():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+    etype = event["type"]
+    obj = event["data"]["object"]
+
     conn = get_db(); cur = conn.cursor()
     try:
+        # Event record + handler run in ONE transaction: if handling fails,
+        # the billing_events row rolls back too, so Stripe's retry is not
+        # rejected as "already processed" with the work half-done.
         cur.execute("""INSERT INTO billing_events (stripe_event_id, event_type, payload)
 VALUES (%s, %s, %s) ON CONFLICT (stripe_event_id) DO NOTHING RETURNING id""",
                     (event["id"], event["type"], json.dumps(dict(event))))
         if not cur.fetchone():
+            conn.rollback()
             cur.close(); conn.close()
             return jsonify({"status": "already_processed"})
-        conn.commit()
-    except Exception as e:
-        log.warning("billing_events insert: %s", e)
-        conn.rollback()
 
-    etype = event["type"]
-    obj = event["data"]["object"]
-
-    try:
-        if etype == "customer.subscription.updated":
+        if etype in ("customer.subscription.updated", "customer.subscription.created"):
             sub_id = obj["id"]
             status = obj["status"]
             period_end = datetime.fromtimestamp(obj["current_period_end"], tz=TZ)
@@ -14060,6 +14087,11 @@ WHERE stripe_subscription_id=%s""", (status, period_end, sub_id))
             cur.execute("""UPDATE subscriptions SET status='canceled', canceled_at=NOW(), updated_at=NOW()
 WHERE stripe_subscription_id=%s""", (sub_id,))
 
+        elif etype == "invoice.paid":
+            customer_id = obj.get("customer")
+            if customer_id:
+                cur.execute("UPDATE subscriptions SET status='active', updated_at=NOW() WHERE stripe_customer_id=%s", (customer_id,))
+
         elif etype == "invoice.payment_failed":
             customer_id = obj.get("customer")
             if customer_id:
@@ -14069,8 +14101,13 @@ WHERE stripe_subscription_id=%s""", (sub_id,))
     except Exception as e:
         log.error("Stripe webhook handler error (%s): %s", etype, e)
         conn.rollback()
-    finally:
         cur.close(); conn.close()
+        return jsonify({"error": "handler failed; retry"}), 500
+    finally:
+        try:
+            cur.close(); conn.close()
+        except Exception:
+            pass
 
     return jsonify({"status": "ok"})
 

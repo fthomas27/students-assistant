@@ -87,6 +87,7 @@ def test_csrf_token_endpoint(client):
     with c.session_transaction() as s:
         s["authenticated"] = True
         s["user_id"] = "00000000-0000-0000-0000-000000000001"
+        s["_sub_checked_at"] = 9999999999
     resp = c.get("/api/csrf-token")
     assert resp.status_code == 200
     data = resp.get_json()
@@ -98,6 +99,7 @@ def test_post_without_csrf_token_returns_403(client):
     with c.session_transaction() as s:
         s["authenticated"] = True
         s["user_id"] = "00000000-0000-0000-0000-000000000001"
+        s["_sub_checked_at"] = 9999999999
     resp = c.post("/api/tasks", json={"title": "test"})
     assert resp.status_code == 403
 
@@ -111,6 +113,7 @@ def test_authenticated_get_mints_csrf_token_into_session(client):
     with c.session_transaction() as s:
         s["authenticated"] = True
         s["user_id"] = "00000000-0000-0000-0000-000000000001"
+        s["_sub_checked_at"] = 9999999999
         s.pop("csrf_token", None)
     # /login renders without auth; use /api/sync-status which is a plain
     # authenticated GET that flows through the before_request hooks.
@@ -136,6 +139,7 @@ def test_csrf_token_stable_across_repeated_fetches(client):
     with c.session_transaction() as s:
         s["authenticated"] = True
         s["user_id"] = "00000000-0000-0000-0000-000000000001"
+        s["_sub_checked_at"] = 9999999999
         s.pop("csrf_token", None)
     first = c.get("/api/csrf-token").get_json()["csrf_token"]
     second = c.get("/api/csrf-token").get_json()["csrf_token"]
@@ -233,6 +237,7 @@ def test_tasks_get_includes_all_project_tasks(client, monkeypatch):
     with c.session_transaction() as s:
         s["authenticated"] = True
         s["user_id"] = "00000000-0000-0000-0000-000000000001"
+        s["_sub_checked_at"] = 9999999999
 
     resp = c.get("/api/tasks")
     assert resp.status_code == 200
@@ -299,6 +304,7 @@ def test_pomodoro_state_default(client, monkeypatch):
     with c.session_transaction() as s:
         s["authenticated"] = True
         s["user_id"] = "00000000-0000-0000-0000-000000000001"
+        s["_sub_checked_at"] = 9999999999
     resp = c.get("/api/pomodoro/state")
     assert resp.status_code == 200
     data = resp.get_json()
@@ -653,6 +659,8 @@ def test_sync_status_only_reports_configured_feeds(client, monkeypatch):
     with c.session_transaction() as sess:
         sess["authenticated"] = True
         sess["user_id"] = "00000000-0000-0000-0000-000000000001"
+        sess["_sub_checked_at"] = 9999999999
+        s["_sub_checked_at"] = 9999999999
     resp = c.get("/api/sync-status")
     assert resp.status_code == 200
     feeds = [i["feed"] for i in resp.get_json()["issues"]]
@@ -705,6 +713,7 @@ def test_config_post_returns_warning_for_dead_canvas_feed(client, monkeypatch):
     with c.session_transaction() as s:
         s["authenticated"] = True
         s["user_id"] = "00000000-0000-0000-0000-000000000001"
+        s["_sub_checked_at"] = 9999999999
         s["csrf_token"] = "tok"
     with mock.patch.object(flask_app.requests, "get",
                            return_value=_mock_get_response(404, "")):
