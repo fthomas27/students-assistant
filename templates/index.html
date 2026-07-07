@@ -3298,14 +3298,25 @@ transition: background 0.15s, border-color 0.15s;
 .ptask-add { display: flex; gap: 6px; margin-top: 8px; }
 .ptask-add input { flex: 1; min-width: 0; font-size: 11.5px; padding: 6px 9px; margin: 0; }
 
-/* Fold breakpoints: below desktop the fit constraint relaxes and pages scroll */
+/* Fold breakpoints: below desktop the fit constraint relaxes and pages scroll.
+   The desktop widgets rely on a flex:1/min-height:0 chain that shrinks each
+   card to fit exactly one screen's height. Once the grid wraps to more rows
+   (narrower columns below), that same chain just squeezes every card into
+   the same fixed height instead of growing the page — and some browsers
+   (notably Safari) shrink nested flex/scroll regions rather than letting the
+   page itself scroll, so cards render cut off. Switching these to their
+   natural content height lets .page's own scroll (enabled above) do the work. */
 @media (max-width: 1150px) {
 .page.dash-fit { overflow-y: auto; }
-.dashx-main { grid-template-columns: repeat(2, 1fr); }
-.dashx-span3, .dashx-span4, .dashx-span5, .dashx-span9 { grid-column: span 1; }
+.dashx { flex: none; min-height: auto; }
+.dashx-main { flex: none; min-height: auto; grid-template-columns: repeat(2, 1fr); }
+.dashx-span3, .dashx-span4, .dashx-span5, .dashx-span9 { grid-column: span 1; min-height: auto; }
 .dashx-span5, .dashx-span9 { grid-column: span 2; }
 .dashx-tiles { grid-template-columns: repeat(3, 1fr); }
 .dashx-tiles-4 { grid-template-columns: repeat(2, 1fr); }
+.dashx-stack { min-height: auto; }
+.dashx-stack .widget { flex: none; min-height: auto; }
+.dashx-main .widget { min-height: auto; }
 .dashx-list { max-height: 300px; }
 }
 @media (max-width: 640px) {
