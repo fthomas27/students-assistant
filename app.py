@@ -412,6 +412,9 @@ def _init_user_defaults(user_id):
         "app_mode": "school",
         "is_summer_school": "false",
         "has_summer_job": "false",
+        # Private push-notification channel; the student subscribes to this
+        # topic in the ntfy app.
+        "ntfy_topic": "jarvis-" + secrets.token_urlsafe(12).lower().replace("_", "").replace("-", "")[:16],
     }
     conn = get_db()
     cur = conn.cursor()
@@ -474,19 +477,18 @@ def _default_student_uid():
         return uid
 
 
-def _resolve_user_url(config_key, env_fallback):
-    """Return current student's URL setting from user_config, falling back to env var.
+def _resolve_user_url(config_key, env_fallback, uid=None):
+    """Return a student's URL setting from user_config, falling back to env var.
 
-    In request context: uses session.user_id.
-    In scheduler/worker context (no session): falls back to the default student
-    user's user_config so saved settings still apply to background jobs.
-    Env var is the last resort.
+    Scheduler jobs must pass uid explicitly; request handlers may omit it
+    (session user is used). The legacy default-student fallback remains only
+    for code paths that predate per-user job loops.
     """
-    uid = None
-    try:
-        uid = session.get("user_id")
-    except (RuntimeError, KeyError):
-        uid = None
+    if not uid:
+        try:
+            uid = session.get("user_id")
+        except (RuntimeError, KeyError):
+            uid = None
     if not uid:
         uid = _default_student_uid()
     if uid:
@@ -499,12 +501,12 @@ def _resolve_user_url(config_key, env_fallback):
     return env_fallback
 
 
-def u_personal_ical():    return _resolve_user_url("personal_ical_url",     PERSONAL_ICAL_URL)
-def u_canvas_ical():      return _resolve_user_url("canvas_ical_url",       CANVAS_ICAL_URL)
-def u_canvas_api_token(): return _resolve_user_url("canvas_api_token",      CANVAS_API_TOKEN)
-def u_canvas_base_url():  return _resolve_user_url("canvas_base_url",       CANVAS_BASE_URL).rstrip("/")
-def u_sports_ical():      return _resolve_user_url("sports_ical_url",       SPORTS_ICAL_URL)
-def u_job_schedule_ical():return _resolve_user_url("job_schedule_ical_url", JOB_SCHEDULE_ICAL_URL)
+def u_personal_ical(uid=None):    return _resolve_user_url("personal_ical_url",     PERSONAL_ICAL_URL, uid)
+def u_canvas_ical(uid=None):      return _resolve_user_url("canvas_ical_url",       CANVAS_ICAL_URL, uid)
+def u_canvas_api_token(uid=None): return _resolve_user_url("canvas_api_token",      CANVAS_API_TOKEN, uid)
+def u_canvas_base_url(uid=None):  return _resolve_user_url("canvas_base_url",       CANVAS_BASE_URL, uid).rstrip("/")
+def u_sports_ical(uid=None):      return _resolve_user_url("sports_ical_url",       SPORTS_ICAL_URL, uid)
+def u_job_schedule_ical(uid=None):return _resolve_user_url("job_schedule_ical_url", JOB_SCHEDULE_ICAL_URL, uid)
 MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "").strip()
 RED_DAY_ICAL_URL = os.environ.get("RED_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_7ufb5f1vj8aks1shds5ou4fhe8%40group.calendar.google.com/public/basic.ics")
 WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.google.com/calendar/ical/pcschools.us_64ohm1bccvi50iti8fe455stkg%40group.calendar.google.com/public/basic.ics")
@@ -4248,16 +4250,31 @@ def _is_big_work_assignment(a):
 _NTFY_PRIORITY_MAP = {"min": 1, "low": 2, "default": 3, "high": 4, "urgent": 5}
 
 
-def send_ntfy_notification(title, message, priority="default", tags=None):
-    """Send a push notification via ntfy. Returns True on success.
+def _user_ntfy_topic(uid=None):
+    """The user's private ntfy topic from user_config, falling back to the
+    legacy env topic (single-user installs)."""
+    uid = uid or _uid()
+    if uid:
+        try:
+            t = (get_user_config(uid).get("ntfy_topic") or "").strip()
+            if t:
+                return t
+        except Exception:
+            pass
+    return NTFY_TOPIC
+
+
+def send_ntfy_notification(title, message, priority="default", tags=None, uid=None):
+    """Send a push notification via ntfy to the user's topic. Returns True on success.
 
     Uses ntfy's JSON publish endpoint so UTF-8 titles/messages (em-dashes, emoji,
     accented characters) work without RFC-2047 encoding tricks.
     """
-    if not NTFY_TOPIC:
+    topic = _user_ntfy_topic(uid)
+    if not topic:
         return False
     payload = {
-        "topic": NTFY_TOPIC,
+        "topic": topic,
         "title": (title or "")[:255],
         "message": message or "",
         "priority": _NTFY_PRIORITY_MAP.get(priority, 3),
@@ -4911,19 +4928,64 @@ def cleanup_old_data():
         log.error("cleanup_old_data error: %s", e)
 
 
-def _notif_canvas_assignments():
-    """Return upcoming Canvas assignments not yet completed, or []."""
+def _active_user_ids():
+    """IDs of users the background jobs should serve: active accounts that are
+    comped or hold an active/past_due subscription. Cached 60s."""
+    global _active_users_cache, _active_users_cache_ts
+    now = time.monotonic()
+    with _active_users_cache_lock:
+        if _active_users_cache is not None and (now - _active_users_cache_ts) < 60:
+            return list(_active_users_cache)
+    ids = []
     try:
-        if not u_canvas_ical():
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""
+SELECT u.id FROM users u
+WHERE u.active = TRUE AND (
+    u.is_comped
+    OR EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = u.id
+               AND s.status IN ('active', 'past_due'))
+) ORDER BY u.created_at ASC""")
+        ids = [str(r["id"]) for r in cur.fetchall()]
+        cur.close(); conn.close()
+    except Exception as e:
+        log.warning("_active_user_ids failed: %s", e)
+    with _active_users_cache_lock:
+        _active_users_cache = list(ids)
+        _active_users_cache_ts = now
+    return ids
+
+
+_active_users_cache = None
+_active_users_cache_ts = 0.0
+_active_users_cache_lock = threading.Lock()
+
+
+def _for_each_active_user(fn, job_name):
+    """Run fn(uid) for every active user; one user's failure never stops the
+    rest (a bad API key or dead calendar feed is that user's problem alone)."""
+    for uid in _active_user_ids():
+        try:
+            fn(uid)
+        except MissingApiKeyError:
+            log.debug("%s: user %s has no API key — skipped", job_name, uid)
+        except Exception as e:
+            log.warning("%s failed for user %s: %s", job_name, uid, e)
+
+
+def _notif_canvas_assignments(uid):
+    """Return a user's upcoming Canvas assignments not yet completed, or []."""
+    try:
+        url = u_canvas_ical(uid)
+        if not url:
             return []
-        cal = fetch_ical(u_canvas_ical())
+        cal = fetch_ical(url)
         if not cal:
             return []
-        assignments = get_canvas_assignments_with_overdue(cal)
+        assignments = get_canvas_assignments_with_overdue(cal, uid=uid)
         conn = get_db()
         cur = conn.cursor()
-        # PHASE5: completions read is global until notification jobs loop per-user
-        cur.execute("SELECT DISTINCT assignment_title FROM completions")
+        cur.execute("SELECT DISTINCT assignment_title FROM completions WHERE user_id = %s", (uid,))
         done = set(r["assignment_title"] for r in cur.fetchall())
         cur.close(); conn.close()
         return [a for a in assignments if a["title"] not in done]
@@ -4934,11 +4996,15 @@ def _notif_canvas_assignments():
 
 def check_assignment_due_notifications():
     """Tier 1 — send ntfy for assignments due in ~24 h and ~2 h."""
-    if not NTFY_TOPIC:
+    _for_each_active_user(_check_assignment_due_for_user, "notif_assignment_due")
+
+
+def _check_assignment_due_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        assignments = _notif_canvas_assignments()
-        now = datetime.now(TZ)
+        assignments = _notif_canvas_assignments(uid)
+        now = datetime.now(user_tz(uid))
         for a in assignments:
             due_iso = a.get("due_iso", "")
             if not due_iso:
@@ -4954,21 +5020,23 @@ def check_assignment_due_notifications():
 
             if 22.5 <= hours_until <= 25.5:
                 key = f"asgn_24h_{a['title']}_{due_dt.strftime('%Y-%m-%d')}"
-                if _ntfy_dedup(key, title=a["title"], max_age_hours=20):
+                if _ntfy_dedup(key, title=a["title"], max_age_hours=20, uid=uid):
                     send_ntfy_notification(
                         title="Assignment Due Tomorrow",
                         message=f"{a['title']} ({course}) — due {due_disp}",
                         priority="high",
                         tags=["books", "warning"],
+                        uid=uid,
                     )
             elif 1.5 <= hours_until <= 2.5:
                 key = f"asgn_2h_{a['title']}_{due_dt.strftime('%Y-%m-%d-%H')}"
-                if _ntfy_dedup(key, title=a["title"], max_age_hours=4):
+                if _ntfy_dedup(key, title=a["title"], max_age_hours=4, uid=uid):
                     send_ntfy_notification(
                         title="Assignment Due in ~2 Hours",
                         message=f"{a['title']} ({course}) — due {due_disp}",
                         priority="urgent",
                         tags=["rotating_light", "books"],
+                        uid=uid,
                     )
     except Exception as e:
         log.error("check_assignment_due_notifications error: %s", e)
@@ -4976,28 +5044,32 @@ def check_assignment_due_notifications():
 
 def check_overdue_tasks():
     """Tier 1 — send ntfy for tasks past their due date that haven't been completed."""
-    if not NTFY_TOPIC:
+    _for_each_active_user(_check_overdue_tasks_for_user, "notif_overdue_tasks")
+
+
+def _check_overdue_tasks_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        today = datetime.now(TZ).date()
+        today = datetime.now(user_tz(uid)).date()
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
-            # PHASE5: overdue-task scan is global until the job loops per-user
             "SELECT id, title, due_date FROM tasks "
-            "WHERE completed = FALSE AND due_date < %s ORDER BY due_date ASC LIMIT 10",
-            (today,),
+            "WHERE completed = FALSE AND due_date < %s AND user_id = %s ORDER BY due_date ASC LIMIT 10",
+            (today, uid),
         )
         overdue = cur.fetchall()
         cur.close(); conn.close()
         for task in overdue:
             key = f"task_overdue_{task['id']}_{today}"
-            if _ntfy_dedup(key, title=task["title"], max_age_hours=20):
+            if _ntfy_dedup(key, title=task["title"], max_age_hours=20, uid=uid):
                 send_ntfy_notification(
                     title="Overdue Task",
                     message=f"{task['title']} — was due {task['due_date']}, still pending",
                     priority="high",
                     tags=["alarm_clock", "warning"],
+                    uid=uid,
                 )
     except Exception as e:
         log.error("check_overdue_tasks error: %s", e)
@@ -5005,11 +5077,15 @@ def check_overdue_tasks():
 
 def check_ap_test_countdown():
     """Tier 2 — warn 2 days before any AP exam found in Canvas."""
-    if not NTFY_TOPIC:
+    _for_each_active_user(_check_ap_countdown_for_user, "notif_ap_countdown")
+
+
+def _check_ap_countdown_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        assignments = _notif_canvas_assignments()
-        now = datetime.now(TZ)
+        assignments = _notif_canvas_assignments(uid)
+        now = datetime.now(user_tz(uid))
         for a in assignments:
             title_lc = a.get("title", "").lower()
             if not any(kw in title_lc for kw in ("ap exam", "ap test", " ap ", "ap calc", "ap spanish", "ap bio", "ap chem", "ap history", "ap lang", "ap lit", "ap physics", "ap stats", "ap gov")):
@@ -5025,12 +5101,13 @@ def check_ap_test_countdown():
                 continue
             if days_until in (1, 2, 7):
                 key = f"ap_countdown_{a['title']}_{due_dt.strftime('%Y-%m-%d')}_{days_until}d"
-                if _ntfy_dedup(key, title=a["title"], max_age_hours=20):
+                if _ntfy_dedup(key, title=a["title"], max_age_hours=20, uid=uid):
                     send_ntfy_notification(
                         title=f"AP Exam in {days_until} Day{'s' if days_until != 1 else ''}",
                         message=f"{a['title']} is in {days_until} day{'s' if days_until != 1 else ''}, sir. You have been warned.",
                         priority="high",
                         tags=["mortar_board", "warning"],
+                        uid=uid,
                     )
     except Exception as e:
         log.error("check_ap_test_countdown error: %s", e)
@@ -5038,13 +5115,17 @@ def check_ap_test_countdown():
 
 def check_meeting_reminders():
     """Tier 2 — send a 30-minute heads-up for upcoming calendar events."""
-    if not NTFY_TOPIC:
+    _for_each_active_user(_check_meeting_reminders_for_user, "notif_meetings")
+
+
+def _check_meeting_reminders_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        now = datetime.now(TZ)
+        now = datetime.now(user_tz(uid))
         window_start = now + timedelta(minutes=25)
         window_end = now + timedelta(minutes=40)
-        for url in filter(None, [u_personal_ical(), u_sports_ical(), u_job_schedule_ical()]):
+        for url in filter(None, [u_personal_ical(uid), u_sports_ical(uid), u_job_schedule_ical(uid)]):
             try:
                 cal = fetch_ical(url)
                 if not cal:
@@ -5060,12 +5141,13 @@ def check_meeting_reminders():
                         continue
                     if window_start <= start_dt <= window_end:
                         key = f"meeting_{ev['title']}_{start_dt.strftime('%Y-%m-%d-%H-%M')}"
-                        if _ntfy_dedup(key, title=ev["title"], max_age_hours=20):
+                        if _ntfy_dedup(key, title=ev["title"], max_age_hours=20, uid=uid):
                             send_ntfy_notification(
                                 title="Event Starting Soon",
                                 message=f"{ev['title']} at {ev['start_display']}",
                                 priority="high",
                                 tags=["calendar", "alarm_clock"],
+                                uid=uid,
                             )
             except Exception as _e:
                 log.warning("check_meeting_reminders url=%s: %s", url[:40], _e)
@@ -5075,11 +5157,15 @@ def check_meeting_reminders():
 
 def check_idle_detection():
     """Tier 3 — nudge if no task/assignment logged in 3+ hours on a school night."""
-    if not NTFY_TOPIC:
+    _for_each_active_user(_check_idle_for_user, "notif_idle")
+
+
+def _check_idle_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        now = datetime.now(TZ)
-        # Only Sun–Thu, 7 PM–11 PM
+        now = datetime.now(user_tz(uid))
+        # Only Sun–Thu, 7 PM–11 PM local
         if now.weekday() >= 4 and now.weekday() != 6:
             return
         if not (19 <= now.hour < 23):
@@ -5088,21 +5174,21 @@ def check_idle_detection():
         cur = conn.cursor()
         cutoff = now - timedelta(hours=3)
         cur.execute(
-            # PHASE5: idle detection reads all users until the job loops per-user
-            "SELECT MAX(completed_at) AS last FROM completions WHERE completed_at > %s",
-            (cutoff,),
+            "SELECT MAX(completed_at) AS last FROM completions WHERE completed_at > %s AND user_id = %s",
+            (cutoff, uid),
         )
         row = cur.fetchone()
         cur.close(); conn.close()
         if row and row["last"]:
             return
         key = f"idle_{now.strftime('%Y-%m-%d-%H')}"
-        if _ntfy_dedup(key, title="Idle check", max_age_hours=1):
+        if _ntfy_dedup(key, title="Idle check", max_age_hours=1, uid=uid):
             send_ntfy_notification(
                 title="Still with me, sir?",
                 message="No tasks logged in over 3 hours. Might be worth making a dent in that list.",
                 priority="default",
                 tags=["sleeping"],
+                uid=uid,
             )
     except Exception as e:
         log.error("check_idle_detection error: %s", e)
@@ -5110,13 +5196,17 @@ def check_idle_detection():
 
 def check_trash_recycling_reminder():
     """Tier 3 — remind about trash/recycling events from personal calendar at 7 PM."""
-    if not NTFY_TOPIC or not u_personal_ical():
+    _for_each_active_user(_check_trash_for_user, "notif_trash")
+
+
+def _check_trash_for_user(uid):
+    if not _user_ntfy_topic(uid) or not u_personal_ical(uid):
         return
     try:
-        now = datetime.now(TZ)
+        now = datetime.now(user_tz(uid))
         if not (19 <= now.hour < 20):
             return
-        cal = fetch_ical(u_personal_ical())
+        cal = fetch_ical(u_personal_ical(uid))
         if not cal:
             return
         events = parse_calendar_events(cal, days_ahead=1)
@@ -5125,24 +5215,33 @@ def check_trash_recycling_reminder():
             title_lc = ev.get("title", "").lower()
             if ev.get("date") == today_str and any(kw in title_lc for kw in ("trash", "recycling", "recycle", "garbage", "bin")):
                 key = f"trash_{ev['title']}_{today_str}"
-                if _ntfy_dedup(key, title=ev["title"], max_age_hours=20):
+                if _ntfy_dedup(key, title=ev["title"], max_age_hours=20, uid=uid):
                     send_ntfy_notification(
                         title="Trash Reminder",
                         message=f"{ev['title']} tonight — don't forget.",
                         priority="default",
                         tags=["wastebasket"],
+                        uid=uid,
                     )
     except Exception as e:
         log.error("check_trash_recycling_reminder error: %s", e)
 
 
 def check_weather_warning():
-    """Tier 3 — check NWS alerts for Park City and push severe/extreme warnings."""
-    if not NTFY_TOPIC:
+    """Tier 3 — check NWS alerts near each user and push severe/extreme warnings."""
+    _for_each_active_user(_check_weather_for_user, "notif_weather")
+
+
+def _check_weather_for_user(uid):
+    if not _user_ntfy_topic(uid):
+        return
+    # Opt-in: users set weather_latlon ("lat,lon") in their config.
+    latlon = (get_user_config(uid).get("weather_latlon") or "").strip()
+    if not latlon:
         return
     try:
         resp = requests.get(
-            "https://api.weather.gov/alerts/active?point=40.6461,-111.4980",
+            f"https://api.weather.gov/alerts/active?point={latlon}",
             headers={"User-Agent": "students-assistant/1.0 (contact: admin@localhost)"},
             timeout=12,
         )
@@ -5158,12 +5257,13 @@ def check_weather_warning():
             headline = (props.get("headline") or event)[:250]
             alert_id = props.get("id", event)
             key = f"weather_{alert_id}"
-            if _ntfy_dedup(key, title=event, max_age_hours=6):
+            if _ntfy_dedup(key, title=event, max_age_hours=6, uid=uid):
                 send_ntfy_notification(
                     title=f"Weather Alert: {event}",
                     message=headline,
                     priority="high" if severity in ("Extreme", "Severe") else "default",
                     tags=["cloud_lightning", "warning"],
+                    uid=uid,
                 )
     except Exception as e:
         log.error("check_weather_warning error: %s", e)
@@ -5171,16 +5271,21 @@ def check_weather_warning():
 
 def check_stock_alerts():
     """Tier 2 — alert on ±5% daily moves, target price hits, or stop-loss triggers."""
-    if not NTFY_TOPIC or not FINNHUB_API_KEY:
+    if not FINNHUB_API_KEY:
+        return
+    _for_each_active_user(_check_stock_alerts_for_user, "notif_stock_alerts")
+
+
+def _check_stock_alerts_for_user(uid):
+    if not _user_ntfy_topic(uid):
         return
     try:
-        now = datetime.now(TZ)
-        # Only during extended market hours Mon–Fri 8 AM–5 PM MT
+        now = datetime.now(user_tz(uid))
+        # Only during extended market hours Mon–Fri 8 AM–5 PM local
         if now.weekday() >= 5 or not (8 <= now.hour < 17):
             return
         conn = get_db()
         cur = conn.cursor()
-        # PHASE5: stock alert scan is global until the job loops per-user
         cur.execute("""
             SELECT
                 st.symbol,
@@ -5189,9 +5294,10 @@ def check_stock_alerts():
                 sn.stop_loss
             FROM stock_transactions st
             LEFT JOIN stock_notes sn ON sn.symbol = st.symbol AND sn.user_id = st.user_id
+            WHERE st.user_id = %s
             GROUP BY st.symbol, sn.target_price, sn.stop_loss
             HAVING SUM(CASE WHEN st.action='buy' THEN st.quantity ELSE -st.quantity END) > 0
-        """)
+        """, (uid,))
         holdings = cur.fetchall()
         cur.close(); conn.close()
         if not holdings:
@@ -5234,12 +5340,13 @@ def check_stock_alerts():
 
                 if alert_reason:
                     key = f"stock_{symbol}_{now.strftime('%Y-%m-%d-%H')}"
-                    if _ntfy_dedup(key, title=symbol, max_age_hours=2):
+                    if _ntfy_dedup(key, title=symbol, max_age_hours=2, uid=uid):
                         send_ntfy_notification(
                             title=f"Stock Alert: {symbol}",
                             message=f"{symbol} {alert_reason}",
                             priority=priority,
                             tags=alert_tags,
+                            uid=uid,
                         )
             except Exception as ex:
                 log.warning("check_stock_alerts: %s error: %s", symbol, ex)
@@ -5247,31 +5354,76 @@ def check_stock_alerts():
         log.error("check_stock_alerts error: %s", e)
 
 
-def schedule_briefing():
-    cfg = get_config()
-    t = cfg.get("morning_briefing_time", "07:00")
+def _cache_row_local_date(table, uid, tzinfo):
+    """The local calendar date of a user's cache row (briefing/debrief/insight),
+    or None if the row is missing/empty."""
     try:
-        hour, minute = int(t.split(":")[0]), int(t.split(":")[1])
+        conn = get_db(); cur = conn.cursor()
+        cur.execute(f"SELECT generated_at, content FROM {table} WHERE user_id = %s", (uid,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if row and row["generated_at"] and (row.get("content") or "").strip():
+            return row["generated_at"].astimezone(tzinfo).date()
     except Exception:
-        hour, minute = 7, 0
+        pass
+    return None
+
+
+def hourly_user_tick():
+    """Once an hour: fire time-of-day jobs for each user in *their* timezone.
+
+    Replaces fixed Mountain-time crons so a student in New York gets their
+    briefing at 7 AM Eastern. Per-user cache rows provide the daily dedupe.
+    """
+    for uid in _active_user_ids():
+        try:
+            tz = user_tz(uid)
+            now_local = datetime.now(tz)
+            today_local = now_local.date()
+            cfg = get_user_config(uid)
+
+            # Morning briefing at the user's configured hour (minute granularity
+            # was dropped when briefings became per-timezone).
+            try:
+                brief_hour = int(str(cfg.get("morning_briefing_time", "07:00")).split(":")[0])
+            except Exception:
+                brief_hour = 7
+            if now_local.hour == brief_hour and _cache_row_local_date("briefing_cache", uid, tz) != today_local:
+                generate_briefing(force=True, uid=uid)
+
+            # Evening debrief at 18:00 local
+            if now_local.hour == 18 and _cache_row_local_date("debrief_cache", uid, tz) != today_local:
+                generate_evening_debrief(uid=uid)
+
+            # Tomorrow's plan at 22:00 local
+            if now_local.hour == 22:
+                try:
+                    _generate_daily_plan_for_date(today_local + timedelta(days=1), uid=uid)
+                except MissingApiKeyError:
+                    pass
+
+            # Weekly insight Sunday 08:00 local (self-guards on last-Sunday check)
+            if now_local.weekday() == 6 and now_local.hour == 8:
+                generate_weekly_insight(uid=uid)
+        except MissingApiKeyError:
+            log.debug("hourly tick: user %s has no API key — skipped", uid)
+        except Exception as e:
+            log.warning("hourly tick failed for user %s: %s", uid, e)
+
+
+def schedule_briefing():
     scheduler.remove_all_jobs()
-    scheduler.add_job(generate_briefing, "cron", hour=hour, minute=minute,
-                      id="morning_briefing", replace_existing=True)
-    # Evening debrief at 6:30 PM
-    scheduler.add_job(generate_evening_debrief, "cron", hour=18, minute=30,
-                      id="evening_debrief", replace_existing=True)
-    # Process recurring tasks daily at midnight
+    # One timezone-aware tick handles briefings/debriefs/plans/insights for
+    # every user at their local hour.
+    scheduler.add_job(hourly_user_tick, "cron", minute=0,
+                      id="hourly_user_tick", replace_existing=True)
+    # Process recurring tasks daily at midnight (server time; the scan carries
+    # each row's user_id so instances land with the right owner)
     scheduler.add_job(_process_recurring_tasks, "cron", hour=0, minute=0,
                       id="process_recurring_tasks", replace_existing=True)
-    # Weekly insight every Sunday at 8 AM
-    scheduler.add_job(generate_weekly_insight, "cron", day_of_week="sun", hour=8, minute=0,
-                      id="weekly_insight", replace_existing=True)
     # Nightly cleanup of stale daily_plans rows at 02:30 (quietest hour)
     scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=30,
                       id="cleanup_old_data", replace_existing=True)
-    # Auto-generate tomorrow's daily schedule at 10 PM
-    scheduler.add_job(auto_generate_plan_job, "cron", hour=22, minute=0,
-                      id="auto_daily_plan", replace_existing=True)
 
     # ── ntfy notification jobs ────────────────────────────────────────────────
     # Tier 1: assignment due-soon checks (24 h and 2 h windows) every 20 min
@@ -5280,8 +5432,8 @@ def schedule_briefing():
     # Tier 1: overdue tasks — once per hour
     scheduler.add_job(check_overdue_tasks, "interval", minutes=60,
                       id="notif_overdue_tasks", replace_existing=True)
-    # Tier 2: AP test countdown — daily at 7:05 AM
-    scheduler.add_job(check_ap_test_countdown, "cron", hour=7, minute=5,
+    # Tier 2: AP test countdown — hourly at :05, self-deduped per user/day
+    scheduler.add_job(check_ap_test_countdown, "cron", minute=5,
                       id="notif_ap_countdown", replace_existing=True)
     # Tier 2: meeting/event reminders — every 10 min
     scheduler.add_job(check_meeting_reminders, "interval", minutes=10,
@@ -5299,12 +5451,8 @@ def schedule_briefing():
     scheduler.add_job(check_weather_warning, "interval", minutes=120,
                       id="notif_weather", replace_existing=True)
 
-    log.info("Briefing scheduled for %02d:%02d Mountain", hour, minute)
-    log.info("Evening debrief scheduled for 18:30 Mountain")
-    log.info("Recurring tasks processor scheduled for 00:00 Mountain")
-    log.info("Weekly insight scheduled for Sun 08:00 Mountain")
-    log.info("Cleanup job scheduled for 02:30 Mountain")
-    log.info("Auto daily plan scheduled for 22:00 Mountain")
+    log.info("Hourly per-user tick registered (briefing/debrief/plan/insight in each user's timezone)")
+    log.info("Recurring tasks processor scheduled for 00:00 server time; cleanup at 02:30")
     log.info("ntfy notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather)")
 
 
@@ -7915,8 +8063,8 @@ def _process_recurring_tasks():
     today = date.today()
 
     # Find all active recurring tasks where last_created_at is older than recurrence interval
-    # PHASE5: scans every user's recurring tasks; rows carry user_id so new
-    # instances land with the right owner.
+    # GLOBAL-OK: intentional cross-user scan — each row carries its user_id and
+    # new instances are inserted with that owner.
     cur.execute("""
 SELECT id, title, notes, urgency, recurrence, last_created_at, user_id
 FROM recurring_tasks
@@ -8347,6 +8495,8 @@ def api_config_get():
         "is_summer_school": cfg.get("is_summer_school", "false") == "true",
         "has_summer_job": cfg.get("has_summer_job", "false") == "true",
         "has_job_schedule": bool(u_job_schedule_ical()),
+        "ntfy_topic": cfg.get("ntfy_topic", ""),
+        "weather_latlon": cfg.get("weather_latlon", ""),
         # Calendar URLs (per-user)
         "personal_ical_url":     cfg.get("personal_ical_url", ""),
         "canvas_ical_url":       cfg.get("canvas_ical_url", ""),
@@ -8366,6 +8516,7 @@ def api_config_post():
         "app_mode", "is_summer_school", "has_summer_job",
         "personal_ical_url", "canvas_ical_url", "canvas_api_token",
         "canvas_base_url", "sports_ical_url", "job_schedule_ical_url",
+        "ntfy_topic", "weather_latlon",
     }
     updates = {k: str(v)[:2000] for k, v in data.items() if k in allowed}
     # Skip masked secrets (UI sends •••••••• when unchanged)
@@ -10817,8 +10968,8 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 10"""
             }
 
         elif name == "send_notification":
-            if not NTFY_TOPIC:
-                return {"status": "skipped", "reason": "NTFY_TOPIC environment variable not configured"}
+            if not _user_ntfy_topic(uid):
+                return {"status": "skipped", "reason": "No ntfy topic configured for this user"}
             title = str(inputs.get("title", "Jarvis")).strip()[:100]
             message = str(inputs.get("message", "")).strip()[:500]
             if not message:
@@ -10830,7 +10981,7 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 10"""
             if not isinstance(tags, list):
                 tags = []
             tags = [str(t).strip() for t in tags if str(t).strip()]
-            ok = send_ntfy_notification(title, message, priority=priority, tags=tags)
+            ok = send_ntfy_notification(title, message, priority=priority, tags=tags, uid=uid)
             log.info("Jarvis tool send_notification: %r ok=%s", title, ok)
             return {"status": "sent" if ok else "failed", "title": title, "priority": priority}
 
@@ -11139,7 +11290,7 @@ def _build_active_tools() -> list:
         name = t.get("name", "")
         if name in _GOOGLE_TOOL_NAMES and not google_on:
             continue
-        if name == "send_notification" and not NTFY_TOPIC:
+        if name == "send_notification" and not _user_ntfy_topic():
             continue
         if name == "get_climate_history" and not NOAA_API_TOKEN:
             continue
@@ -13030,36 +13181,54 @@ if not _SKIP_BOOT:
     except Exception as e:
         log.warning(f"Could not migrate API key: {e}")
 
+# One-time migration: adopt a legacy NTFY_TOPIC env var as the default
+# student's personal notification topic.
+if not _SKIP_BOOT:
+    try:
+        if NTFY_TOPIC:
+            _mig_uid = _default_student_uid()
+            if _mig_uid and not (get_user_config(_mig_uid).get("ntfy_topic") or "").strip():
+                set_user_config({"ntfy_topic": NTFY_TOPIC}, user_id=_mig_uid)
+                log.info("Migrated NTFY_TOPIC from environment into the default student's user_config")
+    except Exception as e:
+        log.warning(f"Could not migrate ntfy topic: {e}")
+
 # Guard: only start scheduler and background briefing in the first/main worker.
 # With gunicorn --workers 1 this always runs. With multiple workers it only runs
 # in the first gunicorn worker (SERVER_SOFTWARE is set before fork).
+def _startup_catchup():
+    """After a (re)deploy, backfill anything the hourly tick would have done
+    earlier today for each user: today's briefing, and the debrief if we're
+    inside the evening window."""
+    try:
+        for uid in _active_user_ids():
+            try:
+                tz = user_tz(uid)
+                now_local = datetime.now(tz)
+                today_local = now_local.date()
+                cfg = get_user_config(uid)
+                try:
+                    brief_hour = int(str(cfg.get("morning_briefing_time", "07:00")).split(":")[0])
+                except Exception:
+                    brief_hour = 7
+                if now_local.hour >= brief_hour and _cache_row_local_date("briefing_cache", uid, tz) != today_local:
+                    generate_briefing(uid=uid)
+                if 18 <= now_local.hour < 20 and _cache_row_local_date("debrief_cache", uid, tz) != today_local:
+                    generate_evening_debrief(uid=uid)
+            except MissingApiKeyError:
+                continue
+            except Exception as e:
+                log.warning("startup catchup failed for user %s: %s", uid, e)
+    except Exception as e:
+        log.warning("startup catchup error: %s", e)
+
+
 try:
     _worker_id = os.environ.get("GUNICORN_WORKER_ID", "0")
     if not _SKIP_BOOT and _worker_id in ("", "0", "1"):
         schedule_briefing()
         scheduler.start()
-        threading.Thread(target=generate_briefing, daemon=True).start()
-
-        # Ensure debrief is generated if we're in the debrief window (6:30 PM - 7:30 PM)
-        now = datetime.now(TZ)
-        debrief_start = now.replace(hour=18, minute=30, second=0, microsecond=0)
-        debrief_end = now.replace(hour=19, minute=30, second=0, microsecond=0)
-        if debrief_start <= now <= debrief_end:
-            try:
-                conn = get_db()
-                cur = conn.cursor()
-                # PHASE5: boot-time debrief check still targets the legacy singleton row
-                cur.execute("SELECT content FROM debrief_cache WHERE id = 1")
-                row = cur.fetchone()
-                cur.close()
-                conn.close()
-                # If no debrief or it's empty, generate it
-                if not row or not row["content"]:
-                    threading.Thread(target=generate_evening_debrief, daemon=True).start()
-                    log.info("Debrief window detected - generating debrief on startup")
-            except Exception as e:
-                log.warning(f"Could not check debrief status: {e}")
-
+        threading.Thread(target=_startup_catchup, daemon=True).start()
         log.info("Background scheduler started")
 except Exception as e:
     log.warning(f"Background scheduler failed to start: {e}")
