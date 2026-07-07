@@ -526,7 +526,20 @@ GUARDIAN_API_KEY = os.environ.get("GUARDIAN_API_KEY", "")
 # ── PowerSchool ───────────────────────────────────────────────────────────────
 POWER_USERN = os.environ.get("POWER_USERN", "").strip()
 POWER_PASS  = os.environ.get("POWER_PASS", "").strip()
-PS_BASE_URL = "https://powerschool.pcschools.us"
+PS_DEFAULT_BASE_URL = "https://powerschool.pcschools.us"
+
+
+def _ps_creds(uid=None):
+    """(username, password, base_url) for PowerSchool — per-user config with
+    legacy env fallback. PowerSchool is best-effort and district-specific."""
+    try:
+        cfg = get_user_config(uid or _uid() or _default_student_uid())
+    except Exception:
+        cfg = {}
+    user = (cfg.get("powerschool_username") or "").strip() or POWER_USERN
+    pw = (cfg.get("powerschool_password") or "").strip() or POWER_PASS
+    base = (cfg.get("powerschool_base_url") or "").strip().rstrip("/") or PS_DEFAULT_BASE_URL
+    return user, pw, base
 
 # ── ntfy push notifications ────────────────────────────────────────────────────
 NTFY_TOPIC  = os.environ.get("NTFY_TOPIC", "").strip()
@@ -1673,11 +1686,15 @@ def _google_configured():
     return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
 
 
-def _get_google_credentials():
-    """Return refreshed google.oauth2.credentials.Credentials, or None if not authorized."""
+def _get_google_credentials(uid=None):
+    """Return refreshed google.oauth2.credentials.Credentials for the user,
+    or None if not authorized."""
     if not _google_configured():
         return None
-    refresh_token = get_config().get("google_refresh_token", "").strip()
+    uid = uid or _uid() or _default_student_uid()
+    if not uid:
+        return None
+    refresh_token = (get_user_config(uid).get("google_refresh_token") or "").strip()
     if not refresh_token:
         return None
     try:
@@ -1710,7 +1727,17 @@ def _google_client_config():
     }
 
 
-def _mem0_store_worker(user_content, assistant_content):
+def _mem0_user(uid=None):
+    """Mem0 identity for a user. The original single-user install stored all
+    memories under "student" — keep that identity for the default student so
+    existing memories survive; everyone else gets their uuid."""
+    uid = uid or _uid() or _default_student_uid()
+    if not uid:
+        return "student"
+    return "student" if uid == _default_student_uid() else str(uid)
+
+
+def _mem0_store_worker(user_content, assistant_content, uid=None):
     """Background: send user+assistant exchange to Mem0 for memory extraction."""
     try:
         client = _get_mem0_client()
@@ -1721,19 +1748,19 @@ def _mem0_store_worker(user_content, assistant_content):
                 {"role": "user", "content": user_content},
                 {"role": "assistant", "content": assistant_content},
             ],
-            user_id="student",
+            user_id=_mem0_user(uid),
         )
     except Exception as e:
         log.debug("Mem0 store error: %s", e)
 
 
-def _mem0_maybe_store_async(user_content, assistant_content):
+def _mem0_maybe_store_async(user_content, assistant_content, uid=None):
     """Fire-and-forget: extract and store memories from a chat exchange."""
     if not MEM0_API_KEY or not user_content or not assistant_content:
         return
     t = threading.Thread(
         target=_mem0_store_worker,
-        args=(user_content[:4000], assistant_content[:4000]),
+        args=(user_content[:4000], assistant_content[:4000], uid),
         daemon=True,
     )
     t.start()
@@ -2134,40 +2161,50 @@ WHOOP_CACHE_TTL = 900  # 15 minutes
 WHOOP_FAIL_TTL = 120  # 2 minutes
 
 
-def _whoop_clear_cache():
+def _whoop_uid(uid=None):
+    return uid or _uid() or _default_student_uid()
+
+
+def _whoop_clear_cache(uid=None):
     """Drop cached WHOOP records (and remembered failures) so a fresh
     connect/disconnect takes effect immediately instead of waiting out a TTL."""
+    uid = _whoop_uid(uid) or ""
     with _simple_cache_lock:
         for key in ("whoop:recovery", "whoop:sleep", "whoop:cycles", "whoop:workouts"):
-            _simple_cache.pop(key, None)
-            _simple_cache.pop(key + ":fail", None)
-        _simple_cache.pop("whoop:token_fail", None)
+            _simple_cache.pop(f"{key}:{uid}", None)
+            _simple_cache.pop(f"{key}:{uid}:fail", None)
+        _simple_cache.pop(f"whoop:token_fail:{uid}", None)
 
 
 def _whoop_configured():
     return bool(WHOOP_CLIENT_ID and WHOOP_CLIENT_SECRET)
 
 
-def _whoop_connected():
-    return bool(_whoop_configured() and get_config().get("whoop_refresh_token", "").strip())
+def _whoop_connected(uid=None):
+    uid = _whoop_uid(uid)
+    if not (_whoop_configured() and uid):
+        return False
+    return bool((get_user_config(uid).get("whoop_refresh_token") or "").strip())
 
 
-def _get_whoop_access_token():
-    """Return a valid WHOOP access token, refreshing it if expired. None if not connected."""
-    if not _whoop_configured():
+def _get_whoop_access_token(uid=None):
+    """Return a valid WHOOP access token for the user, refreshing it if expired.
+    None if not connected."""
+    uid = _whoop_uid(uid)
+    if not (_whoop_configured() and uid):
         return None
-    cfg = get_config()
-    refresh_token = cfg.get("whoop_refresh_token", "").strip()
+    cfg = get_user_config(uid)
+    refresh_token = (cfg.get("whoop_refresh_token") or "").strip()
     if not refresh_token:
         return None
-    access_token = cfg.get("whoop_access_token", "").strip()
+    access_token = (cfg.get("whoop_access_token") or "").strip()
     try:
         expires_at = float(cfg.get("whoop_token_expires_at", "0") or 0)
     except ValueError:
         expires_at = 0
     if access_token and expires_at - 60 > time.time():
         return access_token
-    if _cache_get("whoop:token_fail", WHOOP_FAIL_TTL):
+    if _cache_get(f"whoop:token_fail:{uid}", WHOOP_FAIL_TTL):
         return None
     try:
         # Refresh grants may only request scopes from the original consent, so
@@ -2184,20 +2221,20 @@ def _get_whoop_access_token():
         resp.raise_for_status()
         data = resp.json()
         new_access = data.get("access_token", "")
-        set_config({
+        set_user_config({
             "whoop_access_token": new_access,
             "whoop_refresh_token": data.get("refresh_token") or refresh_token,
             "whoop_token_expires_at": str(time.time() + float(data.get("expires_in", 3600))),
-        })
+        }, user_id=uid)
         return new_access or None
     except Exception as e:
         log.warning("WHOOP token refresh failed: %s", e)
-        _cache_set("whoop:token_fail", True)
+        _cache_set(f"whoop:token_fail:{uid}", True)
         return None
 
 
-def _whoop_get(path, params=None, timeout=12):
-    token = _get_whoop_access_token()
+def _whoop_get(path, params=None, timeout=12, uid=None):
+    token = _get_whoop_access_token(uid)
     if not token:
         return None
     url = WHOOP_API_BASE + (path if path.startswith("/") else "/" + path)
@@ -2211,7 +2248,9 @@ def _whoop_get(path, params=None, timeout=12):
         return None
 
 
-def _whoop_records(cache_key, path, limit):
+def _whoop_records(cache_key, path, limit, uid=None):
+    uid = _whoop_uid(uid) or ""
+    cache_key = f"{cache_key}:{uid}"
     """Fetch a WHOOP record list with success caching (WHOOP_CACHE_TTL) and
     short failure caching (WHOOP_FAIL_TTL). Failures must be remembered:
     with no failure cache, every minute-poll re-runs the full stack of
@@ -2222,7 +2261,7 @@ def _whoop_records(cache_key, path, limit):
         return cached
     if _cache_get(cache_key + ":fail", WHOOP_FAIL_TTL):
         return []
-    data = _whoop_get(path, params={"limit": limit})
+    data = _whoop_get(path, params={"limit": limit}, uid=uid)
     if data is None:
         _cache_set(cache_key + ":fail", True)
         return []
@@ -2231,20 +2270,20 @@ def _whoop_records(cache_key, path, limit):
     return records
 
 
-def whoop_recovery_recent(limit=10):
-    return _whoop_records("whoop:recovery", "/recovery", limit)
+def whoop_recovery_recent(limit=10, uid=None):
+    return _whoop_records("whoop:recovery", "/recovery", limit, uid=uid)
 
 
-def whoop_sleep_recent(limit=10):
-    return _whoop_records("whoop:sleep", "/activity/sleep", limit)
+def whoop_sleep_recent(limit=10, uid=None):
+    return _whoop_records("whoop:sleep", "/activity/sleep", limit, uid=uid)
 
 
-def whoop_cycles_recent(limit=10):
-    return _whoop_records("whoop:cycles", "/cycle", limit)
+def whoop_cycles_recent(limit=10, uid=None):
+    return _whoop_records("whoop:cycles", "/cycle", limit, uid=uid)
 
 
-def whoop_workouts_recent(limit=25):
-    return _whoop_records("whoop:workouts", "/activity/workout", limit)
+def whoop_workouts_recent(limit=25, uid=None):
+    return _whoop_records("whoop:workouts", "/activity/workout", limit, uid=uid)
 
 
 # Partial WHOOP sport_id → name map (v2 records usually carry sport_name; this
@@ -2325,11 +2364,11 @@ def _mock_whoop_workouts(days=14):
     return out
 
 
-def fitness_workouts(limit=25):
+def fitness_workouts(limit=25, uid=None):
     """Recent workouts for the Health dashboard: live WHOOP data when the
     account is connected, otherwise the mock pipeline. Returns (workouts, is_mock)."""
-    if _whoop_connected():
-        records = whoop_workouts_recent(limit=limit)
+    if _whoop_connected(uid):
+        records = whoop_workouts_recent(limit=limit, uid=uid)
         if records:
             return [_normalize_whoop_workout(r) for r in records], False
     return _mock_whoop_workouts(), True
@@ -2356,7 +2395,7 @@ def _mock_heart_rate_samples():
     return samples
 
 
-def fitness_heart_rate():
+def fitness_heart_rate(uid=None):
     """Recent/current heart-rate payload. Uses the latest WHOOP recovery (RHR)
     to anchor the numbers when connected; mock otherwise. This is polled every
     minute by the Health dashboard, so it only touches the recovery feed (one
@@ -2364,9 +2403,9 @@ def fitness_heart_rate():
     upstream calls could outlast the frontend's fetch timeout when WHOOP is slow."""
     samples = _mock_heart_rate_samples()
     source = "mock"
-    if _whoop_connected():
+    if _whoop_connected(uid):
         try:
-            scores = ((r.get("score") or {}) for r in whoop_recovery_recent())
+            scores = ((r.get("score") or {}) for r in whoop_recovery_recent(uid=uid))
             rhr = next((s.get("resting_heart_rate") for s in scores
                         if s.get("resting_heart_rate")), None)
             if rhr:
@@ -2443,14 +2482,14 @@ def compute_personal_records(workouts):
     return prs
 
 
-def whoop_daily_summary(days=7):
+def whoop_daily_summary(days=7, uid=None):
     """Merge recovery/sleep/strain records into one row per calendar day, newest first."""
-    if not _whoop_connected():
+    if not _whoop_connected(uid):
         return []
     limit = days + 3
-    recovery = whoop_recovery_recent(limit=limit)
-    sleep = whoop_sleep_recent(limit=limit)
-    cycles = whoop_cycles_recent(limit=limit)
+    recovery = whoop_recovery_recent(limit=limit, uid=uid)
+    sleep = whoop_sleep_recent(limit=limit, uid=uid)
+    cycles = whoop_cycles_recent(limit=limit, uid=uid)
 
     def day_key(iso):
         return iso[:10] if iso else None
@@ -2494,9 +2533,9 @@ def whoop_daily_summary(days=7):
     return [{"date": d, **vals} for d, vals in ordered]
 
 
-def whoop_context_line():
+def whoop_context_line(uid=None):
     """One-line snapshot of the most recent day's WHOOP data for AI prompts, or None."""
-    days = whoop_daily_summary(days=1)
+    days = whoop_daily_summary(days=1, uid=uid)
     if not days:
         return None
     d = days[0]
@@ -2713,7 +2752,8 @@ PS_ATTENDANCE_TTL = 3600   # 1 hour
 
 
 def _ps_configured():
-    return bool(POWER_USERN and POWER_PASS)
+    user, pw, _base = _ps_creds()
+    return bool(user and pw)
 
 
 def _ps_ask_claude(content: list) -> dict:
@@ -2766,12 +2806,13 @@ def _ps_extract_via_playwright() -> dict:
             page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
 
             log.info("PowerSchool (playwright): navigating to login page")
-            page.goto(f"{PS_BASE_URL}/public/", timeout=30000)
+            _ps_user, _ps_pass, _ps_base = _ps_creds()
+            page.goto(f"{_ps_base}/public/", timeout=30000)
             page.wait_for_load_state("domcontentloaded")
 
-            page.fill('input[name="account"], input[id="fieldAccount"]', POWER_USERN, timeout=10000)
+            page.fill('input[name="account"], input[id="fieldAccount"]', _ps_user, timeout=10000)
             page.fill('input[name="ldappassword"], input[id="fieldPassword"], input[type="password"]',
-                      POWER_PASS, timeout=10000)
+                      _ps_pass, timeout=10000)
             page.click('input[type="submit"], button[type="submit"]', timeout=10000)
             page.wait_for_load_state("networkidle", timeout=30000)
 
@@ -2820,8 +2861,9 @@ def _ps_extract_via_requests() -> dict:
     })
 
     # GET login page and collect all hidden form fields
+    _ps_user, _ps_pass, _ps_base = _ps_creds()
     try:
-        r1 = sess.get(f"{PS_BASE_URL}/public/", timeout=20)
+        r1 = sess.get(f"{_ps_base}/public/", timeout=20)
         r1.raise_for_status()
     except Exception as e:
         return {"error": f"Could not reach PowerSchool: {e}"}
@@ -2833,7 +2875,7 @@ def _ps_extract_via_requests() -> dict:
 
     action = (form.get("action") or "/public/").strip()
     if not action.startswith("http"):
-        action = PS_BASE_URL + ("" if action.startswith("/") else "/") + action
+        action = _ps_base + ("" if action.startswith("/") else "/") + action
 
     # Echo all hidden inputs back, then overlay credentials
     payload: dict = {
@@ -2844,10 +2886,10 @@ def _ps_extract_via_requests() -> dict:
     pstoken = payload.get("pstoken", "")
     import hashlib
     def _md5(s): return hashlib.md5(s.encode()).hexdigest()
-    pw_hash = _md5(POWER_USERN.lower() + ":" + _md5(POWER_PASS) + ":" + pstoken)
+    pw_hash = _md5(_ps_user.lower() + ":" + _md5(_ps_pass) + ":" + pstoken)
     payload.update({
-        "account": POWER_USERN,
-        "ldappassword": POWER_PASS,
+        "account": _ps_user,
+        "ldappassword": _ps_pass,
         "pw": pw_hash,
         "dbpw": pw_hash,
     })
@@ -2872,7 +2914,7 @@ def _ps_extract_via_requests() -> dict:
     html = r2.text
     if len(html) < 2000 or "grades" not in html.lower():
         try:
-            r3 = sess.get(f"{PS_BASE_URL}/guardian/home.html", timeout=20)
+            r3 = sess.get(f"{_ps_base}/guardian/home.html", timeout=20)
             if len(r3.text) > len(html):
                 html = r3.text
                 home_url = r3.url
@@ -2906,7 +2948,7 @@ def _ps_screenshot_and_extract() -> dict:
     Returns {"grades": [...], "attendance": {...}} or {"error": "..."}.
     """
     if not _ps_configured():
-        return {"error": "POWER_USERN / POWER_PASS not configured"}
+        return {"error": "PowerSchool credentials not configured (Settings or POWER_USERN/POWER_PASS)"}
 
     result = _ps_extract_via_playwright()
     if result.get("error") == "playwright_not_installed":
@@ -2959,8 +3001,9 @@ def _ps_login():
     })
 
     # ── Step 1: GET login page ──────────────────────────────────────────────
+    _ps_user, _ps_pass, _ps_base = _ps_creds()
     try:
-        r1 = sess.get(f"{PS_BASE_URL}/public/", timeout=20)
+        r1 = sess.get(f"{_ps_base}/public/", timeout=20)
         r1.raise_for_status()
     except Exception as e:
         log.warning("PowerSchool: could not reach login page: %s", e)
@@ -2978,7 +3021,7 @@ def _ps_login():
     # Determine POST target from the form's action attribute
     action = (form.get("action") or "/public/").strip()
     if not action.startswith("http"):
-        action = PS_BASE_URL + ("" if action.startswith("/") else "/") + action
+        action = _ps_base + ("" if action.startswith("/") else "/") + action
     log.info("PowerSchool: login form action = %s", action)
 
     # ── Step 2: Collect ALL hidden inputs, then overlay credentials ─────────
@@ -2992,12 +3035,12 @@ def _ps_login():
         payload[name] = inp.get("value") or ""
 
     pstoken = payload.get("pstoken", "")
-    pw_hash = _ps_md5(POWER_USERN.lower() + ":" + _ps_md5(POWER_PASS) + ":" + pstoken)
+    pw_hash = _ps_md5(_ps_user.lower() + ":" + _ps_md5(_ps_pass) + ":" + pstoken)
 
     # Overlay the credential fields
     payload.update({
-        "account":      POWER_USERN,
-        "ldappassword": POWER_PASS,   # plaintext — used for LDAP / district SSO
+        "account":      _ps_user,
+        "ldappassword": _ps_pass,   # plaintext — used for LDAP / district SSO
         "pw":           pw_hash,       # MD5 hash — used for local PS accounts
         "dbpw":         pw_hash,
         "returnTo":     payload.get("returnTo", ""),
@@ -3113,7 +3156,7 @@ def _ps_parse_grades(html: str, source_url: str) -> list:
             if a:
                 raw  = a.get_text(strip=True)
                 href = a.get("href", "")
-                grade_url = (PS_BASE_URL + href) if href.startswith("/") else href
+                grade_url = (_ps_base + href) if href.startswith("/") else href
 
                 # "A (95.2%)" → letter="A", pct=95.2
                 m = re.match(r"^([A-F][+-]?)\s*\((\d{1,3}(?:\.\d+)?)%?\)$", raw)
@@ -4507,7 +4550,7 @@ def generate_briefing(force=False, uid=None):
 
         whoop_line = None
         try:
-            whoop_line = whoop_context_line()
+            whoop_line = whoop_context_line(uid=uid)
         except Exception:
             log.warning("briefing: could not load WHOOP data")
 
@@ -4560,7 +4603,7 @@ def generate_briefing(force=False, uid=None):
 
         if MEM0_API_KEY:
             try:
-                _m0_hits = _get_mem0_client().search("student goals study habits priorities schedule energy", user_id="student", limit=5)
+                _m0_hits = _get_mem0_client().search("student goals study habits priorities schedule energy", user_id=_mem0_user(uid), limit=5)
                 if _m0_hits:
                     _mem_lines = "\n".join(f"- {h['memory']}" for h in _m0_hits if h.get("memory"))
                     if _mem_lines:
@@ -4680,7 +4723,7 @@ FROM completions WHERE completed_at >= %s AND user_id = %s ORDER BY completed_at
 
         whoop_line = None
         try:
-            whoop_line = whoop_context_line()
+            whoop_line = whoop_context_line(uid=uid)
         except Exception:
             log.warning("debrief: could not load WHOOP data")
 
@@ -4704,7 +4747,7 @@ FROM completions WHERE completed_at >= %s AND user_id = %s ORDER BY completed_at
 
         if MEM0_API_KEY:
             try:
-                _m0d_hits = _get_mem0_client().search("productivity accomplishments energy habits goals", user_id="student", limit=5)
+                _m0d_hits = _get_mem0_client().search("productivity accomplishments energy habits goals", user_id=_mem0_user(uid), limit=5)
                 if _m0d_hits:
                     _mem_lines_d = "\n".join(f"- {h['memory']}" for h in _m0d_hits if h.get("memory"))
                     if _mem_lines_d:
@@ -6918,7 +6961,7 @@ def api_memories_get():
         client = _get_mem0_client()
         if not client:
             return jsonify({"memories": [], "configured": False})
-        all_mems = client.get_all(user_id="student")
+        all_mems = client.get_all(user_id=_mem0_user(_require_uid()))
         memories = [
             {
                 "id": m.get("id", ""),
@@ -6942,6 +6985,11 @@ def api_memories_delete(memory_id):
         client = _get_mem0_client()
         if not client:
             return jsonify({"error": "Mem0 client unavailable"}), 500
+        # Memory IDs are global in Mem0 — verify this one belongs to the
+        # requesting user before deleting.
+        own = client.get_all(user_id=_mem0_user(_require_uid())) or []
+        if not any(str(m.get("id", "")) == str(memory_id) for m in own):
+            return jsonify({"error": "Memory not found"}), 404
         client.delete(memory_id)
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -10007,7 +10055,7 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 10"""
             try:
                 _get_mem0_client().add(
                     [{"role": "assistant", "content": memory_text}],
-                    user_id="student",
+                    user_id=_mem0_user(uid),
                 )
                 return {"status": "saved", "memory": memory_text}
             except Exception as e:
@@ -10065,7 +10113,7 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 10"""
                     _facts_text = f"About {person_name} ({final_relationship or 'person known to student'}): " + "; ".join(new_facts)
                     _get_mem0_client().add(
                         [{"role": "assistant", "content": _facts_text}],
-                        user_id="student",
+                        user_id=_mem0_user(uid),
                         metadata={"person": person_name},
                     )
                 except Exception as _e:
@@ -10105,14 +10153,14 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 10"""
                 try:
                     _hits = _get_mem0_client().search(
                         person_name,
-                        user_id="student",
+                        user_id=_mem0_user(uid),
                         filters={"AND": [{"metadata": {"person": person_name}}]},
                         limit=8,
                     )
                     mem0_mentions = [h["memory"] for h in (_hits or []) if h.get("memory")]
                 except Exception:
                     try:
-                        _hits = _get_mem0_client().search(f"about {person_name}", user_id="student", limit=8)
+                        _hits = _get_mem0_client().search(f"about {person_name}", user_id=_mem0_user(uid), limit=8)
                         mem0_mentions = [h["memory"] for h in (_hits or []) if h.get("memory") and person_name.lower() in h["memory"].lower()]
                     except Exception:
                         pass
@@ -10150,7 +10198,7 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 10"""
 
         # ── Google Workspace tools ────────────────────────────────────────────
         elif name == "create_email_draft":
-            creds = _get_google_credentials()
+            creds = _get_google_credentials(uid)
             if creds is None:
                 if not _google_configured():
                     return {"error": "Google not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."}
@@ -10191,7 +10239,7 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 10"""
             "update_form_info", "update_form_question", "delete_form_question",
             "delete_slide",
         ):
-            creds = _get_google_credentials()
+            creds = _get_google_credentials(uid)
             if creds is None:
                 if not _google_configured():
                     return {"error": "Google not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables."}
@@ -10986,7 +11034,7 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 10"""
             return {"status": "sent" if ok else "failed", "title": title, "priority": priority}
 
         elif name in ("create_calendar_event", "update_calendar_event", "delete_calendar_event", "list_google_calendar_events"):
-            creds = _get_google_credentials()
+            creds = _get_google_credentials(uid)
             if creds is None:
                 if not _google_configured():
                     return {"error": "Google not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."}
@@ -11643,7 +11691,7 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 6""",
 
         # Inject WHOOP recovery/sleep/strain data
         try:
-            whoop_line = whoop_context_line()
+            whoop_line = whoop_context_line(uid=chat_user_id)
             if whoop_line:
                 system_dynamic += "\n\n" + whoop_line + " Factor this into pacing/workload advice when relevant, but don't force it into every reply."
         except Exception:
@@ -11695,7 +11743,7 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 6""",
                 if _latest_user_text:
                     from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TE
                     with _TPE(max_workers=1) as _ex:
-                        _fut = _ex.submit(_get_mem0_client().search, _latest_user_text, user_id="student", limit=6)
+                        _fut = _ex.submit(_get_mem0_client().search, _latest_user_text, user_id=_mem0_user(chat_user_id), limit=6)
                         try:
                             _hits = _fut.result(timeout=2.5)
                             if _hits:
@@ -11991,7 +12039,7 @@ WHERE p.status='active' AND p.user_id=%s ORDER BY pn.created_at DESC LIMIT 6""",
                         if isinstance(_uv, list):
                             _uv = " ".join(b.get("text", "") for b in _uv if isinstance(b, dict) and b.get("type") == "text")
                         _user_text_for_mem0 = str(_uv)
-                    _mem0_maybe_store_async(_user_text_for_mem0, _final_text_box[0])
+                    _mem0_maybe_store_async(_user_text_for_mem0, _final_text_box[0], uid=chat_user_id)
                 except Exception:
                     pass
 
@@ -13193,6 +13241,28 @@ if not _SKIP_BOOT:
     except Exception as e:
         log.warning(f"Could not migrate ntfy topic: {e}")
 
+# One-time migration: legacy integration tokens lived in the global config
+# table; move them into the default student's per-user (encrypted) config.
+if not _SKIP_BOOT:
+    try:
+        _mig_uid = _default_student_uid()
+        if _mig_uid:
+            _gcfg = get_config()
+            _ucfg = get_user_config(_mig_uid)
+            _tok_updates = {}
+            for _tok_key in ("whoop_refresh_token", "whoop_access_token",
+                             "whoop_token_expires_at", "google_refresh_token"):
+                _gval = (_gcfg.get(_tok_key) or "").strip()
+                if _gval and not (_ucfg.get(_tok_key) or "").strip():
+                    _tok_updates[_tok_key] = _gval
+            if _tok_updates:
+                set_user_config(_tok_updates, user_id=_mig_uid)
+                set_config({k: "" for k in _tok_updates})
+                log.info("Migrated legacy integration tokens (%s) into the default student's user_config",
+                         ", ".join(_tok_updates))
+    except Exception as e:
+        log.warning(f"Could not migrate integration tokens: {e}")
+
 # Guard: only start scheduler and background briefing in the first/main worker.
 # With gunicorn --workers 1 this always runs. With multiple workers it only runs
 # in the first gunicorn worker (SERVER_SOFTWARE is set before fork).
@@ -13288,7 +13358,7 @@ def google_auth_callback():
         flow.fetch_token(authorization_response=auth_response)
         creds = flow.credentials
         if creds.refresh_token:
-            set_config({"google_refresh_token": creds.refresh_token})
+            set_user_config({"google_refresh_token": creds.refresh_token}, user_id=_require_uid())
             log.info("Google refresh token stored successfully")
         else:
             log.error("Google OAuth callback: no refresh_token returned — authorization incomplete")
@@ -13303,15 +13373,16 @@ def google_auth_callback():
 def google_auth_status():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
+    _g_uid = _require_uid()
     configured = _google_configured()
-    has_token = bool(configured and get_config().get("google_refresh_token", "").strip())
+    has_token = bool(configured and (get_user_config(_g_uid).get("google_refresh_token") or "").strip())
     refresh_error = None
     authorized = False
     if has_token:
         try:
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import Request as GoogleRequest
-            refresh_token = get_config().get("google_refresh_token", "").strip()
+            refresh_token = (get_user_config(_g_uid).get("google_refresh_token") or "").strip()
             creds = Credentials(
                 token=None,
                 refresh_token=refresh_token,
@@ -13336,7 +13407,7 @@ def google_auth_status():
 def google_disconnect():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    set_config({"google_refresh_token": ""})
+    set_user_config({"google_refresh_token": ""}, user_id=_require_uid())
     return jsonify({"status": "disconnected"})
 
 
@@ -13389,12 +13460,13 @@ def whoop_auth_callback():
         if not refresh_token:
             log.error("WHOOP OAuth callback: no refresh_token returned — authorization incomplete")
             return redirect("/?whoop_error=no_refresh_token")
-        set_config({
+        _cb_uid = _require_uid()
+        set_user_config({
             "whoop_refresh_token": refresh_token,
             "whoop_access_token": data.get("access_token", ""),
             "whoop_token_expires_at": str(time.time() + float(data.get("expires_in", 3600))),
-        })
-        _whoop_clear_cache()
+        }, user_id=_cb_uid)
+        _whoop_clear_cache(_cb_uid)
         log.info("WHOOP refresh token stored successfully")
         return redirect("/?whoop_connected=1")
     except Exception as e:
@@ -13406,9 +13478,10 @@ def whoop_auth_callback():
 def whoop_auth_status():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
+    uid = _require_uid()
     configured = _whoop_configured()
-    has_token = bool(configured and get_config().get("whoop_refresh_token", "").strip())
-    authorized = bool(has_token and _get_whoop_access_token())
+    has_token = _whoop_connected(uid)
+    authorized = bool(has_token and _get_whoop_access_token(uid))
     return jsonify({
         "configured": configured,
         "has_token": has_token,
@@ -13423,8 +13496,9 @@ def api_whoop_summary():
         return jsonify({"error": "Not authenticated"}), 401
     if not _whoop_configured():
         return jsonify({"configured": False, "connected": False, "days": []})
-    connected = _whoop_connected()
-    days = whoop_daily_summary(7) if connected else []
+    uid = _require_uid()
+    connected = _whoop_connected(uid)
+    days = whoop_daily_summary(7, uid=uid) if connected else []
     return jsonify({"configured": True, "connected": connected, "days": days})
 
 
@@ -13432,8 +13506,9 @@ def api_whoop_summary():
 def whoop_disconnect():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    set_config({"whoop_refresh_token": "", "whoop_access_token": "", "whoop_token_expires_at": ""})
-    _whoop_clear_cache()
+    uid = _require_uid()
+    set_user_config({"whoop_refresh_token": "", "whoop_access_token": "", "whoop_token_expires_at": ""}, user_id=uid)
+    _whoop_clear_cache(uid)
     return jsonify({"status": "disconnected"})
 
 
@@ -13443,10 +13518,11 @@ def whoop_disconnect():
 def api_whoop_workouts():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    workouts, is_mock = fitness_workouts(limit=25)
+    uid = _require_uid()
+    workouts, is_mock = fitness_workouts(limit=25, uid=uid)
     return jsonify({
         "configured": _whoop_configured(),
-        "connected": _whoop_connected(),
+        "connected": _whoop_connected(uid),
         "mock": is_mock,
         "workouts": workouts,
     })
@@ -13456,7 +13532,7 @@ def api_whoop_workouts():
 def api_whoop_heart_rate():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    return jsonify(fitness_heart_rate())
+    return jsonify(fitness_heart_rate(uid=_require_uid()))
 
 
 @app.route("/api/fitness/prs", methods=["GET"])
@@ -13464,7 +13540,7 @@ def api_fitness_prs():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
     uid = _require_uid()
-    workouts, is_mock = fitness_workouts(limit=25)
+    workouts, is_mock = fitness_workouts(limit=25, uid=uid)
     prs = compute_personal_records(workouts)
     # Manual overrides (or records predating the WHOOP history) win.
     try:
@@ -13628,10 +13704,10 @@ def gmail_list_drafts():
 def gmail_send_draft(draft_id):
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    creds = _get_google_credentials()
+    _draft_uid = _require_uid()
+    creds = _get_google_credentials(_draft_uid)
     if not creds:
         return jsonify({"error": "Google not authorized. Visit /google-auth/start."}), 400
-    _draft_uid = _require_uid()
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
