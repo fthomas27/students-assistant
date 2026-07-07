@@ -1426,38 +1426,6 @@ ON CONFLICT (name) DO NOTHING""",
         conn = get_db()
         cur = conn.cursor()
 
-    # ── Schema finalization: user_id NOT NULL + FK on user-data tables ─────────
-    # By this point every write path stamps user_id; stragglers from the
-    # single-user era are adopted by the default student first.
-    try:
-        cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1",
-                    (os.environ.get("AVERAGE_USER", "user").strip() or "user",))
-        _adopt_row = cur.fetchone()
-        if not _adopt_row:
-            cur.execute("SELECT id FROM users WHERE active = TRUE ORDER BY created_at ASC LIMIT 1")
-            _adopt_row = cur.fetchone()
-        _adopt_uid = str(_adopt_row["id"]) if _adopt_row else None
-    except Exception:
-        conn.rollback(); conn = get_db(); cur = conn.cursor()
-        _adopt_uid = None
-    for _tbl in _user_id_tables:
-        try:
-            if _adopt_uid:
-                cur.execute(f"UPDATE {_tbl} SET user_id = %s WHERE user_id IS NULL", (_adopt_uid,))
-            cur.execute(f"ALTER TABLE {_tbl} ALTER COLUMN user_id SET NOT NULL")
-            cur.execute(f"""DO $$ BEGIN
-IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_{_tbl}_user') THEN
-    ALTER TABLE {_tbl} ADD CONSTRAINT fk_{_tbl}_user
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
-END IF; END $$""")
-            cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{_tbl}_user ON {_tbl}(user_id)")
-            conn.commit()
-        except psycopg2.Error as _nn_err:
-            log.debug("NOT NULL finalization for %s: %s", _tbl, _nn_err)
-            conn.rollback()
-            conn = get_db()
-            cur = conn.cursor()
-
     try:
         cur.execute("ALTER TABLE pricing_config ADD COLUMN IF NOT EXISTS open_signup BOOLEAN NOT NULL DEFAULT FALSE")
         conn.commit()
@@ -1514,6 +1482,40 @@ ON CONFLICT (user_id, key) DO NOTHING""", (_avg_uuid,))
                 conn.commit()
         except Exception as _e:
             log.warning("SaaS user migration: %s", _e)
+            conn.rollback()
+            conn = get_db()
+            cur = conn.cursor()
+
+    # ── Schema finalization: user_id NOT NULL + FK on user-data tables ─────────
+    # Runs AFTER the single-user→SaaS backfill above, so every legacy row already
+    # carries a user_id by now; only then can NOT NULL + FK be applied. (On a
+    # fresh install the tables are empty and this succeeds trivially.) If no user
+    # exists yet to adopt orphan rows, the ALTER simply no-ops and retries next boot.
+    try:
+        cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1",
+                    (os.environ.get("AVERAGE_USER", "user").strip() or "user",))
+        _adopt_row = cur.fetchone()
+        if not _adopt_row:
+            cur.execute("SELECT id FROM users WHERE active = TRUE ORDER BY created_at ASC LIMIT 1")
+            _adopt_row = cur.fetchone()
+        _adopt_uid = str(_adopt_row["id"]) if _adopt_row else None
+    except Exception:
+        conn.rollback(); conn = get_db(); cur = conn.cursor()
+        _adopt_uid = None
+    for _tbl in _user_id_tables:
+        try:
+            if _adopt_uid:
+                cur.execute(f"UPDATE {_tbl} SET user_id = %s WHERE user_id IS NULL", (_adopt_uid,))
+            cur.execute(f"ALTER TABLE {_tbl} ALTER COLUMN user_id SET NOT NULL")
+            cur.execute(f"""DO $$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_{_tbl}_user') THEN
+    ALTER TABLE {_tbl} ADD CONSTRAINT fk_{_tbl}_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+END IF; END $$""")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{_tbl}_user ON {_tbl}(user_id)")
+            conn.commit()
+        except psycopg2.Error as _nn_err:
+            log.debug("NOT NULL finalization for %s: %s", _tbl, _nn_err)
             conn.rollback()
             conn = get_db()
             cur = conn.cursor()
@@ -6554,7 +6556,7 @@ def api_set_estimate(uid):
     cur.execute("""
 INSERT INTO assignment_estimates (uid, minutes, updated_at, user_id)
 VALUES (%s, %s, NOW(), %s)
-ON CONFLICT (user_id, uid) DO UPDATE SET minutes = EXCLUDED.minutes, updated_at = NOW()
+ON CONFLICT (user_id, uid) WHERE user_id IS NOT NULL DO UPDATE SET minutes = EXCLUDED.minutes, updated_at = NOW()
 """, (uid, minutes, user_id))
     conn.commit()
     cur.close()
@@ -11180,7 +11182,7 @@ def _chat_summarize_worker(conversation_id, api_key, user_id=None):
         cur.execute(
             "INSERT INTO chat_summaries (conversation_id, summary, message_count, updated_at, user_id) "
             "VALUES (%s, %s, %s, NOW(), %s) "
-            "ON CONFLICT (conversation_id) DO UPDATE SET "
+            "ON CONFLICT (user_id, conversation_id) WHERE user_id IS NOT NULL DO UPDATE SET "
             "summary=EXCLUDED.summary, message_count=EXCLUDED.message_count, updated_at=NOW()",
             (conversation_id, summary[:4000], len(msgs), user_id),
         )
