@@ -204,7 +204,7 @@ def jarvis_persona(audience_name, role_phrase):
     """
     return (
         "You are Jarvis — the dry, sardonic British AI from the Iron Man films — "
-        f"{role_phrase} {audience_name}, a high school student in Park City, Utah. "
+        f"{role_phrase} {audience_name}, a high school student. "
         "Your default register is sarcastic-but-caring: you get the job done impeccably, "
         "but you cannot resist a pointed remark about it. Think withering politeness rather than outright rudeness — "
         "the kind of sarcasm that makes someone laugh and feel slightly roasted at the same time. "
@@ -549,123 +549,244 @@ GOOGLE_SCOPES = [
 # ── Default values ─────────────────────────────────────────────────────────────
 DEFAULT_ESTIMATE_MINS = 30
 
-# ── Park City School District 2025-2026 Bell Schedule ────────────────────────
-# Red Day = shorter (A-block), White Day = longer (B-block), alternating each school day
-# First day of school: 2025-08-18 (Red day)
-SCHOOL_YEAR_START = date(2025, 8, 18)
-SCHOOL_YEAR_END = date(2026, 6, 5)
+# ── Multi-school model ─────────────────────────────────────────────────────────
+# Every user belongs to a school (users.school_id → schools). A school defines
+# timezone, year dates, no-school dates, day-type rotation (e.g. Park City's
+# alternating Red/White), bell schedules, and optional day-type iCal feeds.
+# Park City High School is seeded from these constants; users at other schools
+# create their own during signup.
 
-# All dates with no school (students)
-_ns_ranges = [
-    (date(2025, 8, 7), date(2025, 8, 15)),   # Teacher work days before school
-    (date(2025, 9, 1), date(2025, 9, 1)),    # Labor Day
-    (date(2025, 9, 23), date(2025, 9, 23)),  # Rosh Hashanah
-    (date(2025, 10, 2), date(2025, 10, 3)),  # Yom Kippur + Fall Break
-    (date(2025, 11, 7), date(2025, 11, 7)),  # Prof Development
-    (date(2025, 11, 26), date(2025, 11, 28)),# Thanksgiving
-    (date(2025, 12, 22), date(2026, 1, 2)),  # Winter Break
-    (date(2026, 1, 19), date(2026, 1, 19)),  # MLK Day
-    (date(2026, 2, 16), date(2026, 2, 20)),  # Presidents Day + February Break
-    (date(2026, 3, 20), date(2026, 3, 20)),  # Prof Development
-    (date(2026, 4, 13), date(2026, 4, 17)),  # Teacher Comp + Spring Break
-    (date(2026, 5, 22), date(2026, 5, 22)),  # Make Up Snow Day
-    (date(2026, 5, 25), date(2026, 5, 25)),  # Memorial Day
-]
-NO_SCHOOL_DATES = set()
-for _s, _e in _ns_ranges:
-    _cur = _s
-    while _cur <= _e:
-        NO_SCHOOL_DATES.add(_cur)
-        _cur += timedelta(days=1)
+PARK_CITY_SCHOOL = {
+    "id": None,  # filled at boot from the seeded DB row
+    "name": "Park City High School",
+    "timezone": "America/Denver",
+    "schedule_type": "ab_alternating",       # or "weekly"
+    "day_type_names": ["red", "white"],
+    # ab_alternating: {day_type: {"default": [sh,sm,eh,em], "fri": [...]}}
+    # weekly:         {"mon"|"tue"|...: [sh,sm,eh,em]} — missing day = no school
+    "bell_schedules": {
+        "red":   {"default": [7, 35, 12, 53], "fri": [7, 35, 10, 25]},
+        "white": {"default": [7, 35, 14, 25], "fri": [7, 35, 11, 30]},
+    },
+    "year_start": date(2025, 8, 18),
+    "year_end": date(2026, 6, 5),
+    # list of [start_iso, end_iso] inclusive ranges
+    "no_school_ranges": [
+        ["2025-08-07", "2025-08-15"], ["2025-09-01", "2025-09-01"],
+        ["2025-09-23", "2025-09-23"], ["2025-10-02", "2025-10-03"],
+        ["2025-11-07", "2025-11-07"], ["2025-11-26", "2025-11-28"],
+        ["2025-12-22", "2026-01-02"], ["2026-01-19", "2026-01-19"],
+        ["2026-02-16", "2026-02-20"], ["2026-03-20", "2026-03-20"],
+        ["2026-04-13", "2026-04-17"], ["2026-05-22", "2026-05-22"],
+        ["2026-05-25", "2026-05-25"],
+    ],
+    "day_type_ical_urls": {
+        "red": os.environ.get("RED_DAY_ICAL_URL", RED_DAY_ICAL_URL),
+        "white": os.environ.get("WHITE_DAY_ICAL_URL", WHITE_DAY_ICAL_URL),
+    },
+}
 
 
-def is_school_day(d):
+def _expand_no_school_dates(ranges):
+    out = set()
+    for pair in ranges or []:
+        try:
+            s = date.fromisoformat(pair[0]); e = date.fromisoformat(pair[1])
+        except Exception:
+            continue
+        cur = s
+        while cur <= e:
+            out.add(cur)
+            cur += timedelta(days=1)
+    return out
+
+
+def _school_row_to_dict(row):
+    """Convert a schools DB row into the runtime school dict."""
+    try:
+        s = {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "timezone": row["timezone"] or "America/Denver",
+            "schedule_type": row["schedule_type"] or "weekly",
+            "day_type_names": json.loads(row["day_type_names"] or "[]"),
+            "bell_schedules": json.loads(row["bell_schedules"] or "{}"),
+            "year_start": row["year_start"],
+            "year_end": row["year_end"],
+            "no_school_ranges": json.loads(row["no_school_dates"] or "[]"),
+            "day_type_ical_urls": json.loads(row["day_type_ical_urls"] or "{}"),
+        }
+        s["_no_school_set"] = _expand_no_school_dates(s["no_school_ranges"])
+        return s
+    except Exception as e:
+        log.warning("_school_row_to_dict failed: %s", e)
+        return None
+
+
+_school_cache = {}          # uid -> (school_dict, monotonic_ts)
+_school_cache_lock = threading.Lock()
+_SCHOOL_CACHE_TTL = 60.0
+
+
+def _fallback_school():
+    s = dict(PARK_CITY_SCHOOL)
+    s["_no_school_set"] = _expand_no_school_dates(s["no_school_ranges"])
+    return s
+
+
+def _school_for(uid=None):
+    """Return the school dict for a user (cached ~60s). Falls back to the
+    Park City definition when the user has no school or the lookup fails."""
+    uid = uid or _uid() or _default_student_uid()
+    cache_key = uid or "__default__"
+    now = time.monotonic()
+    with _school_cache_lock:
+        hit = _school_cache.get(cache_key)
+        if hit and (now - hit[1]) < _SCHOOL_CACHE_TTL:
+            return hit[0]
+    school = None
+    if uid:
+        try:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("""
+SELECT s.id, s.name, s.timezone, s.schedule_type, s.day_type_names, s.bell_schedules,
+       s.year_start, s.year_end, s.no_school_dates, s.day_type_ical_urls
+FROM schools s JOIN users u ON u.school_id = s.id WHERE u.id = %s""", (uid,))
+            row = cur.fetchone()
+            cur.close(); conn.close()
+            if row:
+                school = _school_row_to_dict(row)
+        except Exception as e:
+            log.debug("_school_for(%s) failed: %s", uid, e)
+    if school is None:
+        school = _fallback_school()
+    with _school_cache_lock:
+        _school_cache[cache_key] = (school, now)
+    return school
+
+
+def _invalidate_school_cache():
+    with _school_cache_lock:
+        _school_cache.clear()
+
+
+def user_tz(uid=None):
+    """The user's local timezone (from their school), default Mountain."""
+    try:
+        return ZoneInfo(_school_for(uid)["timezone"])
+    except Exception:
+        return _TZ_DEFAULT
+
+
+def is_school_day(d, school=None):
     """Return True if d is a regular school day (weekday, not holiday, within school year)."""
-    if d < SCHOOL_YEAR_START or d > SCHOOL_YEAR_END:
+    school = school or _school_for()
+    ys, ye = school.get("year_start"), school.get("year_end")
+    if ys and d < ys:
+        return False
+    if ye and d > ye:
         return False
     if d.weekday() >= 5:  # Saturday/Sunday
         return False
-    return d not in NO_SCHOOL_DATES
+    if school.get("schedule_type") == "weekly":
+        dow_key = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[d.weekday()]
+        if dow_key not in (school.get("bell_schedules") or {}):
+            return False
+    return d not in school.get("_no_school_set", set())
 
 
-def _build_day_type_cache():
+_day_type_caches = {}       # school id/name -> {date: day_type}
+_day_type_caches_lock = threading.Lock()
+
+
+def _day_type_cache_for(school):
+    """Alternating-pattern cache: first school day = first day type, then rotate."""
+    key = school.get("id") or school.get("name")
+    with _day_type_caches_lock:
+        cached = _day_type_caches.get(key)
+    if cached is not None:
+        return cached
     cache = {}
-    cur = SCHOOL_YEAR_START
-    count = 0
-    while cur <= SCHOOL_YEAR_END:
-        if is_school_day(cur):
-            cache[cur] = "red" if count % 2 == 0 else "white"
-            count += 1
-        else:
-            cache[cur] = None
-        cur += timedelta(days=1)
+    names = school.get("day_type_names") or []
+    ys, ye = school.get("year_start"), school.get("year_end")
+    if names and ys and ye:
+        cur, count = ys, 0
+        while cur <= ye:
+            if is_school_day(cur, school=school):
+                cache[cur] = names[count % len(names)]
+                count += 1
+            else:
+                cache[cur] = None
+            cur += timedelta(days=1)
+    with _day_type_caches_lock:
+        _day_type_caches[key] = cache
     return cache
 
-_DAY_TYPE_CACHE = _build_day_type_cache()
 
-
-def _get_day_type_from_ical(d):
-    """Check the official Red/White day iCal feeds for a specific date."""
-    day_start = datetime(d.year, d.month, d.day, tzinfo=TZ)
+def _get_day_type_from_ical(d, school):
+    """Check the school's official day-type iCal feeds for a specific date."""
+    urls = school.get("day_type_ical_urls") or {}
+    if not urls:
+        return None
+    tz = ZoneInfo(school.get("timezone", "America/Denver"))
+    day_start = datetime(d.year, d.month, d.day, tzinfo=tz)
     day_end = day_start + timedelta(days=1)
     try:
-        red_cal = fetch_ical(RED_DAY_ICAL_URL)
-        if red_cal and recurring_ical_events.of(red_cal).between(day_start, day_end):
-            return "red"
-        white_cal = fetch_ical(WHITE_DAY_ICAL_URL)
-        if white_cal and recurring_ical_events.of(white_cal).between(day_start, day_end):
-            return "white"
+        for dtype, url in urls.items():
+            if not url:
+                continue
+            cal = fetch_ical(url)
+            if cal and recurring_ical_events.of(cal).between(day_start, day_end):
+                return dtype
     except Exception:
         pass
     return None
 
 
-def get_day_type(d):
-    """Return 'red', 'white', or None for non-school days.
-    Checks official iCal feeds first; falls back to alternating-pattern cache."""
-    if not is_school_day(d):
+def get_day_type(d, school=None):
+    """Return the day-type name ('red', 'white', 'a', ...) or None for
+    non-school days. 'weekly' schools have no day types — school days return
+    'day'. Checks official iCal feeds first; falls back to rotation cache."""
+    school = school or _school_for()
+    if not is_school_day(d, school=school):
         return None
-    live = _get_day_type_from_ical(d)
+    if school.get("schedule_type") == "weekly" or not school.get("day_type_names"):
+        return "day"
+    live = _get_day_type_from_ical(d, school)
     if live:
         return live
-    return _DAY_TYPE_CACHE.get(d)
+    return _day_type_cache_for(school).get(d)
 
 
-def get_school_hours(d):
+def get_school_hours(d, school=None):
     """Return (start_hour, start_min, end_hour, end_min) for school on day d, or None."""
-    dtype = get_day_type(d)
+    school = school or _school_for()
+    dtype = get_day_type(d, school=school)
     if dtype is None:
         return None
-    dow = d.weekday()  # 0=Mon, 4=Fri
-    if dow == 4:  # Friday early release
-        return (7, 35, 10, 25) if dtype == "red" else (7, 35, 11, 30)
-    else:  # Mon-Thu
-        # Red day ends after History (12:53), White day ends after Entrepreneurship (14:25)
-        return (7, 35, 12, 53) if dtype == "red" else (7, 35, 14, 25)
+    bells = school.get("bell_schedules") or {}
+    if school.get("schedule_type") == "weekly" or dtype == "day":
+        dow_key = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[d.weekday()]
+        slot = bells.get(dow_key)
+        return tuple(slot) if slot else None
+    spec = bells.get(dtype) or {}
+    dow_key = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[d.weekday()]
+    slot = spec.get(dow_key) or (spec.get("fri") if d.weekday() == 4 else None) or spec.get("default")
+    return tuple(slot) if slot else None
 
 
-def get_day_calendar_url(d):
-    """Return the appropriate day calendar URL (red or white) based on the day type."""
-    dtype = get_day_type(d)
-    day_urls = {
-        "red": RED_DAY_ICAL_URL,
-        "white": WHITE_DAY_ICAL_URL,
-    }
-    return day_urls.get(dtype)
+def get_day_calendar_url(d, school=None):
+    """Return the school's iCal URL for d's day type, if configured."""
+    school = school or _school_for()
+    dtype = get_day_type(d, school=school)
+    return (school.get("day_type_ical_urls") or {}).get(dtype)
 
 
-def fetch_day_calendar_events(d, days_ahead=30):
-    """Fetch calendar events from the appropriate day-specific calendar.
-
-    Args:
-        d: date object to determine red/white day
-        days_ahead: number of days to fetch events for
-
-    Returns:
-        list of event dictionaries with source set to 'redday' or 'whiteday', or empty list if unavailable
-    """
-    day_type = get_day_type(d)
-    day_cal_url = get_day_calendar_url(d)
+def fetch_day_calendar_events(d, days_ahead=30, school=None):
+    """Fetch calendar events from the school's day-type calendar for d."""
+    school = school or _school_for()
+    day_type = get_day_type(d, school=school)
+    day_cal_url = get_day_calendar_url(d, school=school)
     events = []
 
     if day_cal_url:
@@ -676,6 +797,43 @@ def fetch_day_calendar_events(d, days_ahead=30):
                 events.append(e)
 
     return events
+
+
+def _school_prompt_block(uid=None):
+    """Human-readable school facts for AI prompts (replaces the hardcoded
+    Park City text)."""
+    school = _school_for(uid)
+    lines = [f"BELL SCHEDULE REFERENCE ({school['name']}) — "]
+    bells = school.get("bell_schedules") or {}
+
+    def _fmt(slot):
+        sh, sm, eh, em = slot
+        return "%d:%02d %s–%d:%02d %s" % (
+            sh % 12 or 12, sm, "AM" if sh < 12 else "PM",
+            eh % 12 or 12, em, "AM" if eh < 12 else "PM")
+
+    parts = []
+    if school.get("schedule_type") == "ab_alternating":
+        for dtype in school.get("day_type_names") or []:
+            spec = bells.get(dtype) or {}
+            if spec.get("default"):
+                parts.append("Mon-Thu %s: %s" % (dtype.title(), _fmt(spec["default"])))
+            if spec.get("fri"):
+                parts.append("Fri %s: %s" % (dtype.title(), _fmt(spec["fri"])))
+        parts.append("Day types alternate each school day (%s)." %
+                     "/".join(t.title() for t in school.get("day_type_names") or []))
+    else:
+        for dow_key, label in (("mon", "Mon"), ("tue", "Tue"), ("wed", "Wed"),
+                               ("thu", "Thu"), ("fri", "Fri")):
+            if bells.get(dow_key):
+                parts.append("%s: %s" % (label, _fmt(bells[dow_key])))
+    lines.append(", ".join(parts) + ". " if parts else "Bell times not configured. ")
+    ys, ye = school.get("year_start"), school.get("year_end")
+    if ys and ye:
+        lines.append("School year runs %s – %s. " % (
+            ys.strftime("%b %-d, %Y"), ye.strftime("%b %-d, %Y")))
+    lines.append("Timezone is %s." % school.get("timezone", "America/Denver"))
+    return "".join(lines)
 
 
 _DB_POOL = None
@@ -859,6 +1017,22 @@ def init_db():
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             reviewed_at TIMESTAMPTZ,
             reviewed_by TEXT DEFAULT 'admin'
+        )"""),
+        ("schools", """CREATE TABLE IF NOT EXISTS schools (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name TEXT UNIQUE NOT NULL,
+            timezone TEXT NOT NULL DEFAULT 'America/Denver',
+            schedule_type TEXT NOT NULL DEFAULT 'weekly',
+            day_type_names TEXT NOT NULL DEFAULT '[]',
+            bell_schedules TEXT NOT NULL DEFAULT '{}',
+            year_start DATE,
+            year_end DATE,
+            no_school_dates TEXT NOT NULL DEFAULT '[]',
+            day_type_ical_urls TEXT NOT NULL DEFAULT '{}',
+            holiday_ical_url TEXT NOT NULL DEFAULT '',
+            created_by UUID REFERENCES users(id),
+            verified BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )"""),
     ]
 
@@ -1168,6 +1342,38 @@ ON CONFLICT (ip_address) DO NOTHING""")
             conn = get_db()
             cur = conn.cursor()
 
+    # ── Multi-school: users.school_id + Park City seed ─────────────────────────
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS school_id UUID REFERENCES schools(id)")
+        conn.commit()
+    except psycopg2.Error:
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+    try:
+        _pc = PARK_CITY_SCHOOL
+        cur.execute("""
+INSERT INTO schools (name, timezone, schedule_type, day_type_names, bell_schedules,
+                     year_start, year_end, no_school_dates, day_type_ical_urls, verified)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+ON CONFLICT (name) DO NOTHING""",
+            (_pc["name"], _pc["timezone"], _pc["schedule_type"],
+             json.dumps(_pc["day_type_names"]), json.dumps(_pc["bell_schedules"]),
+             _pc["year_start"], _pc["year_end"], json.dumps(_pc["no_school_ranges"]),
+             json.dumps(_pc["day_type_ical_urls"])))
+        cur.execute("SELECT id FROM schools WHERE name = %s", (_pc["name"],))
+        _pc_row = cur.fetchone()
+        if _pc_row:
+            PARK_CITY_SCHOOL["id"] = str(_pc_row["id"])
+            # Existing users predate the school model — they are Park City students.
+            cur.execute("UPDATE users SET school_id = %s WHERE school_id IS NULL", (_pc_row["id"],))
+        conn.commit()
+    except psycopg2.Error as _sch_err:
+        log.warning("School seed failed: %s", _sch_err)
+        conn.rollback()
+        conn = get_db()
+        cur = conn.cursor()
+
     # Initialize pricing_config singleton
     try:
         cur.execute("INSERT INTO pricing_config (id, stripe_price_id, monthly_cents) VALUES (1, '', 999) ON CONFLICT (id) DO NOTHING")
@@ -1223,7 +1429,7 @@ ON CONFLICT (user_id, key) DO NOTHING""", (_avg_uuid,))
             cur = conn.cursor()
 
     # Insert default config values
-    defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "Mr. Goldberg", "formal_signoff_name": "Finley Thomas", "app_mode": "school", "is_summer_school": "false", "has_summer_job": "false"}
+    defaults = {"name": "Jarvis", "morning_briefing_time": "07:00", "timer_cutoff_multiplier": "2.0", "anthropic_api_key": "", "weekly_recap_advisor": "", "formal_signoff_name": "", "app_mode": "school", "is_summer_school": "false", "has_summer_job": "false"}
     for k, v in defaults.items():
         try:
             cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
@@ -4178,7 +4384,7 @@ def generate_briefing(force=False, uid=None):
             except Exception as _e:
                 log.warning("briefing: job calendar fetch failed: %s", _e)
         today = datetime.now(TZ).date()
-        events.extend(fetch_day_calendar_events(today, days_ahead=1))
+        events.extend(fetch_day_calendar_events(today, days_ahead=1, school=_school_for(uid)))
 
         # Get completed assignment titles (ever) so we don't flag them
         conn = get_db()
@@ -4266,13 +4472,17 @@ def generate_briefing(force=False, uid=None):
         tasks_text = "\n".join(["- [%s] %s" % (t["urgency"], t["title"]) for t in tasks]) or "- No pending tasks."
 
         # Get school schedule for today to recommend homework time
-        school_hrs = get_school_hours(today)
-        dtype = get_day_type(today)
+        _b_school = _school_for(uid)
+        school_hrs = get_school_hours(today, school=_b_school)
+        dtype = get_day_type(today, school=_b_school)
         if school_hrs:
             _, _, eh, em = school_hrs
             end_ampm = "AM" if eh < 12 else "PM"
             school_end_str = "%d:%02d %s" % (eh % 12 or 12, em, end_ampm)
-            schedule_note = "Today is a %s day. School ends at %s." % (dtype.title(), school_end_str)
+            if dtype == "day":
+                schedule_note = "Today is a school day. School ends at %s." % school_end_str
+            else:
+                schedule_note = "Today is a %s day. School ends at %s." % (dtype.title(), school_end_str)
         elif datetime.now(TZ).weekday() >= 5:
             schedule_note = "Today is a weekend — no school."
         else:
@@ -8130,8 +8340,8 @@ def api_config_get():
         "morning_briefing_time": cfg.get("morning_briefing_time", "07:00"),
         "timer_cutoff_multiplier": cfg.get("timer_cutoff_multiplier", "2.0"),
         "has_api_key": bool(cfg.get("anthropic_api_key", "")),
-        "weekly_recap_advisor": cfg.get("weekly_recap_advisor", "Mr. Goldberg"),
-        "formal_signoff_name": cfg.get("formal_signoff_name", "Finley Thomas"),
+        "weekly_recap_advisor": cfg.get("weekly_recap_advisor", ""),
+        "formal_signoff_name": cfg.get("formal_signoff_name", ""),
         "timezone": cfg.get("timezone", "America/Denver"),
         "app_mode": cfg.get("app_mode", "school"),
         "is_summer_school": cfg.get("is_summer_school", "false") == "true",
@@ -10975,10 +11185,7 @@ def api_chat():
             "FORMATTING — Use **bold** for every important term, name, date, and key fact. "
             "Use ## for major sections, ### for sub-sections. Use - bullet points for lists of 2+ items. "
             "Never write more than two sentences in a row without a header, bullet, or bold term breaking it up.\n\n"
-            "BELL SCHEDULE REFERENCE (Park City High School) — "
-            "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
-            "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM. "
-            "School year runs Aug 18, 2025 – Jun 5, 2026. Timezone is America/Denver (Mountain Time).\n\n"
+            + _school_prompt_block(chat_user_id) + "\n\n"
             "TOOL USE — You have direct tools to take real actions in this app. Use them proactively and precisely:\n"
             "- TASKS vs PROJECTS — This distinction matters:\n"
             "  • A TASK is a single, atomic thing the student does in one sitting "
@@ -11055,18 +11262,19 @@ def api_chat():
 
         # Inject school schedule context (skip block-schedule in summer mode)
         try:
-            today = datetime.now(TZ).date()
+            _chat_school = _school_for(chat_user_id)
+            today = datetime.now(user_tz(chat_user_id)).date()
             if _app_mode == "school":
-                dtype = get_day_type(today)
-                school_hours = get_school_hours(today)
+                dtype = get_day_type(today, school=_chat_school)
+                school_hours = get_school_hours(today, school=_chat_school)
                 if school_hours:
                     sh, sm, eh, em = school_hours
                     system_dynamic += (
-                        "\n\nSCHOOL — Today is a %s day at Park City High School. "
-                        "School runs 7:%02d AM – %d:%02d %s. "
-                        "Mon-Thu Red: 7:30–11:53 AM, Mon-Thu White: 7:30–2:25 PM, "
-                        "Fri Red: 7:30–10:25 AM, Fri White: 7:30–11:30 AM."
-                    ) % (dtype.title(), sm, eh % 12 or 12, em, "AM" if eh < 12 else "PM")
+                        "\n\nSCHOOL — Today is a %s day at %s. "
+                        "School runs %d:%02d %s – %d:%02d %s."
+                    ) % ("school" if dtype == "day" else dtype.title(), _chat_school["name"],
+                         sh % 12 or 12, sm, "AM" if sh < 12 else "PM",
+                         eh % 12 or 12, em, "AM" if eh < 12 else "PM")
                 else:
                     dow = today.weekday()
                     system_dynamic += "\n\nSCHOOL — " + ("Today is a weekend — no school." if dow >= 5 else "Today is a no-school day (holiday or break).")
@@ -13405,6 +13613,102 @@ def api_signup_test_key():
     return jsonify({"ok": ok, "error": err or None}), (200 if ok else 400)
 
 
+@app.route("/api/signup/schools", methods=["GET"])
+def api_signup_schools():
+    """Public list of established schools for the signup picker."""
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT id, name, timezone, schedule_type FROM schools ORDER BY verified DESC, name ASC")
+        rows = [{"id": str(r["id"]), "name": r["name"], "timezone": r["timezone"],
+                 "schedule_type": r["schedule_type"]} for r in cur.fetchall()]
+        cur.close(); conn.close()
+        return jsonify({"schools": rows})
+    except Exception as e:
+        log.warning("signup schools list failed: %s", e)
+        return jsonify({"schools": []})
+
+
+_VALID_DOW_KEYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+
+
+def _resolve_signup_school(data, creator_uid=None):
+    """Return a school_id for a signup: an existing school_id, or create the
+    school the user described. Returns None when nothing was specified."""
+    school_id = str(data.get("school_id", "")).strip()
+    if school_id:
+        try:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("SELECT id FROM schools WHERE id = %s", (school_id,))
+            row = cur.fetchone()
+            cur.close(); conn.close()
+            return str(row["id"]) if row else None
+        except Exception:
+            return None
+
+    ns = data.get("new_school") or {}
+    name = str(ns.get("name", "")).strip()[:200]
+    if not name:
+        return None
+    tz_str = str(ns.get("timezone", "America/Denver")).strip()
+    if not is_valid_timezone(tz_str):
+        tz_str = "America/Denver"
+
+    # Simple weekly schedule: one start/end applied Mon–Fri unless per-day
+    # bells were provided.
+    bells = ns.get("bell_schedules")
+    if not isinstance(bells, dict) or not bells:
+        bells = {}
+        try:
+            sh, sm = [int(x) for x in str(ns.get("start_time", "08:00")).split(":")]
+            eh, em = [int(x) for x in str(ns.get("end_time", "15:00")).split(":")]
+            for dow in ("mon", "tue", "wed", "thu", "fri"):
+                bells[dow] = [sh, sm, eh, em]
+        except Exception:
+            bells = {dow: [8, 0, 15, 0] for dow in ("mon", "tue", "wed", "thu", "fri")}
+    bells = {k: v for k, v in bells.items() if k in _VALID_DOW_KEYS and isinstance(v, list) and len(v) == 4}
+
+    def _parse_date(v):
+        try:
+            return date.fromisoformat(str(v))
+        except Exception:
+            return None
+    year_start = _parse_date(ns.get("year_start"))
+    year_end = _parse_date(ns.get("year_end"))
+
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""
+INSERT INTO schools (name, timezone, schedule_type, day_type_names, bell_schedules,
+                     year_start, year_end, no_school_dates, day_type_ical_urls, created_by)
+VALUES (%s, %s, 'weekly', '[]', %s, %s, %s, '[]', '{}', %s)
+ON CONFLICT (name) DO NOTHING""",
+            (name, tz_str, json.dumps(bells), year_start, year_end, creator_uid))
+        cur.execute("SELECT id FROM schools WHERE name = %s", (name,))
+        row = cur.fetchone()
+        conn.commit()
+        cur.close(); conn.close()
+        _invalidate_school_cache()
+        return str(row["id"]) if row else None
+    except Exception as e:
+        log.warning("_resolve_signup_school create failed: %s", e)
+        return None
+
+
+def _attach_user_school(user_id, school_id):
+    if not (user_id and school_id):
+        return
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("UPDATE users SET school_id = %s WHERE id = %s", (school_id, user_id))
+        cur.execute("UPDATE schools SET created_by = %s WHERE id = %s AND created_by IS NULL AND verified = FALSE",
+                    (user_id, school_id))
+        conn.commit()
+        cur.close(); conn.close()
+        _invalidate_school_cache()
+    except Exception as e:
+        log.warning("_attach_user_school failed: %s", e)
+
+
 @app.route("/api/signup/create-checkout", methods=["POST"])
 def api_signup_create_checkout():
     if not stripe or not STRIPE_SECRET_KEY:
@@ -13456,6 +13760,7 @@ def api_signup_create_checkout():
     # survive the Stripe round trip. Never put secrets in Stripe metadata.
     _signup_payload = {k: str(data.get(k, "")).strip() for k in _CAL_KEYS}
     _signup_payload["anthropic_api_key"] = _encrypt_config_value("anthropic_api_key", api_key)
+    _signup_payload["school_id"] = _resolve_signup_school(data) or ""
     cals_json = json.dumps(_signup_payload)
     pconn = get_db(); pcur = pconn.cursor()
     try:
@@ -13548,6 +13853,7 @@ VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
     _init_user_defaults(user_id)
     _save_calendar_urls(user_id, data)
     set_user_config({"anthropic_api_key": api_key}, user_id=user_id)
+    _attach_user_school(user_id, _resolve_signup_school(data, creator_uid=user_id))
     log.info("Free signup: user %s (%s) created via code %s", username, email, code)
     return jsonify({"status": "ok", "redirect": "/login"})
 
@@ -13631,6 +13937,7 @@ ON CONFLICT (stripe_customer_id) DO UPDATE SET status='active', updated_at=NOW()
     _init_user_defaults(user_id)
     if cal_data:
         _save_calendar_urls(user_id, cal_data)
+        _attach_user_school(user_id, cal_data.get("school_id"))
     log.info("Paid signup success: user %s (%s)", un, email)
     return render_template("signup_success.html", username=un, email=email)
 
@@ -14199,6 +14506,7 @@ def api_signup_complete_approved():
         # (reuses pending_signups keyed by access_code)
         _appr_payload = {k: str(data.get(k, "")).strip() for k in _CAL_KEYS}
         _appr_payload["anthropic_api_key"] = _encrypt_config_value("anthropic_api_key", _appr_key)
+        _appr_payload["school_id"] = _resolve_signup_school(data) or ""
         cals_json = json.dumps(_appr_payload)
         sconn = get_db(); scur = sconn.cursor()
         try:
@@ -14261,6 +14569,8 @@ VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)""",
 
     _init_user_defaults(user_id)
     _save_calendar_urls(user_id, data)
+    set_user_config({"anthropic_api_key": _appr_key}, user_id=user_id)
+    _attach_user_school(user_id, _resolve_signup_school(data, creator_uid=user_id))
     log.info("Approved signup (no Stripe): %s (%s)", username, email)
     return jsonify({"status": "ok", "redirect": "/login"})
 
@@ -14344,6 +14654,7 @@ ON CONFLICT (stripe_customer_id) DO UPDATE SET status='active', updated_at=NOW()
     _init_user_defaults(user_id)
     if cal_data:
         _save_calendar_urls(user_id, cal_data)
+        _attach_user_school(user_id, cal_data.get("school_id"))
     log.info("Approved+paid signup success: %s (%s)", un, email)
     return render_template("signup_success.html", username=un, email=email)
 

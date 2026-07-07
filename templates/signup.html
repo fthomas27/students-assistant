@@ -365,6 +365,54 @@ margin-bottom: 20px;
 
   <!-- Step 3: Calendar setup -->
   <div class="step-section" id="step-2">
+    <div class="field-wrap">
+      <div class="field-label">Your School</div>
+      <select class="field-input" id="school-select" onchange="onSchoolChange()">
+        <option value="">Loading schools…</option>
+      </select>
+      <div style="font-size:11px; color:var(--text3); margin-top:6px;">
+        Pick your school so Jarvis knows your bell schedule and timezone.
+        First one from your school? Choose "My school isn't listed" and set it up.
+      </div>
+    </div>
+    <div id="new-school-fields" style="display:none; padding:14px; background:rgba(255,255,255,0.03); border-radius:12px; margin-bottom:14px;">
+      <div class="field-wrap">
+        <div class="field-label">School name</div>
+        <input class="field-input" id="new-school-name" type="text" placeholder="Lincoln High School">
+      </div>
+      <div class="field-wrap">
+        <div class="field-label">Timezone</div>
+        <select class="field-input" id="new-school-tz">
+          <option value="America/Denver">Mountain (America/Denver)</option>
+          <option value="America/New_York">Eastern (America/New_York)</option>
+          <option value="America/Chicago">Central (America/Chicago)</option>
+          <option value="America/Los_Angeles">Pacific (America/Los_Angeles)</option>
+          <option value="America/Phoenix">Arizona (America/Phoenix)</option>
+          <option value="Pacific/Honolulu">Hawaii (Pacific/Honolulu)</option>
+          <option value="America/Anchorage">Alaska (America/Anchorage)</option>
+        </select>
+      </div>
+      <div style="display:flex; gap:10px;">
+        <div class="field-wrap" style="flex:1;">
+          <div class="field-label">School starts</div>
+          <input class="field-input" id="new-school-start" type="time" value="08:00">
+        </div>
+        <div class="field-wrap" style="flex:1;">
+          <div class="field-label">School ends</div>
+          <input class="field-input" id="new-school-end" type="time" value="15:00">
+        </div>
+      </div>
+      <div style="display:flex; gap:10px;">
+        <div class="field-wrap" style="flex:1;">
+          <div class="field-label">Year starts (optional)</div>
+          <input class="field-input" id="new-school-year-start" type="date">
+        </div>
+        <div class="field-wrap" style="flex:1;">
+          <div class="field-label">Year ends (optional)</div>
+          <input class="field-input" id="new-school-year-end" type="date">
+        </div>
+      </div>
+    </div>
     <p style="font-size:13px; color:var(--text3); margin-bottom:18px; line-height:1.5;">
       Connect your calendars so Jarvis knows your schedule.
       <strong style="color:var(--text2);">All optional — you can configure later in Settings.</strong>
@@ -565,6 +613,54 @@ function validateCode() {
   });
 }
 
+var NEW_SCHOOL_VALUE = '__new__';
+
+function loadSchools() {
+  var sel = document.getElementById('school-select');
+  if (!sel) return;
+  fetch('/api/signup/schools').then(function(r) { return r.json(); }).then(function(d) {
+    var schools = (d && d.schools) || [];
+    sel.innerHTML = '';
+    schools.forEach(function(s) {
+      var o = document.createElement('option');
+      o.value = s.id;
+      o.textContent = s.name;
+      sel.appendChild(o);
+    });
+    var o = document.createElement('option');
+    o.value = NEW_SCHOOL_VALUE;
+    o.textContent = "My school isn't listed — set it up";
+    sel.appendChild(o);
+    onSchoolChange();
+  }).catch(function() {
+    sel.innerHTML = '<option value="' + NEW_SCHOOL_VALUE + '">Set up my school</option>';
+    onSchoolChange();
+  });
+}
+loadSchools();
+
+function onSchoolChange() {
+  var sel = document.getElementById('school-select');
+  var fields = document.getElementById('new-school-fields');
+  if (sel && fields) fields.style.display = (sel.value === NEW_SCHOOL_VALUE) ? 'block' : 'none';
+}
+
+function schoolPayload() {
+  var sel = document.getElementById('school-select');
+  if (!sel || !sel.value) return {};
+  if (sel.value !== NEW_SCHOOL_VALUE) return { school_id: sel.value };
+  var name = document.getElementById('new-school-name').value.trim();
+  if (!name) return { __error: 'Please enter your school name (or pick one from the list).' };
+  return { new_school: {
+    name: name,
+    timezone: document.getElementById('new-school-tz').value,
+    start_time: document.getElementById('new-school-start').value || '08:00',
+    end_time: document.getElementById('new-school-end').value || '15:00',
+    year_start: document.getElementById('new-school-year-start').value || null,
+    year_end: document.getElementById('new-school-year-end').value || null
+  }};
+}
+
 function testApiKey() {
   var key = document.getElementById('api-key-input').value.trim();
   var resEl = document.getElementById('test-key-result');
@@ -618,6 +714,9 @@ function submitSignup(skipCalendars) {
 
   var payload = {code: validCode, email: email, username: username, password: password,
                  anthropic_api_key: document.getElementById('api-key-input').value.trim()};
+  var sp = schoolPayload();
+  if (sp.__error) { errEl.textContent = sp.__error; return; }
+  Object.assign(payload, sp);
   if (!skipCalendars) {
     payload.canvas_ical_url       = document.getElementById('canvas-ical-input').value.trim();
     payload.canvas_api_token      = document.getElementById('canvas-token-input').value.trim();
