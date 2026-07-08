@@ -4047,10 +4047,6 @@ margin: 8px 2px 10px;
           </div>
           <div class="dash-chart" id="healthSleepChart" style="min-height:90px;"><div class="widget-empty">Loading&hellip;</div></div>
         </section>
-        <section class="widget" style="flex-shrink:0;">
-          <div class="widget-head"><span class="widget-title">Bedtime</span></div>
-          <div id="healthBedtime"><div class="widget-empty">Loading&hellip;</div></div>
-        </section>
         <section class="widget">
           <div class="widget-head"><span class="widget-title">Personal Records</span></div>
           <div id="healthPRs" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
@@ -4065,25 +4061,31 @@ margin: 8px 2px 10px;
         <div id="healthWorkouts" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
       </section>
 
-      <section class="widget dashx-span4">
-        <div class="widget-head"><span class="widget-title">Workout Planner</span></div>
-        <form id="workoutPlanForm" class="planner-form" onsubmit="return submitPlannedWorkout(event)">
-          <input type="text" id="plannerTitle" class="field" placeholder="Plan a workout — e.g. Tempo run" required>
-          <div class="planner-row">
-            <select id="plannerSport" class="field">
-              <option value="running">Running</option>
-              <option value="swimming">Swimming</option>
-              <option value="cycling">Cycling</option>
-              <option value="weightlifting">Weightlifting</option>
-              <option value="other">Other</option>
-            </select>
-            <input type="date" id="plannerDate" class="field">
-            <input type="number" id="plannerDuration" class="field" min="5" max="600" value="45" title="Duration (minutes)">
-          </div>
-          <button type="submit" class="btn-accent" style="width:100%;font-size:12px;">Add to Plan</button>
-        </form>
-        <div id="healthPlanned" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
-      </section>
+      <div class="dashx-stack dashx-span4">
+        <section class="widget">
+          <div class="widget-head"><span class="widget-title">Workout Planner</span></div>
+          <form id="workoutPlanForm" class="planner-form" onsubmit="return submitPlannedWorkout(event)">
+            <input type="text" id="plannerTitle" class="field" placeholder="Plan a workout — e.g. Tempo run" required>
+            <div class="planner-row">
+              <select id="plannerSport" class="field">
+                <option value="running">Running</option>
+                <option value="swimming">Swimming</option>
+                <option value="cycling">Cycling</option>
+                <option value="weightlifting">Weightlifting</option>
+                <option value="other">Other</option>
+              </select>
+              <input type="date" id="plannerDate" class="field">
+              <input type="number" id="plannerDuration" class="field" min="5" max="600" value="45" title="Duration (minutes)">
+            </div>
+            <button type="submit" class="btn-accent" style="width:100%;font-size:12px;">Add to Plan</button>
+          </form>
+          <div id="healthPlanned" class="dashx-list"><div class="widget-empty">Loading&hellip;</div></div>
+        </section>
+        <section class="widget" style="flex-shrink:0;">
+          <div class="widget-head"><span class="widget-title">Bedtime</span></div>
+          <div id="healthBedtime"><div class="widget-empty">Loading&hellip;</div></div>
+        </section>
+      </div>
     </div>
   </div>
 </div>
