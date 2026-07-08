@@ -4975,6 +4975,10 @@ function _renderBedtimeWidget(bedtime) {
   if (!wrap) return;
   if (!bedtime || !bedtime.bedtime_iso) {
     wrap.innerHTML = '<div class="widget-empty">Not enough sleep data yet.</div>';
+    if (_bedtimeTimer) {
+      clearInterval(_bedtimeTimer);
+      _bedtimeTimer = null;
+    }
     return;
   }
   _bedtimeTarget = new Date(bedtime.bedtime_iso);
@@ -5079,7 +5083,7 @@ function _synthWorkoutHRSamples(w) {
     }
     bpm = Math.max(rest - 5, Math.round(bpm + Math.sin(seed + i * 1.7) * 2.5));
     let t = '';
-    if (start && end) {
+    if (start && !isNaN(start) && end && !isNaN(end)) {
       t = new Date(start.getTime() + p * (end.getTime() - start.getTime())).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     }
     samples.push({ bpm, t });

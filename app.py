@@ -2196,7 +2196,7 @@ def whoop_bedtime_recommendation():
             log.warning("whoop_bedtime_recommendation: %s", e)
 
     now = datetime.now(TZ)
-    wake_dt = datetime(now.year, now.month, now.day, wake_h, wake_m, tzinfo=TZ) + timedelta(days=1)
+    wake_dt = now.replace(hour=wake_h, minute=wake_m, second=0, microsecond=0) + timedelta(days=1)
     bedtime_dt = wake_dt - timedelta(hours=need_hours)
 
     return {
