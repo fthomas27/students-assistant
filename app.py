@@ -2396,6 +2396,9 @@ def categorize_task(title, notes=""):
 
 TASK_CATEGORIES = ("school", "club", "health", "general")
 
+TASK_URGENCIES = ("critical", "high", "medium", "low")
+URGENCY_ORDER_SQL = "CASE urgency WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END"
+
 
 # ── PowerSchool Scraper (Playwright + Claude Vision) ──────────────────────────
 # Uses a headless Chromium browser to log in as a real user, screenshots the
@@ -4068,7 +4071,7 @@ def generate_briefing(force=False):
         assignments = [a for a in assignments if a["title"] not in completed_titles]
 
         # Get tasks
-        cur.execute("SELECT title, urgency FROM tasks WHERE completed = FALSE ORDER BY urgency DESC, created_at ASC LIMIT 5")
+        cur.execute(f"SELECT title, urgency FROM tasks WHERE completed = FALSE ORDER BY {URGENCY_ORDER_SQL} ASC, created_at ASC LIMIT 5")
         tasks = [dict(r) for r in cur.fetchall()]
 
         cur.close()
@@ -4290,7 +4293,7 @@ def generate_evening_debrief():
 SELECT assignment_title, class_name, duration_minutes, timed
 FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_start,))
         done_today = [dict(r) for r in cur.fetchall()]
-        cur.execute("SELECT title, urgency FROM tasks WHERE completed = FALSE ORDER BY urgency DESC LIMIT 10")
+        cur.execute(f"SELECT title, urgency FROM tasks WHERE completed = FALSE ORDER BY {URGENCY_ORDER_SQL} ASC LIMIT 10")
         pending_tasks = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
@@ -4430,11 +4433,11 @@ ORDER BY completed_at ASC""", (now_local - timedelta(days=7),))
         tasks_done_week = [dict(r) for r in cur.fetchall()]
 
         # Currently pending tasks
-        cur.execute("""
+        cur.execute(f"""
 SELECT title, urgency, due_date
 FROM tasks
 WHERE completed = FALSE
-ORDER BY urgency DESC, created_at ASC LIMIT 10""")
+ORDER BY {URGENCY_ORDER_SQL} ASC, created_at ASC LIMIT 10""")
         tasks_open = [dict(r) for r in cur.fetchall()]
 
         # Projects needing check-in
@@ -6862,14 +6865,14 @@ def api_tasks_get():
 SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
        NULL as project_id, NULL as project_title, category
 FROM tasks WHERE user_id = %s ORDER BY completed ASC,
-    CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
+    CASE urgency WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
     created_at ASC""", (uid,))
         else:
             cur.execute("""
 SELECT id, title, notes, urgency, completed, completed_at, due_date, created_at,
        NULL as project_id, NULL as project_title, category
 FROM tasks ORDER BY completed ASC,
-    CASE urgency WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END ASC,
+    CASE urgency WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
     created_at ASC""")
         rows = [dict(r) for r in cur.fetchall()]
         # Sync all project tasks from active projects into the main task list.
@@ -6927,7 +6930,7 @@ def api_tasks_create():
     urgency = str(data.get("urgency", "low")).lower()
 
     # Validate urgency
-    if urgency not in ("high", "medium", "low"):
+    if urgency not in TASK_URGENCIES:
         urgency = "low"
 
     # Validate due_date format
@@ -6993,7 +6996,7 @@ WHERE plan_date = %s""", (today,))
                 cur.execute(f"UPDATE tasks SET title=%s WHERE id=%s{uid_clause}", (title, task_id) + uid_params)
         if "urgency" in data:
             urgency = str(data["urgency"]).lower()
-            if urgency in ("high", "medium", "low"):
+            if urgency in TASK_URGENCIES:
                 cur.execute(f"UPDATE tasks SET urgency=%s WHERE id=%s{uid_clause}", (urgency, task_id) + uid_params)
         if "notes" in data:
             cur.execute(f"UPDATE tasks SET notes=%s WHERE id=%s{uid_clause}", (str(data["notes"])[:2000], task_id) + uid_params)
@@ -7236,7 +7239,7 @@ def api_recurring_tasks_create():
     title = str(data.get("title", "")).strip()[:200]
     notes = str(data.get("notes", "")).strip()[:2000]
     urgency = str(data.get("urgency", "low")).lower()
-    if urgency not in ("low", "medium", "high"):
+    if urgency not in TASK_URGENCIES:
         urgency = "low"
     recurrence = str(data.get("recurrence", "weekly")).lower()
     if recurrence not in ("daily", "weekly", "biweekly", "monthly"):
@@ -7282,6 +7285,20 @@ def api_recurring_tasks_update(task_id):
 
         if "active" in data:
             cur.execute("UPDATE recurring_tasks SET active=%s WHERE id=%s", (bool(data["active"]), task_id))
+        if "title" in data:
+            title = str(data["title"]).strip()[:200]
+            if title:
+                cur.execute("UPDATE recurring_tasks SET title=%s WHERE id=%s", (title, task_id))
+        if "recurrence" in data:
+            recurrence = str(data["recurrence"]).lower()
+            if recurrence in ("daily", "weekly", "biweekly", "monthly"):
+                cur.execute("UPDATE recurring_tasks SET recurrence=%s WHERE id=%s", (recurrence, task_id))
+        if "urgency" in data:
+            urgency = str(data["urgency"]).lower()
+            if urgency in TASK_URGENCIES:
+                cur.execute("UPDATE recurring_tasks SET urgency=%s WHERE id=%s", (urgency, task_id))
+        if "notes" in data:
+            cur.execute("UPDATE recurring_tasks SET notes=%s WHERE id=%s", (str(data["notes"])[:2000], task_id))
 
         conn.commit()
         return jsonify({"status": "ok"})
@@ -8402,7 +8419,7 @@ JARVIS_TOOLS = [
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Task title"},
-                "urgency": {"type": "string", "enum": ["high", "medium", "low"]},
+                "urgency": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                 "due_date": {"type": "string", "description": "YYYY-MM-DD or omit if no deadline"},
                 "notes": {"type": "string", "description": "Optional notes"},
             },
@@ -8434,7 +8451,7 @@ JARVIS_TOOLS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "integer"},
-                "urgency": {"type": "string", "enum": ["high", "medium", "low"]},
+                "urgency": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                 "due_date": {"type": "string", "description": "YYYY-MM-DD"},
                 "notes": {"type": "string"},
             },
@@ -9307,7 +9324,7 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             cur = conn.cursor()
             cur.execute(
                 "SELECT id, title, urgency, due_date, notes FROM tasks WHERE completed=FALSE "
-                "ORDER BY urgency DESC, created_at ASC LIMIT 25"
+                f"ORDER BY {URGENCY_ORDER_SQL} ASC, created_at ASC LIMIT 25"
             )
             tasks = []
             for r in cur.fetchall():
@@ -9323,7 +9340,7 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             if not title:
                 return {"error": "title is required"}
             urgency = str(inputs.get("urgency", "low")).lower()
-            if urgency not in ("high", "medium", "low"):
+            if urgency not in TASK_URGENCIES:
                 urgency = "low"
             due_date = inputs.get("due_date") or None
             notes = str(inputs.get("notes", ""))[:2000]
@@ -9388,7 +9405,7 @@ def _execute_jarvis_tool(name, inputs, conversation_id=None):
             due_date = inputs.get("due_date")
             notes = inputs.get("notes")
             updates, params = [], []
-            if urgency in ("high", "medium", "low"):
+            if urgency in TASK_URGENCIES:
                 updates.append("urgency=%s"); params.append(urgency)
             if due_date is not None:
                 updates.append("due_date=%s"); params.append(due_date or None)
@@ -11216,7 +11233,7 @@ FROM daily_plan_items WHERE plan_id = %s ORDER BY order_index ASC LIMIT 20""", (
             cur = conn.cursor()
             cur.execute(
                 "SELECT id, title, urgency, notes FROM tasks WHERE completed=FALSE "
-                "ORDER BY urgency DESC, created_at ASC LIMIT 15"
+                f"ORDER BY {URGENCY_ORDER_SQL} ASC, created_at ASC LIMIT 15"
             )
             tasks = [dict(r) for r in cur.fetchall()]
             cur.execute("""
@@ -11756,11 +11773,11 @@ def _generate_daily_plan_for_date(target_date):
                 custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
 
                 urgency_mins = {"critical": 45, "high": 30, "medium": 20, "low": 15}
-                cur.execute("""
+                cur.execute(f"""
                     SELECT id, title, due_date, urgency FROM tasks
                     WHERE completed = FALSE
                     AND (due_date IS NULL OR due_date <= %s)
-                    ORDER BY urgency DESC, due_date ASC
+                    ORDER BY {URGENCY_ORDER_SQL} ASC, due_date ASC
                     LIMIT 15
                 """, (today + timedelta(days=3),))
                 for task_row in cur.fetchall():
@@ -12643,7 +12660,7 @@ def api_daily_outlook():
             cur.execute(
                 "SELECT id, title, urgency, due_date, notes FROM tasks "
                 "WHERE completed = FALSE AND (due_date IS NULL OR due_date <= %s) "
-                "ORDER BY urgency DESC, due_date ASC NULLS LAST LIMIT 10",
+                f"ORDER BY {URGENCY_ORDER_SQL} ASC, due_date ASC NULLS LAST LIMIT 10",
                 (today,)
             )
             rows = cur.fetchall()
