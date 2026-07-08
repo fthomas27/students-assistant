@@ -2041,6 +2041,49 @@ def compute_personal_records(workouts):
     return prs
 
 
+def _mock_whoop_daily_summary(days=7):
+    """Deterministic sample recovery/sleep/strain history so the Health
+    dashboard's summary-driven widgets (stat tiles, sleep-score chart) still
+    work end-to-end before a WHOOP account is connected."""
+    plan = [  # (recovery, hrv_ms, rhr, sleep_performance, sleep_hours, strain) rotating by weekday
+        (58, 62, 58, 74, 7.1, 14.2),
+        (71, 71, 54, 88, 7.9, 10.1),
+        (64, 66, 56, 79, 7.4, 11.6),
+        (49, 55, 61, 65, 6.3, 12.8),
+        (82, 80, 51, 93, 8.4, 6.5),
+        (75, 74, 53, 85, 8.0, 16.9),
+        (67, 68, 55, 81, 7.6, 9.4),
+    ]
+    today = datetime.now(TZ).date()
+    out = []
+    for d in range(days):
+        day = today - timedelta(days=d)
+        recovery, hrv, rhr, sleep_perf, sleep_hrs, strain = plan[day.weekday() % 7]
+        out.append({
+            "date": day.isoformat(),
+            "recovery_score": recovery,
+            "hrv_ms": hrv,
+            "rhr": rhr,
+            "sleep_performance": sleep_perf,
+            "sleep_hours": sleep_hrs,
+            "strain": strain,
+        })
+    return out
+
+
+def fitness_daily_summary(days=7):
+    """Recovery/sleep/strain history for the Health dashboard: live WHOOP data
+    when connected, otherwise the mock pipeline. Returns (days, is_mock)."""
+    if _whoop_connected():
+        try:
+            live = whoop_daily_summary(days)
+            if live:
+                return live, False
+        except Exception as e:
+            log.warning("fitness_daily_summary: %s", e)
+    return _mock_whoop_daily_summary(days), True
+
+
 def whoop_daily_summary(days=7):
     """Merge recovery/sleep/strain records into one row per calendar day, newest first."""
     if not _whoop_connected():
@@ -2115,6 +2158,57 @@ def whoop_context_line():
     if not parts:
         return None
     return "WHOOP (%s): %s." % (d["date"], ", ".join(parts))
+
+
+def _mock_sleep_need_hours():
+    """Deterministic sample sleep-need estimate (weekday-seeded) so the
+    Bedtime widget has something to show before WHOOP is connected."""
+    plan = [8.3, 8.0, 8.1, 8.4, 7.8, 8.6, 8.9]
+    return plan[datetime.now(TZ).date().weekday() % 7]
+
+
+def whoop_bedtime_recommendation():
+    """Recommended bedtime tonight, worked backward from the student's usual
+    wake time (borrowed from the morning-briefing-time setting) minus their
+    current sleep need. Uses WHOOP's own sleep_needed breakdown (baseline +
+    debt + recent strain + recent naps) when connected, a deterministic
+    estimate otherwise."""
+    cfg = get_config()
+    wake_str = (cfg.get("morning_briefing_time") or "07:00").strip()
+    try:
+        wake_h, wake_m = (int(x) for x in wake_str.split(":"))
+    except (ValueError, TypeError):
+        wake_h, wake_m = 7, 0
+
+    need_hours = _mock_sleep_need_hours()
+    is_mock = True
+    if _whoop_connected():
+        try:
+            records = whoop_sleep_recent(limit=1)
+            need = ((records[0].get("score") or {}).get("sleep_needed") or {}) if records else {}
+            total_ms = (
+                (need.get("baseline_milli") or 0)
+                + (need.get("need_from_sleep_debt_milli") or 0)
+                + (need.get("need_from_recent_strain_milli") or 0)
+                + (need.get("need_from_recent_nap_milli") or 0)
+            )
+            if total_ms:
+                need_hours = total_ms / 3600000
+                is_mock = False
+        except Exception as e:
+            log.warning("whoop_bedtime_recommendation: %s", e)
+
+    now = datetime.now(TZ)
+    wake_dt = now.replace(hour=wake_h, minute=wake_m, second=0, microsecond=0) + timedelta(days=1)
+    bedtime_dt = wake_dt - timedelta(hours=need_hours)
+
+    return {
+        "wake_time": "%02d:%02d" % (wake_h, wake_m),
+        "sleep_need_hours": round(need_hours, 1),
+        "bedtime_iso": bedtime_dt.isoformat(),
+        "bedtime_display": bedtime_dt.strftime("%-I:%M %p"),
+        "mock": is_mock,
+    }
 
 
 # ── AI Calendar Categorization Engine ─────────────────────────────────────────
@@ -12704,11 +12798,13 @@ def whoop_auth_status():
 def api_whoop_summary():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    if not _whoop_configured():
-        return jsonify({"configured": False, "connected": False, "days": []})
-    connected = _whoop_connected()
-    days = whoop_daily_summary(7) if connected else []
-    return jsonify({"configured": True, "connected": connected, "days": days})
+    days, is_mock = fitness_daily_summary(7)
+    return jsonify({
+        "configured": _whoop_configured(),
+        "connected": _whoop_connected(),
+        "mock": is_mock,
+        "days": days,
+    })
 
 
 @app.route("/api/whoop/disconnect", methods=["POST"])
@@ -12740,6 +12836,17 @@ def api_whoop_heart_rate():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
     return jsonify(fitness_heart_rate())
+
+
+@app.route("/api/whoop/bedtime")
+def api_whoop_bedtime():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    return jsonify({
+        "configured": _whoop_configured(),
+        "connected": _whoop_connected(),
+        **whoop_bedtime_recommendation(),
+    })
 
 
 @app.route("/api/fitness/prs", methods=["GET"])

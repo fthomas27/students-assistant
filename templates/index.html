@@ -3753,6 +3753,18 @@ margin: 8px 2px 10px;
   </div>
 </div>
 
+<!-- Workout Detail Modal -->
+<div class="calendar-modal-backdrop" id="workoutDetailBackdrop" onclick="closeWorkoutDetailModal()"></div>
+<div class="calendar-modal" id="workoutDetailModal">
+  <div class="calendar-modal-header">
+    <h2 id="workoutDetailTitle">Loading...</h2>
+    <button class="calendar-nav-btn" onclick="closeWorkoutDetailModal()" title="Close">✕</button>
+  </div>
+  <div id="workoutDetailContent" style="padding: 18px; color: var(--text); min-height: 260px; transition: opacity 0.2s ease-out;">
+    <div style="text-align: center; padding-top: 80px;"><div style="animation: spin 1s linear infinite; display: inline-block; font-size: 24px;">⌛</div></div>
+  </div>
+</div>
+
 <main class="page-area">
 
 <div class="page active" id="page-home">
@@ -4030,10 +4042,14 @@ margin: 8px 2px 10px;
       <div class="dashx-stack dashx-span4">
         <section class="widget">
           <div class="widget-head">
-            <span class="widget-title">Recent Heart Rate</span>
-            <span class="widget-chip" id="healthHRChip">&ndash;</span>
+            <span class="widget-title">Sleep Score — Past 7 Days</span>
+            <span class="widget-chip" id="healthSleepChip">&ndash;</span>
           </div>
-          <div class="dash-chart" id="healthHRChart" style="min-height:90px;"><div class="widget-empty">Loading&hellip;</div></div>
+          <div class="dash-chart" id="healthSleepChart" style="min-height:90px;"><div class="widget-empty">Loading&hellip;</div></div>
+        </section>
+        <section class="widget" style="flex-shrink:0;">
+          <div class="widget-head"><span class="widget-title">Bedtime</span></div>
+          <div id="healthBedtime"><div class="widget-empty">Loading&hellip;</div></div>
         </section>
         <section class="widget">
           <div class="widget-head"><span class="widget-title">Personal Records</span></div>
@@ -4740,19 +4756,21 @@ function _whoopBandColor(score) {
 let _healthData = null;
 
 async function loadHealthPage() {
-  const [sR, wR, hR, pR, plR] = await Promise.allSettled([
+  const [sR, wR, hR, pR, plR, bR] = await Promise.allSettled([
     dashGet('/api/whoop/summary'),
     dashGet('/api/whoop/workouts'),
     _hrGet(30000),
     dashGet('/api/fitness/prs'),
-    dashGet('/api/fitness/planned-workouts', 15000)
+    dashGet('/api/fitness/planned-workouts', 15000),
+    dashGet('/api/whoop/bedtime', 60000)
   ]);
   _healthData = {
     summary:  sR.status === 'fulfilled' ? sR.value : null,
     workouts: wR.status === 'fulfilled' ? wR.value : null,
     hr:       hR.status === 'fulfilled' ? hR.value : null,
     prs:      pR.status === 'fulfilled' ? pR.value : null,
-    planned:  plR.status === 'fulfilled' ? (plR.value.planned || []) : []
+    planned:  plR.status === 'fulfilled' ? (plR.value.planned || []) : [],
+    bedtime:  bR.status === 'fulfilled' ? bR.value : null
   };
   renderHealthDash();
 }
@@ -4784,24 +4802,9 @@ function _hrGet(ttl) {
   return p;
 }
 
-function _fmtClockMs(ms) {
-  return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
-
 function _renderHRWidget(hr) {
   _setText('healthStatHR', hr && hr.current_bpm ? hr.current_bpm : '–');
   _setText('healthStatHRMeta', hr ? (hr.source === 'mock' ? 'bpm · sample data' : 'bpm · recent') : '');
-  if (hr) {
-    // Label every sample on the client, anchored to when this payload
-    // arrived (newest sample = arrival time, one minute apart going back).
-    const samples = hr.samples || [];
-    const anchor = hr._receivedAt || Date.now();
-    const n = samples.length;
-    samples.forEach((s, i) => { s.t = _fmtClockMs(anchor - (n - 1 - i) * 60000); });
-    const chip = document.getElementById('healthHRChip');
-    if (chip) chip.textContent = hr.current_bpm + ' bpm as of ' + _fmtClockMs(anchor);
-    _renderHRSparkline(samples);
-  }
 }
 
 function _isHealthPageActive() {
@@ -4840,16 +4843,19 @@ document.addEventListener('visibilitychange', () => {
 
 function renderHealthDash() {
   if (!_healthData) return;
-  const { summary, workouts, hr, prs, planned } = _healthData;
+  const { summary, workouts, hr, prs, planned, bedtime } = _healthData;
 
-  const day = summary && summary.connected && (summary.days || [])[0];
+  const day = summary && (summary.days || [])[0];
+  const summaryIsMock = !!(summary && summary.mock);
   _setText('healthStatRecovery', day && day.recovery_score != null ? day.recovery_score + '%' : '–');
-  _setText('healthStatRecoveryMeta', day && day.hrv_ms != null ? 'HRV ' + Math.round(day.hrv_ms) + 'ms' : (day ? 'synced from WHOOP' : 'not connected'));
+  _setText('healthStatRecoveryMeta', day && day.hrv_ms != null ? 'HRV ' + Math.round(day.hrv_ms) + 'ms' : (day ? (summaryIsMock ? 'sample data' : 'synced from WHOOP') : 'not connected'));
   _setText('healthStatStrain', day && day.strain != null ? day.strain.toFixed(1) : '–');
   _setText('healthStatStrainMeta', day ? 'today’s cardiovascular load' : 'not connected');
   _setText('healthStatSleep', day && day.sleep_hours != null ? day.sleep_hours + 'h' : '–');
   _setText('healthStatSleepMeta', day && day.sleep_performance != null ? day.sleep_performance + '% performance' : (day ? 'last night' : 'not connected'));
   _renderHRWidget(hr);
+  _renderSleepScoreChart(summary);
+  _renderBedtimeWidget(bedtime);
 
   const sub = document.getElementById('healthSub');
   if (sub && workouts) {
@@ -4863,13 +4869,20 @@ function renderHealthDash() {
     const list = (workouts.workouts || []).slice(0, 15);
     const chip = document.getElementById('healthWorkoutsChip');
     if (chip) chip.textContent = workouts.mock ? 'sample data' : 'from WHOOP';
+    if (!woWrap.dataset.clickBound) {
+      woWrap.addEventListener('click', e => {
+        const row = e.target.closest('.upnext-row[data-workout-id]');
+        if (row) openWorkoutDetailModal(row.dataset.workoutId);
+      });
+      woWrap.dataset.clickBound = '1';
+    }
     woWrap.innerHTML = list.length ? list.map(w => {
       const dist = w.distance_m ? (w.distance_m / 1609.34).toFixed(1) + ' mi' : '';
       const meta = [w.duration_min ? w.duration_min + ' min' : '', dist,
                     w.strain != null ? 'strain ' + Number(w.strain).toFixed(1) : '',
                     w.avg_hr ? '❤ ' + w.avg_hr : ''].filter(Boolean).join(' · ');
       const dt = w.date ? new Date(w.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
-      return '<div class="upnext-row" style="cursor:default;">'
+      return '<div class="upnext-row" data-workout-id="' + escapeHtml(w.id) + '">'
         + '<span class="upnext-dot" style="background:var(--red);"></span>'
         + '<div class="upnext-main">'
         +   '<div class="upnext-title">' + escapeHtml(w.sport || 'Workout') + '</div>'
@@ -4901,11 +4914,188 @@ function renderHealthDash() {
   renderPlannedWorkouts(planned);
 }
 
-function _renderHRSparkline(samples) {
-  const wrap = document.getElementById('healthHRChart');
-  if (!wrap || !samples.length) return;
+function _renderSleepScoreChart(summary) {
+  const wrap = document.getElementById('healthSleepChart');
+  const chip = document.getElementById('healthSleepChip');
+  if (!wrap) return;
+  const days = (summary && summary.days) || [];
+  const scored = days.filter(d => d.sleep_performance != null);
+  if (chip) {
+    chip.textContent = scored.length
+      ? Math.round(scored.reduce((a, d) => a + d.sleep_performance, 0) / scored.length) + '% avg' + (summary && summary.mock ? ' · sample data' : '')
+      : '–';
+  }
+  if (!scored.length) {
+    wrap.innerHTML = '<div class="widget-empty">No sleep data yet.</div>';
+    return;
+  }
+
+  const ordered = days.slice().reverse(); // oldest → newest, left to right
   const W = Math.max(wrap.clientWidth || 0, 240);
   const H = Math.max(wrap.clientHeight || 0, 90);
+  const padL = 26, padR = 8, padT = 10, padB = 16;
+  const plotW = Math.max(1, W - padL - padR), plotH = Math.max(1, H - padT - padB);
+  const n = ordered.length;
+  const barW = Math.min(28, (plotW / n) * 0.6);
+  const xAt = i => padL + plotW * ((i + 0.5) / n);
+  const yAt = v => padT + plotH * (1 - v / 100);
+  const y0 = yAt(0);
+
+  const gridVals = [100, 50, 0];
+  const gridSvg = gridVals.map(v => {
+    const y = yAt(v).toFixed(1);
+    return '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="var(--border)" stroke-width="1"/>'
+      + '<text x="' + (padL - 6) + '" y="' + y + '" text-anchor="end" dominant-baseline="middle" font-size="9.5" fill="var(--text3)">' + v + '</text>';
+  }).join('');
+
+  const barsSvg = ordered.map((d, i) => {
+    if (d.sleep_performance == null) return '';
+    const x = xAt(i) - barW / 2;
+    const y1 = yAt(d.sleep_performance);
+    return '<rect x="' + x.toFixed(1) + '" y="' + y1.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + (y0 - y1).toFixed(1)
+      + '" rx="3" fill="' + _whoopBandColor(d.sleep_performance) + '"><title>' + escapeHtml(Math.round(d.sleep_performance) + '%') + '</title></rect>';
+  }).join('');
+
+  const labelsSvg = ordered.map((d, i) => {
+    const x = xAt(i).toFixed(1);
+    const wd = d.date ? new Date(d.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'narrow' }) : '';
+    return '<text x="' + x + '" y="' + (H - 4) + '" text-anchor="middle" font-size="9.5" fill="var(--text3)">' + escapeHtml(wd) + '</text>';
+  }).join('');
+
+  wrap.innerHTML = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Sleep score over the past 7 days" style="overflow:visible;display:block;">'
+    + gridSvg + barsSvg + labelsSvg
+    + '</svg>';
+}
+
+let _bedtimeTarget = null;
+let _bedtimeTimer = null;
+
+function _renderBedtimeWidget(bedtime) {
+  const wrap = document.getElementById('healthBedtime');
+  if (!wrap) return;
+  if (!bedtime || !bedtime.bedtime_iso) {
+    wrap.innerHTML = '<div class="widget-empty">Not enough sleep data yet.</div>';
+    if (_bedtimeTimer) {
+      clearInterval(_bedtimeTimer);
+      _bedtimeTimer = null;
+    }
+    return;
+  }
+  _bedtimeTarget = new Date(bedtime.bedtime_iso);
+  wrap.innerHTML =
+    '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;">'
+    +   '<div id="healthBedtimeCountdown" style="font-family:var(--font-display);font-size:20px;font-weight:700;color:var(--text);">&ndash;</div>'
+    +   '<div style="font-size:11px;color:var(--text3);text-align:right;line-height:1.4;">'
+    +     escapeHtml(bedtime.bedtime_display || '') + (bedtime.mock ? ' · sample data' : '') + '<br>'
+    +     (bedtime.sleep_need_hours != null ? bedtime.sleep_need_hours.toFixed(1) + 'h sleep need' : '')
+    +   '</div>'
+    + '</div>';
+  _tickBedtime();
+  if (!_bedtimeTimer) _bedtimeTimer = setInterval(_tickBedtime, 30000);
+}
+
+function _tickBedtime() {
+  const el = document.getElementById('healthBedtimeCountdown');
+  if (!el || !_bedtimeTarget) return;
+  const diffMs = _bedtimeTarget.getTime() - Date.now();
+  const past = diffMs < 0;
+  const abs = Math.abs(diffMs);
+  const h = Math.floor(abs / 3600000);
+  const m = Math.floor((abs % 3600000) / 60000);
+  el.textContent = (past ? 'Past bedtime by ' : 'Bedtime in ') + h + 'h ' + m + 'm';
+  el.style.color = past ? 'var(--red)' : (h < 1 ? 'var(--amber)' : 'var(--text)');
+}
+
+function openWorkoutDetailModal(id) {
+  const modal = document.getElementById('workoutDetailModal');
+  const backdrop = document.getElementById('workoutDetailBackdrop');
+  const content = document.getElementById('workoutDetailContent');
+  if (!modal || !backdrop || !content) return;
+
+  const list = (_healthData && _healthData.workouts && _healthData.workouts.workouts) || [];
+  const w = list.find(x => String(x.id) === String(id));
+  if (!w) { showToast('Workout not found', 'error'); return; }
+
+  const dt = w.date ? new Date(w.date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }) : '';
+  document.getElementById('workoutDetailTitle').textContent = (w.sport || 'Workout') + (dt ? ' · ' + dt : '');
+
+  const dist = w.distance_m ? (w.distance_m / 1609.34).toFixed(2) + ' mi' : null;
+  const stats = [
+    ['Strain', w.strain != null ? Number(w.strain).toFixed(1) : '—'],
+    ['Avg HR', w.avg_hr != null ? w.avg_hr + ' bpm' : '—'],
+    ['Max HR', w.max_hr != null ? w.max_hr + ' bpm' : '—'],
+    ['Duration', w.duration_min != null ? w.duration_min + ' min' : '—'],
+    ['Distance', dist || '—'],
+    ['Calories', w.calories != null ? w.calories : '—']
+  ];
+  const statsHtml = stats.map(([label, val]) =>
+    '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 12px;">'
+    +   '<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:3px;">' + escapeHtml(label) + '</div>'
+    +   '<div style="font-size:16px;font-weight:700;color:var(--text);">' + escapeHtml(String(val)) + '</div>'
+    + '</div>'
+  ).join('');
+
+  content.innerHTML =
+    '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px;">' + statsHtml + '</div>'
+    + '<div style="border-top:1px solid var(--border);padding-top:14px;">'
+    +   '<div style="font-size:12px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px;">Heart Rate</div>'
+    +   '<div class="dash-chart" id="workoutHRChart" style="min-height:140px;"></div>'
+    +   '<div style="font-size:10.5px;color:var(--text3);margin-top:6px;">Estimated curve based on this workout&rsquo;s average and peak heart rate &mdash; WHOOP&rsquo;s API doesn&rsquo;t expose a per-second trace.</div>'
+    + '</div>';
+
+  modal.classList.add('visible');
+  backdrop.classList.add('visible');
+
+  const chartEl = document.getElementById('workoutHRChart');
+  if (w.avg_hr != null && w.max_hr != null) {
+    _renderWorkoutHRChart(chartEl, w);
+  } else if (chartEl) {
+    chartEl.innerHTML = '<div class="widget-empty">No heart-rate data for this workout.</div>';
+  }
+}
+
+function closeWorkoutDetailModal() {
+  const modal = document.getElementById('workoutDetailModal');
+  const backdrop = document.getElementById('workoutDetailBackdrop');
+  if (modal) modal.classList.remove('visible');
+  if (backdrop) backdrop.classList.remove('visible');
+}
+
+function _synthWorkoutHRSamples(w) {
+  const n = 24;
+  const avg = w.avg_hr, max = w.max_hr;
+  const rest = Math.max(85, avg - 35);
+  let seed = 0;
+  String(w.id).split('').forEach(c => { seed = (seed * 31 + c.charCodeAt(0)) >>> 0; });
+  const start = w.start ? new Date(w.start) : null;
+  const end = w.end ? new Date(w.end) : null;
+  const samples = [];
+  for (let i = 0; i < n; i++) {
+    const p = i / (n - 1);
+    let bpm;
+    if (p < 0.12) {
+      bpm = rest + (avg - rest) * (p / 0.12);
+    } else if (p > 0.88) {
+      bpm = avg - (avg - rest) * ((p - 0.88) / 0.12) * 0.8;
+    } else {
+      const mid = (p - 0.12) / 0.76;
+      bpm = avg + (max - avg) * Math.max(0, Math.sin(mid * Math.PI));
+    }
+    bpm = Math.max(rest - 5, Math.round(bpm + Math.sin(seed + i * 1.7) * 2.5));
+    let t = '';
+    if (start && !isNaN(start) && end && !isNaN(end)) {
+      t = new Date(start.getTime() + p * (end.getTime() - start.getTime())).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+    samples.push({ bpm, t });
+  }
+  return samples;
+}
+
+function _renderWorkoutHRChart(wrap, w) {
+  if (!wrap) return;
+  const samples = _synthWorkoutHRSamples(w);
+  const W = Math.max(wrap.clientWidth || 0, 240);
+  const H = Math.max(wrap.clientHeight || 0, 140);
   const padL = 30, padR = 8, padT = 10, padB = 16;
   const plotW = Math.max(1, W - padL - padR), plotH = Math.max(1, H - padT - padB);
   const vals = samples.map(s => s.bpm);
@@ -4913,11 +5103,9 @@ function _renderHRSparkline(samples) {
   const n = samples.length;
   const xAt = i => padL + (n > 1 ? plotW * (i / (n - 1)) : plotW / 2);
   const yAt = v => padT + plotH * (1 - (v - min) / (max - min));
-
   const pts = samples.map((s, i) => xAt(i).toFixed(1) + ',' + yAt(s.bpm).toFixed(1));
   const last = pts[pts.length - 1].split(',');
 
-  // Recessive gridlines + bpm labels (max/mid/min)
   const gridVals = [max, (max + min) / 2, min];
   const gridSvg = gridVals.map(v => {
     const y = yAt(v).toFixed(1);
@@ -4925,7 +5113,6 @@ function _renderHRSparkline(samples) {
       + '<text x="' + (padL - 6) + '" y="' + y + '" text-anchor="end" dominant-baseline="middle" font-size="9.5" fill="var(--text3)">' + Math.round(v) + '</text>';
   }).join('');
 
-  // Time-of-day ticks: start / middle / end of the sampled window
   const tickIdx = n > 2 ? [0, Math.floor((n - 1) / 2), n - 1] : [0, n - 1];
   const xLabelsSvg = tickIdx.map(i => {
     const x = xAt(i).toFixed(1);
@@ -4933,45 +5120,12 @@ function _renderHRSparkline(samples) {
     return '<text x="' + x + '" y="' + (H - 4) + '" text-anchor="' + anchor + '" font-size="9.5" fill="var(--text3)">' + escapeHtml(samples[i].t || '') + '</text>';
   }).join('');
 
-  wrap.innerHTML = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Heart rate over the last 30 minutes" style="overflow:visible;display:block;">'
+  wrap.innerHTML = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="Estimated heart rate during workout" style="overflow:visible;display:block;">'
     + gridSvg
     + '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--red)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
     + '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="3.5" fill="var(--red)"/>'
     + xLabelsSvg
-    + '<line id="hrCrosshair" x1="0" y1="' + padT + '" x2="0" y2="' + (H - padB) + '" stroke="var(--text3)" stroke-width="1" stroke-dasharray="2,2" opacity="0"/>'
-    + '<circle id="hrCrosshairDot" r="4" fill="var(--red)" stroke="var(--bg)" stroke-width="1.5" opacity="0"/>'
-    + '</svg>'
-    + '<div class="chart-tip" id="hrChartTip"></div>';
-
-  if (n < 2) return;
-
-  const svg = wrap.querySelector('svg');
-  const crosshair = wrap.querySelector('#hrCrosshair');
-  const dot = wrap.querySelector('#hrCrosshairDot');
-  const tip = wrap.querySelector('#hrChartTip');
-
-  function showAt(i) {
-    const x = xAt(i), y = yAt(samples[i].bpm);
-    crosshair.setAttribute('x1', x); crosshair.setAttribute('x2', x); crosshair.setAttribute('opacity', '1');
-    dot.setAttribute('cx', x); dot.setAttribute('cy', y); dot.setAttribute('opacity', '1');
-    tip.textContent = (samples[i].t || '') + ' · ' + samples[i].bpm + ' bpm';
-    tip.style.left = x + 'px';
-    tip.style.top = y + 'px';
-    tip.style.opacity = '1';
-  }
-  function hide() {
-    crosshair.setAttribute('opacity', '0');
-    dot.setAttribute('opacity', '0');
-    tip.style.opacity = '0';
-  }
-  svg.addEventListener('pointermove', function(e) {
-    const rect = svg.getBoundingClientRect();
-    const relX = (e.clientX - rect.left) * (W / rect.width);
-    let i = Math.round((relX - padL) / plotW * (n - 1));
-    i = Math.max(0, Math.min(n - 1, i));
-    showAt(i);
-  });
-  svg.addEventListener('pointerleave', hide);
+    + '</svg>';
 }
 
 function renderPlannedWorkouts(planned) {
