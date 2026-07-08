@@ -707,3 +707,134 @@ def test_config_post_returns_warning_for_dead_canvas_feed(client, monkeypatch):
     data = resp.get_json()
     assert data["status"] == "ok"
     assert data.get("warnings") and any("Canvas" in w for w in data["warnings"])
+
+
+def test_books_get_returns_list(client):
+    """GET /api/books returns a JSON list (empty from the stub cursor)."""
+    c, _ = client
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+    resp = c.get("/api/books")
+    assert resp.status_code == 200
+    assert resp.get_json() == []
+
+
+def test_books_post_requires_title(client):
+    """POST /api/books with a blank title is rejected with 400."""
+    c, _ = client
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+        s["csrf_token"] = "tok"
+    resp = c.post("/api/books", json={"title": "   "},
+                  headers={"X-CSRF-Token": "tok"})
+    assert resp.status_code == 400
+
+
+def test_books_post_inserts_book(client, monkeypatch):
+    """A valid POST inserts a row and echoes the book back with completed=False."""
+    c, flask_app = client
+    inserts = []
+
+    class StubCursor(FakeCursor):
+        def execute(self, sql, params=None, *_a, **_kw):
+            self._row = None
+            if "insert into books" in (sql or "").lower():
+                inserts.append(params)
+                self._row = {"id": 7, "created_at": datetime.now()}
+
+        def fetchone(self):
+            return self._row
+
+    class StubConn(FakeConn):
+        def cursor(self):
+            return StubCursor()
+
+    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+        s["csrf_token"] = "tok"
+    resp = c.post("/api/books",
+                  json={"title": "Deep Work", "author": "Cal Newport", "notes": "focus"},
+                  headers={"X-CSRF-Token": "tok"})
+    assert resp.status_code == 201, resp.get_data(as_text=True)
+    data = resp.get_json()
+    assert data["id"] == 7
+    assert data["title"] == "Deep Work"
+    assert data["author"] == "Cal Newport"
+    assert data["completed"] is False
+    assert len(inserts) == 1
+    assert inserts[0][0] == "Deep Work"
+
+
+def test_skills_get_returns_list(client):
+    """GET /api/skills returns a JSON list (empty from the stub cursor)."""
+    c, _ = client
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+    resp = c.get("/api/skills")
+    assert resp.status_code == 200
+    assert resp.get_json() == []
+
+
+def test_skills_post_requires_name(client):
+    """POST /api/skills with a blank name is rejected with 400."""
+    c, _ = client
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+        s["csrf_token"] = "tok"
+    resp = c.post("/api/skills", json={"name": "  "},
+                  headers={"X-CSRF-Token": "tok"})
+    assert resp.status_code == 400
+
+
+def test_skills_post_clears_prior_focus(client, monkeypatch):
+    """Adding a skill as the focus first clears focus off every other skill."""
+    c, flask_app = client
+    statements = []
+
+    class StubCursor(FakeCursor):
+        def execute(self, sql, params=None, *_a, **_kw):
+            self._row = None
+            statements.append((sql or "").lower())
+            if "insert into skills" in (sql or "").lower():
+                self._row = {"id": 3, "created_at": datetime.now()}
+
+        def fetchone(self):
+            return self._row
+
+    class StubConn(FakeConn):
+        def cursor(self):
+            return StubCursor()
+
+    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+        s["csrf_token"] = "tok"
+    resp = c.post("/api/skills",
+                  json={"name": "Public speaking", "notes": "join debate", "focus": True},
+                  headers={"X-CSRF-Token": "tok"})
+    assert resp.status_code == 201, resp.get_data(as_text=True)
+    data = resp.get_json()
+    assert data["name"] == "Public speaking"
+    assert data["focus"] is True
+    # The clear-focus UPDATE must run before the INSERT.
+    assert any("set focus=false" in s for s in statements)
+    clear_idx = next(i for i, s in enumerate(statements) if "set focus=false" in s)
+    insert_idx = next(i for i, s in enumerate(statements) if "insert into skills" in s)
+    assert clear_idx < insert_idx
+
+
+def test_verse_of_the_day_returns_reference_and_text(client):
+    """GET /api/verse-of-the-day returns a stable verse for today."""
+    c, _ = client
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+    resp = c.get("/api/verse-of-the-day")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["reference"] and data["text"]
+    assert data["translation"] == "KJV"
+    # Deterministic within a day: a second call returns the same verse.
+    again = c.get("/api/verse-of-the-day").get_json()
+    assert again["reference"] == data["reference"]
+    assert again["text"] == data["text"]

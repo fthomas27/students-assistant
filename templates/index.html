@@ -3253,6 +3253,14 @@ grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
 gap: 12px;
 align-items: start;
 }
+.growth-grid {
+display: grid;
+grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+gap: 14px;
+align-items: start;
+margin-top: 14px;
+}
+.growth-grid .widget { min-width: 0; }
 .project-card {
 background: var(--surface);
 border: 1px solid var(--border);
@@ -3563,6 +3571,7 @@ margin: 8px 2px 10px;
     <!-- Always-visible -->
     <button class="circle-btn"            data-page="health"   onclick="navigateTo('health')"   title="Health &amp; Fitness"><span class="nav-pill-icon">&#10084;</span><span class="nav-pill-label">Health</span></button>
     <button class="circle-btn"            data-page="projects" onclick="navigateTo('projects')" title="Projects"><span class="nav-pill-icon">&#9707;</span><span class="nav-pill-label">Projects</span><span class="circle-btn-badge" data-badge="projects"></span></button>
+    <button class="circle-btn"            data-page="growth"   onclick="navigateTo('growth')"   title="Personal Improvement"><span class="nav-pill-icon">&#127793;</span><span class="nav-pill-label">Growth</span></button>
     <button class="circle-btn"            data-page="tasks"    onclick="navigateTo('tasks')"    title="Tasks"><span class="nav-pill-icon">&#10003;</span><span class="nav-pill-label">Tasks</span><span class="circle-btn-badge" data-badge="tasks"></span></button>
     <button class="circle-btn"            id="calendarNavBtn"  onclick="openCalendarModal()"    title="Calendar"><span class="nav-pill-icon">&#9634;</span><span class="nav-pill-label">Calendar</span></button>
     <!-- Summer-only -->
@@ -3581,6 +3590,7 @@ margin: 8px 2px 10px;
       <!-- Always visible -->
       <button class="nav-menu-item" data-page="health"       onclick="navigateTo('health'); closeNavMenu();"        role="menuitem"><span class="nav-menu-item-icon">&#10084;</span>Health</button>
       <button class="nav-menu-item" data-page="projects"     onclick="navigateTo('projects'); closeNavMenu();"      role="menuitem"><span class="nav-menu-item-icon">&#128230;</span>Projects</button>
+      <button class="nav-menu-item" data-page="growth"       onclick="navigateTo('growth'); closeNavMenu();"        role="menuitem"><span class="nav-menu-item-icon">&#127793;</span>Growth</button>
       <button class="nav-menu-item" data-page="tasks"        onclick="navigateTo('tasks'); closeNavMenu();"         role="menuitem"><span class="nav-menu-item-icon">&#10003;</span>Tasks</button>
       <button class="nav-menu-item" data-page="chat"         onclick="navigateTo('chat'); closeNavMenu();"          role="menuitem"><span class="nav-menu-item-icon">&#128172;</span>Chat</button>
       <!-- Summer-only -->
@@ -4196,6 +4206,88 @@ margin: 8px 2px 10px;
 </div>
 
 
+<!-- ── Personal Improvement Page ── -->
+<div class="page" id="page-growth">
+  <div class="dashx">
+    <div class="dashx-head">
+      <div>
+        <span class="dash-eyebrow">Personal Improvement</span>
+        <h1 class="dashx-greeting">Growth</h1>
+      </div>
+      <div class="dash-sub">Tools to help you grow, one habit at a time.</div>
+    </div>
+
+    <div class="growth-grid">
+      <!-- Book Tracker widget -->
+      <section class="widget">
+        <div class="widget-head" style="display:flex;justify-content:space-between;align-items:center;">
+          <span class="widget-title">&#128218; Reading List</span>
+          <button class="add-btn" onclick="openAddBook()" title="Add a book">+</button>
+        </div>
+
+        <div style="padding:4px 0 10px;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:4px;">
+            <span>Books read</span>
+            <span id="bookProgressText">0 / 0</span>
+          </div>
+          <div class="bucket-progress-bar-wrap"><div class="bucket-progress-bar" id="bookProgressBar" style="width:0%;"></div></div>
+        </div>
+
+        <!-- Add Book inline form -->
+        <div id="bookAddForm" style="display:none;padding:14px;background:var(--surface);border-radius:var(--r);margin-bottom:12px;border:1px solid var(--border2);">
+          <input id="bookTitleInput" type="text" class="field" placeholder="Book title" style="margin-bottom:8px;">
+          <input id="bookAuthorInput" type="text" class="field" placeholder="Author (optional)" style="margin-bottom:8px;">
+          <textarea id="bookNotesInput" rows="2" class="field" placeholder="Why you want to read it / notes (optional)" style="margin-bottom:10px;resize:vertical;"></textarea>
+          <div style="display:flex;gap:8px;">
+            <button class="btn-accent" onclick="saveBook()" style="flex:1;font-size:12px;">Add to list</button>
+            <button class="btn-ghost" onclick="closeBookAddForm()" style="flex:1;font-size:12px;">Cancel</button>
+          </div>
+        </div>
+
+        <div id="bookListContainer"><p style="color:var(--text3);font-size:13px;">Loading...</p></div>
+      </section>
+
+      <!-- Current Skill Focus widget -->
+      <section class="widget">
+        <div class="widget-head" style="display:flex;justify-content:space-between;align-items:center;">
+          <span class="widget-title">&#127919; Current Skill Focus</span>
+          <button class="add-btn" onclick="openAddSkill()" title="Add a skill">+</button>
+        </div>
+
+        <div id="skillFocusBanner"></div>
+
+        <!-- Add Skill inline form -->
+        <div id="skillAddForm" style="display:none;padding:14px;background:var(--surface);border-radius:var(--r);margin:0 0 12px;border:1px solid var(--border2);">
+          <input id="skillNameInput" type="text" class="field" placeholder="Skill you want to hone (e.g. Public speaking)" style="margin-bottom:8px;">
+          <textarea id="skillNotesInput" rows="2" class="field" placeholder="Your goal or how you're practicing (optional)" style="margin-bottom:10px;resize:vertical;"></textarea>
+          <label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2);margin-bottom:10px;cursor:pointer;">
+            <input type="checkbox" id="skillFocusInput" checked style="accent-color:var(--accent);width:15px;height:15px;cursor:pointer;">
+            Make this my current focus
+          </label>
+          <div style="display:flex;gap:8px;">
+            <button class="btn-accent" onclick="saveSkill()" style="flex:1;font-size:12px;">Add skill</button>
+            <button class="btn-ghost" onclick="closeSkillAddForm()" style="flex:1;font-size:12px;">Cancel</button>
+          </div>
+        </div>
+
+        <div id="skillListContainer"><p style="color:var(--text3);font-size:13px;">Loading...</p></div>
+      </section>
+
+      <!-- Daily Verse widget -->
+      <section class="widget">
+        <div class="widget-head" style="display:flex;justify-content:space-between;align-items:center;">
+          <span class="widget-title">&#128220; Daily Verse</span>
+          <span id="verseDate" style="font-size:11px;color:var(--text3);"></span>
+        </div>
+        <div id="verseOfDay" style="padding:6px 2px;"><p style="color:var(--text3);font-size:13px;">Loading today's verse...</p></div>
+      </section>
+
+      <!-- More personal-improvement widgets can be added here later -->
+    </div>
+  </div>
+</div>
+
+
 </main>
 
 <script>
@@ -4303,7 +4395,8 @@ var NAV_PAGE_META = {
   tasks:       { label: 'Tasks',       icon: '✓' },
   assignments: { label: 'Assignments', icon: '📋' },
   chat:        { label: 'Chat',        icon: '💬' },
-  projects:    { label: 'Projects',    icon: '📦' }
+  projects:    { label: 'Projects',    icon: '📦' },
+  growth:      { label: 'Growth',      icon: '🌱' }
 };
 
 function updateNavMenuLabel(pageName) {
@@ -4362,6 +4455,7 @@ function navigateTo(pageName) {
   else if (pageName === 'tasks') loadSidebarData();
   else if (pageName === 'assignments') loadAssignments();
   else if (pageName === 'projects') loadProjectsPage().catch(function(e) { console.error('Projects dashboard load failed:', e); });
+  else if (pageName === 'growth') { loadBooks(); loadSkills(); loadVerseOfDay(); }
   else if (pageName === 'summer-bucket') loadBucketList();
   else if (pageName === 'chat') {
     var msgs = document.getElementById('chatMessages');
@@ -5718,6 +5812,235 @@ function saveBucketItem() {
   if (!title) { document.getElementById('bucketTitleInput').focus(); return; }
   fetch('/api/bucket-list', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({title, category, notes}) })
     .then(r => r.json()).then(() => { closeBucketAddForm(); loadBucketList(); });
+}
+
+// ── Book Tracker (Personal Improvement) ──────────────────────────────────────
+function loadBooks() {
+  const el = document.getElementById('bookListContainer');
+  if (!el) return;
+  fetch('/api/books').then(r => r.json()).then(books => {
+    _refreshBookProgress(books);
+    _renderBooks(books);
+  }).catch(() => { el.innerHTML = '<p style="color:var(--text3);font-size:13px;">Could not load your reading list.</p>'; });
+}
+
+function _refreshBookProgress(books) {
+  const done = books.filter(b => b.completed).length;
+  const total = books.length;
+  const txt = document.getElementById('bookProgressText');
+  const bar = document.getElementById('bookProgressBar');
+  if (txt) txt.textContent = done + ' / ' + total;
+  if (bar) bar.style.width = (total ? Math.round(done / total * 100) : 0) + '%';
+}
+
+function _renderBooks(books) {
+  const el = document.getElementById('bookListContainer');
+  if (!el) return;
+  if (!books.length) {
+    el.innerHTML = '<p style="color:var(--text3);font-size:13px;">No books yet — add one you want to read.</p>';
+    return;
+  }
+  const toRead = books.filter(b => !b.completed);
+  const done   = books.filter(b => b.completed);
+  let html = '';
+  if (toRead.length) html += toRead.map(renderBookItem).join('');
+  if (done.length) {
+    html += `<div style="margin:16px 0 6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-weight:700;">&#10003; Read (${done.length})</div>`;
+    html += done.map(renderBookItem).join('');
+  }
+  el.innerHTML = html;
+}
+
+function renderBookItem(book) {
+  const titleStyle = book.completed ? 'text-decoration:line-through;color:var(--text3);' : '';
+  const authorRow = book.author
+    ? `<span style="font-size:11px;color:var(--text3);margin-left:6px;">by ${escapeHtml(book.author)}</span>`
+    : '';
+  const notesRow = book.notes
+    ? `<div style="font-size:11px;color:var(--text3);margin-top:3px;padding-left:26px;line-height:1.4;">${escapeHtml(book.notes)}</div>`
+    : '';
+  const doneDate = book.completed && book.completed_at
+    ? `<div style="font-size:10px;color:var(--green);margin-top:2px;padding-left:26px;">Finished ${new Date(book.completed_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</div>`
+    : '';
+  return `<div style="padding:9px 0;border-bottom:1px solid var(--border);" id="book-item-${book.id}">
+    <div style="display:flex;align-items:flex-start;gap:10px;">
+      <input type="checkbox" ${book.completed ? 'checked' : ''} onchange="toggleBook(${book.id}, this)"
+        style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;flex-shrink:0;margin-top:1px;">
+      <span style="flex:1;font-size:13px;${titleStyle}">${escapeHtml(book.title)}${authorRow}</span>
+      <button onclick="deleteBook(${book.id})" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:13px;padding:0 2px;flex-shrink:0;" title="Delete">&#10005;</button>
+    </div>
+    ${notesRow}${doneDate}
+  </div>`;
+}
+
+function toggleBook(id, cb) {
+  fetch('/api/books/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({completed: cb.checked}) })
+    .then(r => r.json()).then(() => loadBooks()).catch(() => { cb.checked = !cb.checked; });
+}
+
+function deleteBook(id) {
+  if (!confirm('Remove this book from your list?')) return;
+  fetch('/api/books/' + id, { method: 'DELETE' }).then(() => loadBooks());
+}
+
+function openAddBook() {
+  const form = document.getElementById('bookAddForm');
+  if (form) { form.style.display = 'block'; document.getElementById('bookTitleInput').focus(); }
+}
+
+function closeBookAddForm() {
+  const form = document.getElementById('bookAddForm');
+  if (!form) return;
+  form.style.display = 'none';
+  document.getElementById('bookTitleInput').value  = '';
+  document.getElementById('bookAuthorInput').value = '';
+  document.getElementById('bookNotesInput').value  = '';
+}
+
+function saveBook() {
+  const title  = (document.getElementById('bookTitleInput').value  || '').trim();
+  const author = (document.getElementById('bookAuthorInput').value || '').trim();
+  const notes  = (document.getElementById('bookNotesInput').value  || '').trim();
+  if (!title) { document.getElementById('bookTitleInput').focus(); return; }
+  fetch('/api/books', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({title, author, notes}) })
+    .then(r => r.json()).then(() => { closeBookAddForm(); loadBooks(); });
+}
+
+// ── Current Skill Focus (Personal Improvement) ───────────────────────────────
+function loadSkills() {
+  const el = document.getElementById('skillListContainer');
+  if (!el) return;
+  fetch('/api/skills').then(r => r.json()).then(skills => {
+    _renderSkillFocus(skills);
+    _renderSkills(skills);
+  }).catch(() => {
+    const banner = document.getElementById('skillFocusBanner');
+    if (banner) banner.innerHTML = '';
+    el.innerHTML = '<p style="color:var(--text3);font-size:13px;">Could not load your skills.</p>';
+  });
+}
+
+function _renderSkillFocus(skills) {
+  const banner = document.getElementById('skillFocusBanner');
+  if (!banner) return;
+  const focus = skills.find(s => s.focus && !s.completed);
+  if (!focus) {
+    banner.innerHTML = `<div style="padding:12px 14px;background:var(--surface);border:1px dashed var(--border2);border-radius:var(--r);margin-bottom:12px;font-size:12px;color:var(--text3);">No skill set as your current focus yet. Add one, or star a skill below.</div>`;
+    return;
+  }
+  const notes = focus.notes
+    ? `<div style="font-size:12px;color:var(--text2);margin-top:5px;line-height:1.45;">${escapeHtml(focus.notes)}</div>`
+    : '';
+  banner.innerHTML = `<div style="padding:13px 15px;background:color-mix(in srgb, var(--accent) 12%, transparent);border:1px solid var(--accent);border-radius:var(--r);margin-bottom:12px;">
+    <div style="font-size:10px;color:var(--accent);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:4px;">&#9733; Honing now</div>
+    <div style="font-size:15px;font-weight:700;color:var(--text);">${escapeHtml(focus.name)}</div>
+    ${notes}
+    <div style="margin-top:9px;">
+      <button onclick="completeSkill(${focus.id})" class="btn-ghost" style="font-size:11px;padding:4px 10px;">Mark as honed</button>
+    </div>
+  </div>`;
+}
+
+function _renderSkills(skills) {
+  const el = document.getElementById('skillListContainer');
+  if (!el) return;
+  const others = skills.filter(s => !(s.focus && !s.completed));
+  const active = others.filter(s => !s.completed);
+  const done   = others.filter(s => s.completed);
+  if (!skills.length) {
+    el.innerHTML = '<p style="color:var(--text3);font-size:13px;">No skills yet — add one you want to develop.</p>';
+    return;
+  }
+  let html = '';
+  if (active.length) {
+    html += `<div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin:2px 0 6px;">Also developing</div>`;
+    html += active.map(renderSkillItem).join('');
+  }
+  if (done.length) {
+    html += `<div style="margin:16px 0 6px;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-weight:700;">&#10003; Honed (${done.length})</div>`;
+    html += done.map(renderSkillItem).join('');
+  }
+  el.innerHTML = html || '<p style="color:var(--text3);font-size:13px;">Your current focus is set above.</p>';
+}
+
+function renderSkillItem(skill) {
+  const nameStyle = skill.completed ? 'text-decoration:line-through;color:var(--text3);' : '';
+  const notesRow = skill.notes
+    ? `<div style="font-size:11px;color:var(--text3);margin-top:3px;padding-left:26px;line-height:1.4;">${escapeHtml(skill.notes)}</div>`
+    : '';
+  const doneDate = skill.completed && skill.completed_at
+    ? `<div style="font-size:10px;color:var(--green);margin-top:2px;padding-left:26px;">Honed ${new Date(skill.completed_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</div>`
+    : '';
+  const starBtn = skill.completed
+    ? ''
+    : `<button onclick="setSkillFocus(${skill.id})" title="Make this my current focus" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:0 2px;flex-shrink:0;">&#9734;</button>`;
+  return `<div style="padding:9px 0;border-bottom:1px solid var(--border);" id="skill-item-${skill.id}">
+    <div style="display:flex;align-items:flex-start;gap:10px;">
+      <input type="checkbox" ${skill.completed ? 'checked' : ''} onchange="toggleSkill(${skill.id}, this)"
+        style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;flex-shrink:0;margin-top:1px;">
+      <span style="flex:1;font-size:13px;${nameStyle}">${escapeHtml(skill.name)}</span>
+      ${starBtn}
+      <button onclick="deleteSkill(${skill.id})" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:13px;padding:0 2px;flex-shrink:0;" title="Delete">&#10005;</button>
+    </div>
+    ${notesRow}${doneDate}
+  </div>`;
+}
+
+function setSkillFocus(id) {
+  fetch('/api/skills/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({focus: true}) })
+    .then(r => r.json()).then(() => loadSkills());
+}
+
+function completeSkill(id) {
+  fetch('/api/skills/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({completed: true}) })
+    .then(r => r.json()).then(() => loadSkills());
+}
+
+function toggleSkill(id, cb) {
+  fetch('/api/skills/' + id, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({completed: cb.checked}) })
+    .then(r => r.json()).then(() => loadSkills()).catch(() => { cb.checked = !cb.checked; });
+}
+
+function deleteSkill(id) {
+  if (!confirm('Remove this skill?')) return;
+  fetch('/api/skills/' + id, { method: 'DELETE' }).then(() => loadSkills());
+}
+
+function openAddSkill() {
+  const form = document.getElementById('skillAddForm');
+  if (form) { form.style.display = 'block'; document.getElementById('skillNameInput').focus(); }
+}
+
+function closeSkillAddForm() {
+  const form = document.getElementById('skillAddForm');
+  if (!form) return;
+  form.style.display = 'none';
+  document.getElementById('skillNameInput').value  = '';
+  document.getElementById('skillNotesInput').value = '';
+  document.getElementById('skillFocusInput').checked = true;
+}
+
+function saveSkill() {
+  const name  = (document.getElementById('skillNameInput').value  || '').trim();
+  const notes = (document.getElementById('skillNotesInput').value || '').trim();
+  const focus = !!document.getElementById('skillFocusInput').checked;
+  if (!name) { document.getElementById('skillNameInput').focus(); return; }
+  fetch('/api/skills', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, notes, focus}) })
+    .then(r => r.json()).then(() => { closeSkillAddForm(); loadSkills(); });
+}
+
+// ── Daily Verse (Personal Improvement) ───────────────────────────────────────
+function loadVerseOfDay() {
+  const el = document.getElementById('verseOfDay');
+  if (!el) return;
+  fetch('/api/verse-of-the-day').then(r => r.json()).then(v => {
+    const dateEl = document.getElementById('verseDate');
+    if (dateEl && v.date) {
+      dateEl.textContent = new Date(v.date + 'T00:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'});
+    }
+    el.innerHTML = `<blockquote style="margin:0;font-size:14px;line-height:1.6;color:var(--text);font-style:italic;border-left:3px solid var(--accent);padding-left:12px;">${escapeHtml(v.text)}</blockquote>
+      <div style="margin-top:8px;font-size:12px;font-weight:700;color:var(--accent);text-align:right;">— ${escapeHtml(v.reference)}${v.translation ? ' (' + escapeHtml(v.translation) + ')' : ''}</div>`;
+  }).catch(() => { el.innerHTML = '<p style="color:var(--text3);font-size:13px;">Could not load today\'s verse.</p>'; });
 }
 
 function confirmLogout() {
