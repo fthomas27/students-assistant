@@ -746,6 +746,7 @@ def init_db():
         ("chat_messages_idx", "CREATE INDEX IF NOT EXISTS idx_chat_msgs_conv ON chat_messages(conversation_id, created_at)"),
         ("chat_summaries", "CREATE TABLE IF NOT EXISTS chat_summaries (conversation_id TEXT PRIMARY KEY, summary TEXT NOT NULL DEFAULT '', message_count INT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("bucket_list", "CREATE TABLE IF NOT EXISTS bucket_list (id SERIAL PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("books", "CREATE TABLE IF NOT EXISTS books (id SERIAL PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("people_profiles", "CREATE TABLE IF NOT EXISTS people_profiles (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, relationship TEXT NOT NULL DEFAULT '', facts TEXT NOT NULL DEFAULT '[]', mem0_synced BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("gmail_drafts", "CREATE TABLE IF NOT EXISTS gmail_drafts (id SERIAL PRIMARY KEY, to_addr TEXT NOT NULL, cc_addr TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', conversation_id TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("gmail_drafts_conv_idx", "CREATE INDEX IF NOT EXISTS idx_gmail_drafts_conv ON gmail_drafts(conversation_id) WHERE conversation_id != ''"),
@@ -8054,6 +8055,76 @@ def api_bucket_list_delete(item_id):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("DELETE FROM bucket_list WHERE id=%s", (item_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+# ── Book Tracker Endpoints (Personal Improvement) ─────────────────────────────
+
+@app.route("/api/books", methods=["GET"])
+def api_books_get():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, title, author, notes, completed, completed_at, created_at FROM books ORDER BY completed, created_at DESC")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify([{
+        "id": r["id"],
+        "title": r["title"],
+        "author": r["author"],
+        "notes": r["notes"],
+        "completed": r["completed"],
+        "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+        "created_at": r["created_at"].isoformat(),
+    } for r in rows])
+
+
+@app.route("/api/books", methods=["POST"])
+def api_books_post():
+    data = request.get_json(force=True) or {}
+    title  = str(data.get("title",  "")).strip()[:500]
+    author = str(data.get("author", "")).strip()[:200]
+    notes  = str(data.get("notes",  "")).strip()[:2000]
+    if not title:
+        return jsonify({"error": "title required"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO books (title, author, notes) VALUES (%s, %s, %s) RETURNING id, created_at", (title, author, notes))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"id": row["id"], "title": title, "author": author, "notes": notes, "completed": False, "completed_at": None, "created_at": row["created_at"].isoformat()}), 201
+
+
+@app.route("/api/books/<int:book_id>", methods=["PATCH"])
+def api_books_patch(book_id):
+    data = request.get_json(force=True) or {}
+    conn = get_db()
+    cur = conn.cursor()
+    if "completed" in data:
+        now_ts = datetime.now(get_tz()) if data["completed"] else None
+        cur.execute("UPDATE books SET completed=%s, completed_at=%s WHERE id=%s", (bool(data["completed"]), now_ts, book_id))
+    if "title" in data:
+        cur.execute("UPDATE books SET title=%s WHERE id=%s", (str(data["title"])[:500], book_id))
+    if "author" in data:
+        cur.execute("UPDATE books SET author=%s WHERE id=%s", (str(data["author"])[:200], book_id))
+    if "notes" in data:
+        cur.execute("UPDATE books SET notes=%s WHERE id=%s", (str(data["notes"])[:2000], book_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/books/<int:book_id>", methods=["DELETE"])
+def api_books_delete(book_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM books WHERE id=%s", (book_id,))
     conn.commit()
     cur.close()
     conn.close()

@@ -707,3 +707,60 @@ def test_config_post_returns_warning_for_dead_canvas_feed(client, monkeypatch):
     data = resp.get_json()
     assert data["status"] == "ok"
     assert data.get("warnings") and any("Canvas" in w for w in data["warnings"])
+
+
+def test_books_get_returns_list(client):
+    """GET /api/books returns a JSON list (empty from the stub cursor)."""
+    c, _ = client
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+    resp = c.get("/api/books")
+    assert resp.status_code == 200
+    assert resp.get_json() == []
+
+
+def test_books_post_requires_title(client):
+    """POST /api/books with a blank title is rejected with 400."""
+    c, _ = client
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+        s["csrf_token"] = "tok"
+    resp = c.post("/api/books", json={"title": "   "},
+                  headers={"X-CSRF-Token": "tok"})
+    assert resp.status_code == 400
+
+
+def test_books_post_inserts_book(client, monkeypatch):
+    """A valid POST inserts a row and echoes the book back with completed=False."""
+    c, flask_app = client
+    inserts = []
+
+    class StubCursor(FakeCursor):
+        def execute(self, sql, params=None, *_a, **_kw):
+            self._row = None
+            if "insert into books" in (sql or "").lower():
+                inserts.append(params)
+                self._row = {"id": 7, "created_at": datetime.now()}
+
+        def fetchone(self):
+            return self._row
+
+    class StubConn(FakeConn):
+        def cursor(self):
+            return StubCursor()
+
+    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+        s["csrf_token"] = "tok"
+    resp = c.post("/api/books",
+                  json={"title": "Deep Work", "author": "Cal Newport", "notes": "focus"},
+                  headers={"X-CSRF-Token": "tok"})
+    assert resp.status_code == 201, resp.get_data(as_text=True)
+    data = resp.get_json()
+    assert data["id"] == 7
+    assert data["title"] == "Deep Work"
+    assert data["author"] == "Cal Newport"
+    assert data["completed"] is False
+    assert len(inserts) == 1
+    assert inserts[0][0] == "Deep Work"

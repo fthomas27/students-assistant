@@ -71,6 +71,7 @@ The UI is four dense, above-the-fold grid dashboards (each widget scrolls intern
 - **School** — academics only: active assignments, school tasks, and club/student-org tasks (`tasks.category` = `school` / `club`)
 - **Health & Fitness** — WHOOP metrics (recovery/strain/sleep), recent heart rate, recent workouts, personal records tracker (longest run, fastest mile, longest swim, highest strain), and an interactive workout planner
 - **Current Projects** — grid of project cards, each with its granular action items inline (complete/add tasks in place), plus project deadlines/milestones
+- **Personal Improvement** (nav: "Growth") — a widget grid for self-growth tools. Currently holds a **Reading List** book tracker (add books you want to read, check them off as you finish, with a progress bar); the grid is built to hold more widgets over time. Backed by the `books` table via `/api/books`.
 
 **AI Calendar Categorization Engine** (`categorize_events` in app.py): every calendar item is routed to exactly one category — `school`, `health`, `projects`, or `general` — via persistent cache → deterministic source/keyword rules → Claude Haiku batch classification → `general` fallback. No item is ever dropped; Home shows everything regardless of category, sub-dashboards filter by it. Tasks are routed the same way via `categorize_task` (school/club/health/general), with manual override through `POST/PATCH /api/tasks` `category`.
 
@@ -92,6 +93,7 @@ Key tables include:
 - `daily_plans` - Generated daily schedules
 - `chat_messages` - Persisted chat history (per `conversation_id`)
 - `chat_summaries` - Rolling 2-3 sentence summaries per conversation, used for cross-session recall
+- `books` - Reading list for the Personal Improvement page (title, author, notes, completed/completed_at)
 
 ## Environment Variables
 
@@ -149,6 +151,7 @@ Key endpoints include:
 - `GET /api/whoop/heart-rate` - Recent/current heart-rate series
 - `GET|POST /api/fitness/prs` - Personal records (computed from workouts + manual overrides)
 - `GET|POST /api/fitness/planned-workouts` (+ `PATCH|DELETE /<id>`) - Workout planner CRUD
+- `GET|POST /api/books` (+ `PATCH|DELETE /<id>`) - Reading list / book tracker CRUD (Personal Improvement page)
 
 ## Security Features
 
