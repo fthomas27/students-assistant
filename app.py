@@ -2075,9 +2075,12 @@ def fitness_daily_summary(days=7):
     """Recovery/sleep/strain history for the Health dashboard: live WHOOP data
     when connected, otherwise the mock pipeline. Returns (days, is_mock)."""
     if _whoop_connected():
-        live = whoop_daily_summary(days)
-        if live:
-            return live, False
+        try:
+            live = whoop_daily_summary(days)
+            if live:
+                return live, False
+        except Exception as e:
+            log.warning("fitness_daily_summary: %s", e)
     return _mock_whoop_daily_summary(days), True
 
 
@@ -2174,7 +2177,7 @@ def whoop_bedtime_recommendation():
     wake_str = (cfg.get("morning_briefing_time") or "07:00").strip()
     try:
         wake_h, wake_m = (int(x) for x in wake_str.split(":"))
-    except Exception:
+    except (ValueError, TypeError):
         wake_h, wake_m = 7, 0
 
     need_hours = _mock_sleep_need_hours()
