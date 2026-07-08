@@ -3303,6 +3303,17 @@ transition: background 0.15s, border-color 0.15s;
 .dashx-span3, .dashx-span4, .dashx-span5, .dashx-span9 { grid-column: span 1; }
 .dashx-tiles { grid-template-columns: repeat(2, 1fr); }
 .dashx-head { flex-direction: column; align-items: flex-start; gap: 4px; }
+
+/* Phones can't fit the desktop's fixed-viewport dashboard grid, so drop
+   the "shrink everything to fit" sizing below tablet width entirely:
+   every widget grows to its natural content height and the page becomes
+   one long scroll, instead of clipping content behind tiny internal
+   scrollboxes that only show a widget's header. */
+.dashx, .dashx-main, .dashx-stack { min-height: auto; height: auto; }
+.dashx-main .widget { min-height: auto; overflow: visible; }
+.dashx-stack .widget { flex: none; }
+.dashx-list { flex: none; max-height: none; overflow-y: visible; }
+.projects-grid-wrap { overflow: visible; min-height: auto; }
 }
 .dash-span3  { grid-column: span 3; min-width: 0; }
 .dash-span4  { grid-column: span 4; min-width: 0; }
