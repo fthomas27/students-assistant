@@ -71,7 +71,7 @@ The UI is four dense, above-the-fold grid dashboards (each widget scrolls intern
 - **School** — academics only: active assignments, school tasks, and club/student-org tasks (`tasks.category` = `school` / `club`)
 - **Health & Fitness** — WHOOP metrics (recovery/strain/sleep), recent heart rate, recent workouts, personal records tracker (longest run, fastest mile, longest swim, highest strain), and an interactive workout planner
 - **Current Projects** — grid of project cards, each with its granular action items inline (complete/add tasks in place), plus project deadlines/milestones
-- **Personal Improvement** (nav: "Growth") — a widget grid for self-growth tools. Currently holds a **Reading List** book tracker (add books you want to read, check them off as you finish, with a progress bar); the grid is built to hold more widgets over time. Backed by the `books` table via `/api/books`.
+- **Personal Improvement** (nav: "Growth") — a widget grid for self-growth tools, built to hold more widgets over time. Current widgets: a **Reading List** book tracker (add books you want to read, check them off as you finish, with a progress bar; `books` table via `/api/books`); a **Current Skill Focus** tracker (list of skills you're developing with exactly one starred as the active focus; `skills` table via `/api/skills`); and a **Daily Verse** card that shows a public-domain (KJV) Bible verse chosen deterministically from the date so a fresh one appears each day (`/api/verse-of-the-day`, no external API).
 
 **AI Calendar Categorization Engine** (`categorize_events` in app.py): every calendar item is routed to exactly one category — `school`, `health`, `projects`, or `general` — via persistent cache → deterministic source/keyword rules → Claude Haiku batch classification → `general` fallback. No item is ever dropped; Home shows everything regardless of category, sub-dashboards filter by it. Tasks are routed the same way via `categorize_task` (school/club/health/general), with manual override through `POST/PATCH /api/tasks` `category`.
 
@@ -94,6 +94,7 @@ Key tables include:
 - `chat_messages` - Persisted chat history (per `conversation_id`)
 - `chat_summaries` - Rolling 2-3 sentence summaries per conversation, used for cross-session recall
 - `books` - Reading list for the Personal Improvement page (title, author, notes, completed/completed_at)
+- `skills` - Current Skill Focus tracker for the Personal Improvement page (name, notes, focus flag, completed/completed_at); exactly one row is the active `focus`
 
 ## Environment Variables
 
@@ -152,6 +153,8 @@ Key endpoints include:
 - `GET|POST /api/fitness/prs` - Personal records (computed from workouts + manual overrides)
 - `GET|POST /api/fitness/planned-workouts` (+ `PATCH|DELETE /<id>`) - Workout planner CRUD
 - `GET|POST /api/books` (+ `PATCH|DELETE /<id>`) - Reading list / book tracker CRUD (Personal Improvement page)
+- `GET|POST /api/skills` (+ `PATCH|DELETE /<id>`) - Current Skill Focus tracker CRUD; `PATCH {focus:true}` makes a skill the sole active focus (Personal Improvement page)
+- `GET /api/verse-of-the-day` - Deterministic daily Bible verse (KJV, curated in-app; no external API)
 
 ## Security Features
 

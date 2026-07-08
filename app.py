@@ -747,6 +747,7 @@ def init_db():
         ("chat_summaries", "CREATE TABLE IF NOT EXISTS chat_summaries (conversation_id TEXT PRIMARY KEY, summary TEXT NOT NULL DEFAULT '', message_count INT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("bucket_list", "CREATE TABLE IF NOT EXISTS bucket_list (id SERIAL PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("books", "CREATE TABLE IF NOT EXISTS books (id SERIAL PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("skills", "CREATE TABLE IF NOT EXISTS skills (id SERIAL PRIMARY KEY, name TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', focus BOOLEAN NOT NULL DEFAULT FALSE, completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("people_profiles", "CREATE TABLE IF NOT EXISTS people_profiles (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, relationship TEXT NOT NULL DEFAULT '', facts TEXT NOT NULL DEFAULT '[]', mem0_synced BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("gmail_drafts", "CREATE TABLE IF NOT EXISTS gmail_drafts (id SERIAL PRIMARY KEY, to_addr TEXT NOT NULL, cc_addr TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', conversation_id TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("gmail_drafts_conv_idx", "CREATE INDEX IF NOT EXISTS idx_gmail_drafts_conv ON gmail_drafts(conversation_id) WHERE conversation_id != ''"),
@@ -8129,6 +8130,176 @@ def api_books_delete(book_id):
     cur.close()
     conn.close()
     return jsonify({"status": "ok"})
+
+
+# ── Skill Focus Endpoints (Personal Improvement) ──────────────────────────────
+# A short list of skills the student is developing, with exactly one marked as
+# the "current focus". Setting focus on one skill clears it on all others.
+
+def _serialize_skill(r):
+    return {
+        "id": r["id"],
+        "name": r["name"],
+        "notes": r["notes"],
+        "focus": r["focus"],
+        "completed": r["completed"],
+        "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+        "created_at": r["created_at"].isoformat(),
+    }
+
+
+@app.route("/api/skills", methods=["GET"])
+def api_skills_get():
+    conn = get_db()
+    cur = conn.cursor()
+    # Current focus first, then still-in-progress, then completed; newest within each group.
+    cur.execute("SELECT id, name, notes, focus, completed, completed_at, created_at FROM skills ORDER BY focus DESC, completed, created_at DESC")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify([_serialize_skill(r) for r in rows])
+
+
+@app.route("/api/skills", methods=["POST"])
+def api_skills_post():
+    data = request.get_json(force=True) or {}
+    name  = str(data.get("name",  "")).strip()[:300]
+    notes = str(data.get("notes", "")).strip()[:2000]
+    focus = bool(data.get("focus", True))
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    if focus:
+        cur.execute("UPDATE skills SET focus=FALSE WHERE focus=TRUE")
+    cur.execute("INSERT INTO skills (name, notes, focus) VALUES (%s, %s, %s) RETURNING id, created_at", (name, notes, focus))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"id": row["id"], "name": name, "notes": notes, "focus": focus, "completed": False, "completed_at": None, "created_at": row["created_at"].isoformat()}), 201
+
+
+@app.route("/api/skills/<int:skill_id>", methods=["PATCH"])
+def api_skills_patch(skill_id):
+    data = request.get_json(force=True) or {}
+    conn = get_db()
+    cur = conn.cursor()
+    if data.get("focus") is True:
+        # Only one skill can be the current focus at a time.
+        cur.execute("UPDATE skills SET focus=FALSE WHERE focus=TRUE")
+        cur.execute("UPDATE skills SET focus=TRUE WHERE id=%s", (skill_id,))
+    elif "focus" in data:
+        cur.execute("UPDATE skills SET focus=%s WHERE id=%s", (bool(data["focus"]), skill_id))
+    if "completed" in data:
+        now_ts = datetime.now(get_tz()) if data["completed"] else None
+        cur.execute("UPDATE skills SET completed=%s, completed_at=%s WHERE id=%s", (bool(data["completed"]), now_ts, skill_id))
+    if "name" in data:
+        cur.execute("UPDATE skills SET name=%s WHERE id=%s", (str(data["name"])[:300], skill_id))
+    if "notes" in data:
+        cur.execute("UPDATE skills SET notes=%s WHERE id=%s", (str(data["notes"])[:2000], skill_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/skills/<int:skill_id>", methods=["DELETE"])
+def api_skills_delete(skill_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM skills WHERE id=%s", (skill_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+
+# ── Daily Bible Verse (Personal Improvement) ──────────────────────────────────
+# A curated set of public-domain (KJV) verses. The verse is chosen
+# deterministically from the current date in the student's timezone, so a fresh
+# one appears each day and stays stable until midnight — no external API needed.
+
+DAILY_VERSES = [
+    ("Joshua 1:9", "Be strong and of a good courage; be not afraid, neither be thou dismayed: for the LORD thy God is with thee whithersoever thou goest."),
+    ("Philippians 4:13", "I can do all things through Christ which strengtheneth me."),
+    ("Proverbs 3:5-6", "Trust in the LORD with all thine heart; and lean not unto thine own understanding. In all thy ways acknowledge him, and he shall direct thy paths."),
+    ("Isaiah 40:31", "But they that wait upon the LORD shall renew their strength; they shall mount up with wings as eagles; they shall run, and not be weary; and they shall walk, and not faint."),
+    ("Jeremiah 29:11", "For I know the thoughts that I think toward you, saith the LORD, thoughts of peace, and not of evil, to give you an expected end."),
+    ("Psalm 23:1", "The LORD is my shepherd; I shall not want."),
+    ("Romans 8:28", "And we know that all things work together for good to them that love God, to them who are the called according to his purpose."),
+    ("Matthew 6:33", "But seek ye first the kingdom of God, and his righteousness; and all these things shall be added unto you."),
+    ("Psalm 46:1", "God is our refuge and strength, a very present help in trouble."),
+    ("2 Timothy 1:7", "For God hath not given us the spirit of fear; but of power, and of love, and of a sound mind."),
+    ("Philippians 4:6-7", "Be careful for nothing; but in every thing by prayer and supplication with thanksgiving let your requests be made known unto God. And the peace of God, which passeth all understanding, shall keep your hearts and minds through Christ Jesus."),
+    ("Psalm 118:24", "This is the day which the LORD hath made; we will rejoice and be glad in it."),
+    ("John 3:16", "For God so loved the world, that he gave his only begotten Son, that whosoever believeth in him should not perish, but have everlasting life."),
+    ("Proverbs 16:3", "Commit thy works unto the LORD, and thy thoughts shall be established."),
+    ("Psalm 37:4", "Delight thyself also in the LORD; and he shall give thee the desires of thine heart."),
+    ("1 Corinthians 10:13", "There hath no temptation taken you but such as is common to man: but God is faithful, who will not suffer you to be tempted above that ye are able."),
+    ("Isaiah 41:10", "Fear thou not; for I am with thee: be not dismayed; for I am thy God: I will strengthen thee; yea, I will help thee; yea, I will uphold thee with the right hand of my righteousness."),
+    ("Psalm 27:1", "The LORD is my light and my salvation; whom shall I fear? the LORD is the strength of my life; of whom shall I be afraid?"),
+    ("Matthew 11:28", "Come unto me, all ye that labour and are heavy laden, and I will give you rest."),
+    ("Galatians 6:9", "And let us not be weary in well doing: for in due season we shall reap, if we faint not."),
+    ("Psalm 55:22", "Cast thy burden upon the LORD, and he shall sustain thee: he shall never suffer the righteous to be moved."),
+    ("Colossians 3:23", "And whatsoever ye do, do it heartily, as to the Lord, and not unto men."),
+    ("Hebrews 11:1", "Now faith is the substance of things hoped for, the evidence of things not seen."),
+    ("Psalm 121:1-2", "I will lift up mine eyes unto the hills, from whence cometh my help. My help cometh from the LORD, which made heaven and earth."),
+    ("Proverbs 18:10", "The name of the LORD is a strong tower: the righteous runneth into it, and is safe."),
+    ("2 Corinthians 5:7", "For we walk by faith, not by sight."),
+    ("Psalm 34:8", "O taste and see that the LORD is good: blessed is the man that trusteth in him."),
+    ("Romans 12:2", "And be not conformed to this world: but be ye transformed by the renewing of your mind, that ye may prove what is that good, and acceptable, and perfect, will of God."),
+    ("Deuteronomy 31:6", "Be strong and of a good courage, fear not, nor be afraid of them: for the LORD thy God, he it is that doth go with thee; he will not fail thee, nor forsake thee."),
+    ("Psalm 19:14", "Let the words of my mouth, and the meditation of my heart, be acceptable in thy sight, O LORD, my strength, and my redeemer."),
+    ("1 Peter 5:7", "Casting all your care upon him; for he careth for you."),
+    ("Ephesians 2:10", "For we are his workmanship, created in Christ Jesus unto good works, which God hath before ordained that we should walk in them."),
+    ("Psalm 139:14", "I will praise thee; for I am fearfully and wonderfully made: marvellous are thy works; and that my soul knoweth right well."),
+    ("James 1:5", "If any of you lack wisdom, let him ask of God, that giveth to all men liberally, and upbraideth not; and it shall be given him."),
+    ("Proverbs 4:23", "Keep thy heart with all diligence; for out of it are the issues of life."),
+    ("Psalm 90:12", "So teach us to number our days, that we may apply our hearts unto wisdom."),
+    ("Nehemiah 8:10", "Neither be ye sorry; for the joy of the LORD is your strength."),
+    ("Micah 6:8", "He hath shewed thee, O man, what is good; and what doth the LORD require of thee, but to do justly, and to love mercy, and to walk humbly with thy God?"),
+    ("Lamentations 3:22-23", "It is of the LORD'S mercies that we are not consumed, because his compassions fail not. They are new every morning: great is thy faithfulness."),
+    ("Psalm 145:18", "The LORD is nigh unto all them that call upon him, to all that call upon him in truth."),
+    ("John 14:27", "Peace I leave with you, my peace I give unto you: not as the world giveth, give I unto you. Let not your heart be troubled, neither let it be afraid."),
+    ("Zephaniah 3:17", "The LORD thy God in the midst of thee is mighty; he will save, he will rejoice over thee with joy; he will rest in his love, he will joy over thee with singing."),
+    ("Psalm 91:1-2", "He that dwelleth in the secret place of the most High shall abide under the shadow of the Almighty. I will say of the LORD, He is my refuge and my fortress: my God; in him will I trust."),
+    ("Proverbs 27:17", "Iron sharpeneth iron; so a man sharpeneth the countenance of his friend."),
+    ("Romans 15:13", "Now the God of hope fill you with all joy and peace in believing, that ye may abound in hope, through the power of the Holy Ghost."),
+    ("1 Thessalonians 5:16-18", "Rejoice evermore. Pray without ceasing. In every thing give thanks: for this is the will of God in Christ Jesus concerning you."),
+    ("Psalm 46:10", "Be still, and know that I am God: I will be exalted among the heathen, I will be exalted in the earth."),
+    ("Isaiah 26:3", "Thou wilt keep him in perfect peace, whose mind is stayed on thee: because he trusteth in thee."),
+    ("Matthew 5:16", "Let your light so shine before men, that they may see your good works, and glorify your Father which is in heaven."),
+    ("Psalm 143:8", "Cause me to hear thy lovingkindness in the morning; for in thee do I trust: cause me to know the way wherein I should walk; for I lift up my soul unto thee."),
+    ("Proverbs 2:6", "For the LORD giveth wisdom: out of his mouth cometh knowledge and understanding."),
+    ("2 Corinthians 12:9", "And he said unto me, My grace is sufficient for thee: for my strength is made perfect in weakness."),
+    ("Psalm 28:7", "The LORD is my strength and my shield; my heart trusted in him, and I am helped."),
+    ("Colossians 3:2", "Set your affection on things above, not on things on the earth."),
+    ("John 15:5", "I am the vine, ye are the branches: He that abideth in me, and I in him, the same bringeth forth much fruit: for without me ye can do nothing."),
+    ("Psalm 16:8", "I have set the LORD always before me: because he is at my right hand, I shall not be moved."),
+    ("Proverbs 15:1", "A soft answer turneth away wrath: but grievous words stir up anger."),
+    ("Ephesians 4:32", "And be ye kind one to another, tenderhearted, forgiving one another, even as God for Christ's sake hath forgiven you."),
+    ("Psalm 100:4", "Enter into his gates with thanksgiving, and into his courts with praise: be thankful unto him, and bless his name."),
+    ("Hebrews 12:1", "Let us lay aside every weight, and the sin which doth so easily beset us, and let us run with patience the race that is set before us."),
+    ("James 1:2-3", "My brethren, count it all joy when ye fall into divers temptations; Knowing this, that the trying of your faith worketh patience."),
+    ("Psalm 32:8", "I will instruct thee and teach thee in the way which thou shalt go: I will guide thee with mine eye."),
+    ("1 Corinthians 16:14", "Let all your things be done with charity."),
+    ("Proverbs 22:29", "Seest thou a man diligent in his business? he shall stand before kings; he shall not stand before mean men."),
+    ("Psalm 37:23", "The steps of a good man are ordered by the LORD: and he delighteth in his way."),
+]
+
+
+@app.route("/api/verse-of-the-day", methods=["GET"])
+def api_verse_of_the_day():
+    today = datetime.now(get_tz()).date()
+    idx = today.toordinal() % len(DAILY_VERSES)
+    ref, text = DAILY_VERSES[idx]
+    return jsonify({
+        "reference": ref,
+        "text": text,
+        "translation": "KJV",
+        "date": today.isoformat(),
+    })
 
 
 # ── UV / Weather Endpoint ─────────────────────────────────────────────────────
