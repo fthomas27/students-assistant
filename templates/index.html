@@ -3826,6 +3826,10 @@ margin: 8px 2px 10px;
             </div>
             <button class="btn-accent" onclick="configureCaldav()" style="width:100%;">Connect Apple Calendar</button>
           </div>
+          <div id="caldavCalendarPicker" style="display:none;margin-bottom:12px;">
+            <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Calendar Jarvis writes to</label>
+            <select id="caldavCalendarSelect" onchange="selectCaldavCalendar(this.value)" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;"></select>
+          </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
             <button class="btn-danger-outline" id="caldavDisconnectBtn" style="display:none;" onclick="disconnectCaldav()">Disconnect Apple Calendar</button>
           </div>
@@ -5602,19 +5606,58 @@ function loadCaldavStatus() {
       return;
     }
     section.style.display = '';
+    const picker = document.getElementById('caldavCalendarPicker');
     if (status.configured) {
-      text.textContent = 'Connected — Jarvis can read and write your Apple Calendar.';
+      text.textContent = 'Connected — Jarvis can read and write your Apple Calendar'
+        + (status.calendar ? (' ("' + status.calendar + '").') : '.');
       form.style.display = 'none';
       disconnectBtn.style.display = '';
+      loadCaldavCalendars();
     } else {
       text.textContent = 'Not connected yet.';
       form.style.display = 'block';
       disconnectBtn.style.display = 'none';
+      if (picker) picker.style.display = 'none';
     }
   }).catch(() => {
     const section = document.getElementById('caldavSettingsSection');
     if (section) section.style.display = 'none';
   });
+}
+
+function loadCaldavCalendars() {
+  fetch('/api/caldav/calendars').then(r => r.json()).then(data => {
+    const picker = document.getElementById('caldavCalendarPicker');
+    const select = document.getElementById('caldavCalendarSelect');
+    if (!picker || !select || !data || !Array.isArray(data.calendars) || data.calendars.length === 0) {
+      if (picker) picker.style.display = 'none';
+      return;
+    }
+    select.innerHTML = '';
+    data.calendars.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === data.selected) opt.selected = true;
+      select.appendChild(opt);
+    });
+    picker.style.display = 'block';
+  }).catch(() => {});
+}
+
+function selectCaldavCalendar(name) {
+  fetch('/api/caldav/select-calendar', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ calendar: name })
+  }).then(r => r.json()).then(data => {
+    if (data.error) {
+      if (typeof showToast === 'function') showToast(data.error, 'error');
+    } else {
+      if (typeof showToast === 'function') showToast('Jarvis will now write to "' + name + '"', 'success', 2500);
+      loadCaldavStatus();
+    }
+  }).catch(() => {});
 }
 
 function configureCaldav() {
