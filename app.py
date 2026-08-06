@@ -1348,20 +1348,49 @@ def _get_caldav_connection():
         return None
 
 
+def _caldav_calendar_label(cal):
+    """Human-readable name for a caldav Calendar object."""
+    try:
+        name = cal.name
+    except Exception:
+        name = None
+    return str(name) if name else str(getattr(cal, "url", "calendar")).rstrip("/").rsplit("/", 1)[-1]
+
+
+def _caldav_event_calendars(client):
+    """All calendars on the account that can hold events (skips Reminders-style
+    VTODO-only collections iCloud also exposes over CalDAV)."""
+    calendars = client.principal().calendars()
+    out = []
+    for c in calendars:
+        try:
+            comps = c.get_supported_components()
+            if comps and "VEVENT" not in comps:
+                continue
+        except Exception:
+            pass
+        out.append(c)
+    return out
+
+
 def _get_caldav_calendar():
-    """Get the primary calendar from CalDAV. Return calendar object or None."""
+    """Get the target calendar: the one picked in Settings (caldav_calendar_name),
+    else the first event-capable calendar on the account. Return object or None."""
     try:
         client = _get_caldav_connection()
         if not client:
             return None
 
-        principal = client.principal()
-        calendars = principal.calendars()
-
+        calendars = _caldav_event_calendars(client)
         if not calendars:
             return None
 
-        # Return the primary/first calendar
+        wanted = get_config().get("caldav_calendar_name", "").strip()
+        if wanted:
+            for c in calendars:
+                if _caldav_calendar_label(c).strip().lower() == wanted.lower():
+                    return c
+            log.warning("CalDAV: configured calendar %r not found; falling back to first", wanted)
         return calendars[0]
     except Exception as e:
         log.warning("CalDAV calendar retrieval failed: %s", e)
@@ -1430,7 +1459,7 @@ def _caldav_create_event(title, start_dt, end_dt=None, description="", location=
 
         calendar = _get_caldav_calendar()
         if not calendar:
-            return {"error": "CalDAV not configured"}
+            return {"error": "Could not reach Apple Calendar — the connection failed or the configured calendar was not found. Ask the student to re-check the Apple Calendar connection in Settings."}
 
         start_dt = _caldav_localize(start_dt)
         end_dt = _caldav_localize(end_dt) if end_dt else start_dt + timedelta(hours=1)
@@ -1484,7 +1513,7 @@ def _caldav_update_event(event_id, title=None, start_dt=None, end_dt=None, descr
     try:
         calendar = _get_caldav_calendar()
         if not calendar:
-            return {"error": "CalDAV not configured"}
+            return {"error": "Could not reach Apple Calendar — the connection failed or the configured calendar was not found. Ask the student to re-check the Apple Calendar connection in Settings."}
 
         try:
             event = calendar.event_by_uid(event_id)
@@ -1516,7 +1545,7 @@ def _caldav_delete_event(event_id):
     try:
         calendar = _get_caldav_calendar()
         if not calendar:
-            return {"error": "CalDAV not configured"}
+            return {"error": "Could not reach Apple Calendar — the connection failed or the configured calendar was not found. Ask the student to re-check the Apple Calendar connection in Settings."}
 
         try:
             event = calendar.event_by_uid(event_id)
@@ -11525,6 +11554,24 @@ def api_chat():
             "Use this in all temporal reasoning."
         ) % (now_chat.strftime("%A, %-m/%-d/%Y"), now_chat.strftime("%-I:%M %p %Z"))
 
+        # Honest integration state — the static prompt describes every calendar
+        # tool, but only some are wired up. Without this line Jarvis tells the
+        # student "I don't have access" instead of how to fix it.
+        _google_connected = bool(_google_configured() and get_config().get("google_refresh_token", "").strip())
+        _caldav_connected = _caldav_configured()
+        _caldav_target = get_config().get("caldav_calendar_name", "").strip()
+        system_dynamic += (
+            "\n\nCONNECTED CALENDAR INTEGRATIONS — Google Calendar: %s. Apple iCloud Calendar: %s.%s "
+            "If the student asks to put something on a calendar that is NOT connected, do not say you lack access — "
+            "tell them exactly how to connect it: Google Calendar connects from Settings > Google Calendar; "
+            "Apple Calendar connects from Settings > Apple iCloud Calendar (Apple ID + app-specific password from account.apple.com). "
+            "If exactly one calendar system is connected, use that one without asking which."
+        ) % (
+            "CONNECTED" if _google_connected else "not connected",
+            "CONNECTED" if _caldav_connected else "not connected",
+            (" Apple events go to the calendar named '%s'." % _caldav_target) if (_caldav_connected and _caldav_target) else "",
+        )
+
         # Mode-aware context
         cfg_chat = get_config()
         _app_mode = cfg_chat.get("app_mode", "school")
@@ -13415,8 +13462,41 @@ def google_disconnect():
 def caldav_status():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
-    configured = _caldav_configured()
-    return jsonify({"configured": configured})
+    return jsonify({
+        "configured": _caldav_configured(),
+        "calendar": get_config().get("caldav_calendar_name", ""),
+    })
+
+
+@app.route("/api/caldav/calendars")
+def caldav_calendars():
+    """List event-capable calendars on the connected account (for the picker)."""
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    if not _caldav_configured():
+        return jsonify({"error": "Apple Calendar not connected"}), 400
+    client = _get_caldav_connection()
+    if not client:
+        return jsonify({"error": "Could not connect to Apple Calendar"}), 502
+    try:
+        names = [_caldav_calendar_label(c) for c in _caldav_event_calendars(client)]
+    except Exception as e:
+        log.warning("CalDAV calendars listing failed: %s", e)
+        return jsonify({"error": "Could not list calendars"}), 502
+    return jsonify({
+        "calendars": names,
+        "selected": get_config().get("caldav_calendar_name", "") or (names[0] if names else ""),
+    })
+
+
+@app.route("/api/caldav/select-calendar", methods=["POST"])
+def caldav_select_calendar():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    data = request.get_json() or {}
+    name = str(data.get("calendar", "")).strip()[:200]
+    set_config({"caldav_calendar_name": name})
+    return jsonify({"status": "ok", "calendar": name})
 
 
 @app.route("/api/caldav/configure", methods=["POST"])
@@ -13439,22 +13519,24 @@ def caldav_configure():
     import caldav
     try:
         test_client = caldav.DAVClient(url=url, username=username, password=password, timeout=15)
-        principal = test_client.principal()
-        calendars = principal.calendars()
+        calendars = _caldav_event_calendars(test_client)
         if not calendars:
-            return jsonify({"error": "No calendars found on this account"}), 400
+            return jsonify({"error": "No event calendars found on this account"}), 400
+        names = [_caldav_calendar_label(c) for c in calendars]
     except Exception as e:
         log.warning("CalDAV configure test failed for %s: %s", username, e)
         return jsonify({"error": "Connection failed — check the server URL, Apple ID, and app-specific password"}), 400
 
-    # Save credentials
+    # Save credentials; default the target calendar to the first event calendar
+    # so writes have a sane destination even before the student picks one.
     set_config({
         "caldav_url": url,
         "caldav_username": username,
         "caldav_password": password,
+        "caldav_calendar_name": names[0],
     })
-    log.info("CalDAV configured for %s", username)
-    return jsonify({"status": "configured", "calendar_count": len(calendars)})
+    log.info("CalDAV configured for %s (%d calendars)", username, len(names))
+    return jsonify({"status": "configured", "calendars": names, "selected": names[0]})
 
 
 @app.route("/api/caldav/disconnect", methods=["POST"])
@@ -13465,6 +13547,7 @@ def caldav_disconnect():
         "caldav_url": "",
         "caldav_username": "",
         "caldav_password": "",
+        "caldav_calendar_name": "",
     })
     return jsonify({"status": "disconnected"})
 
@@ -13716,6 +13799,18 @@ def _telegram_run_jarvis(user_text, chat_id):
             "TEMPORAL FORMATTING — render dates human-readably ('Tuesday at 5 PM'), never raw ISO.\n\n"
             f"AUTHORITATIVE DATE & TIME — Today is {now_chat.strftime('%A, %-m/%-d/%Y')}. "
             f"Current local time (Utah/Mountain): {now_chat.strftime('%-I:%M %p %Z')}."
+        )
+
+        _google_connected = bool(_google_configured() and get_config().get("google_refresh_token", "").strip())
+        _caldav_connected = _caldav_configured()
+        system_text += (
+            "\n\nCONNECTED CALENDARS — Google: %s. Apple iCloud: %s. "
+            "If a calendar isn't connected, say so and point the student to the app's Settings — "
+            "never claim you lack access without saying how to fix it. "
+            "If exactly one is connected, use it without asking which."
+        ) % (
+            "connected" if _google_connected else "not connected",
+            "connected" if _caldav_connected else "not connected",
         )
 
         # Recent cross-session memory, same as the web chat uses.
