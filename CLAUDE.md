@@ -13,6 +13,9 @@ This Flask-based web application provides a comprehensive student management sys
 - **Schedule Optimization** - Automated daily schedule generation using available time windows
 - **Calendar Integration** - Syncs with Canvas (assignments), personal calendars, and school events
 - **WHOOP Integration** - Connects a WHOOP account (OAuth2) to surface recovery, sleep, and strain on the home dashboard and in Jarvis's chat/briefing context
+- **Google Calendar Write Access** - Once connected, Jarvis can create, update, delete, and list events directly on the student's Google Calendar from chat
+- **Apple iCloud Calendar (CalDAV)** - Connects to iCloud Calendar via CalDAV so Jarvis can create, update, delete, and list events on shared family calendars
+- **Push Notifications** - Time-sensitive alerts (assignments due soon, briefings, urgent items) delivered via ntfy and/or a Telegram bot, whichever the student has connected
 
 ## Tech Stack
 
@@ -65,7 +68,25 @@ This Flask-based web application provides a comprehensive student management sys
 - **Health dashboard data**: recovery/sleep/strain summary, recent workouts, and heart rate feed the Health & Fitness dashboard; a deterministic mock pipeline (same response shape) fills in when WHOOP is not connected
 - **AI Context**: The latest recovery/sleep/strain snapshot is injected into `/api/chat`, the morning briefing, and the evening debrief so Jarvis can factor recovery into pacing advice
 
-### 7. Multi-Dashboard Architecture
+### 7. Google Calendar Write Access
+- **OAuth2 Connect**: Student connects their Google account from Settings (`/google-auth/start` → `/google-auth/callback`, `google` scope among others); the refresh token is stored server-side (`config.google_refresh_token`) and access tokens are refreshed automatically per-request
+- **Jarvis tools**: `create_calendar_event`, `update_calendar_event`, `delete_calendar_event`, `list_google_calendar_events` — available in chat once connected, so the student can just ask ("put my dentist appointment on my calendar Thursday at 3") and Jarvis creates it via the Google Calendar API
+- Events land on whichever `calendar_id` is targeted (defaults to `primary`); if `PERSONAL_ICAL_URL` (or another configured feed) is that same calendar's iCal export, AI-created events appear there automatically — though Google's public/private `.ics` feeds can lag live data by up to ~24h, so don't expect instant propagation into the iCal-based dashboards
+
+### 8. Apple iCloud Calendar (CalDAV)
+- **Manual Credentials**: Student enters their Apple ID email and app-specific password in Settings; credentials are stored server-side (`config.caldav_url`, `config.caldav_username`, `config.caldav_password`)
+- **Shared Family Calendars**: Works with calendars shared via Apple Calendar's family sharing — the mom (or another family member) shares their calendar with the student's Apple ID with "Can Edit" permissions; the student accepts the invite on their device, then configures the shared calendar in the app
+- **Jarvis tools**: `create_caldav_event`, `update_caldav_event`, `delete_caldav_event`, `list_caldav_events` — available in chat once connected; the student can ask Jarvis to add events to their iCloud Calendar just like Google Calendar
+- Server connects to `caldav.icloud.com` using WebDAV/CalDAV protocol to read and write calendar events
+
+### 9. Push Notifications (ntfy + Telegram)
+- Two independent, optional push channels — either or both can be active. `send_push_notification()` fans out to whichever are configured
+- **ntfy**: set `NTFY_TOPIC` (+ optional `NTFY_SERVER`, `NTFY_TOKEN`); no student-facing connect step
+- **Telegram**: set `TELEGRAM_BOT_TOKEN` (create a bot via @BotFather); the student then connects their own chat from Settings by messaging the bot once and tapping "Detect Chat ID" (`POST /api/telegram/detect-chat-id`, backed by the bot's `getUpdates`); chat id is stored in `config.telegram_chat_id`
+- Scheduled jobs (assignment due, overdue tasks, AP countdown, meeting reminders, idle nudge, trash reminder, weather alerts, stock alerts) and the morning briefing all push through this same fan-out; each gates on `_notifications_configured()` rather than a single channel
+- Jarvis also has a `send_notification` chat tool for proactive, ad-hoc alerts, delivered through the same channels
+
+### 10. Multi-Dashboard Architecture
 The UI is four dense, above-the-fold grid dashboards (each widget scrolls internally; the page itself does not scroll on desktop):
 - **Home** — master aggregated view of *everything*: all calendar items (with category chips), upcoming tasks, health metrics, and project statuses
 - **School** — academics only: active assignments, school tasks, and club/student-org tasks (`tasks.category` = `school` / `club`)
@@ -119,6 +140,13 @@ Optional:
 - `WHITE_DAY_ICAL_URL` - Park City Schools White Day schedule
 - `NOAA_API_TOKEN` - NOAA Climate Data Online API token for historical weather/snow data (free at www.ncdc.noaa.gov/cdo-web/token)
 - `GUARDIAN_API_KEY` - The Guardian Open Platform API key for news search (free at open-platform.theguardian.com)
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` - Google Cloud OAuth2 client credentials; required to show the "Connect Google Calendar" flow (and Drive/Docs/Sheets/Slides/Forms/Classroom access) in Settings
+- `GOOGLE_REDIRECT_URI` - Override for the OAuth callback URL; defaults to `<app root>/google-auth/callback`
+- `NTFY_TOPIC` - ntfy.sh (or self-hosted) topic to publish push notifications to; unset disables the ntfy channel
+- `NTFY_SERVER` - ntfy server root, default `https://ntfy.sh`
+- `NTFY_TOKEN` - Bearer token for a protected/self-hosted ntfy topic
+- `TELEGRAM_BOT_TOKEN` - Bot token from @BotFather; required to show the Telegram section in Settings. The chat to notify is set by the student from Settings (message the bot once, then "Detect Chat ID") — no per-student env var needed
+- CalDAV credentials are **not** environment variables — they're entered by the student in Settings and stored in `config` table (`caldav_url`, `caldav_username`, `caldav_password`)
 
 ## Park City School Specific
 
@@ -155,6 +183,14 @@ Key endpoints include:
 - `GET|POST /api/books` (+ `PATCH|DELETE /<id>`) - Reading list / book tracker CRUD (Personal Improvement page)
 - `GET|POST /api/skills` (+ `PATCH|DELETE /<id>`) - Current Skill Focus tracker CRUD; `PATCH {focus:true}` makes a skill the sole active focus (Personal Improvement page)
 - `GET /api/verse-of-the-day` - Deterministic daily Bible verse (KJV, curated in-app; no external API)
+- `GET /api/google/status` / `POST /api/google/disconnect` - Google Calendar connection status / disconnect
+- `GET /api/caldav/status` - Apple iCloud Calendar connection status
+- `POST /api/caldav/configure` - Configure CalDAV credentials (url, username, password)
+- `POST /api/caldav/disconnect` - Disconnect Apple iCloud Calendar
+- `GET /api/telegram/status` - Telegram push notification connection status
+- `POST /api/telegram/detect-chat-id` - Look up the chat id from the bot's most recent message (student messages the bot, then calls this)
+- `POST /api/telegram/set-chat-id` - Manually set (or clear) the Telegram chat id
+- `POST /api/telegram/test` - Send a test push notification via Telegram
 
 ## Security Features
 

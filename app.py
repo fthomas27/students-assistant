@@ -490,6 +490,12 @@ NTFY_TOPIC  = os.environ.get("NTFY_TOPIC", "").strip()
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").strip()
 NTFY_TOKEN  = os.environ.get("NTFY_TOKEN", "").strip()
 
+# ── Telegram push notifications ────────────────────────────────────────────────
+# Bot token comes from @BotFather (secret, env var). The chat to message is
+# stored in `config` (key "telegram_chat_id") since it's discovered at runtime
+# via /api/telegram/detect-chat-id rather than something you'd hardcode.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive",               # full Drive access (create/edit/delete)
     "https://www.googleapis.com/auth/documents",           # read/write Google Docs
@@ -1308,6 +1314,216 @@ def _google_client_config():
             "redirect_uris": [redirect_uri],
         }
     }
+
+
+# ── CalDAV (Apple iCloud) helpers ──────────────────────────────────────────────
+# Event IDs exposed to Jarvis/the UI are always the iCal UID — stable across
+# list/create/update/delete, unlike caldav's URL-derived object ids.
+
+def _caldav_configured():
+    """Check if CalDAV credentials are set."""
+    cfg = get_config()
+    return bool(cfg.get("caldav_url") and cfg.get("caldav_username") and cfg.get("caldav_password"))
+
+
+def _get_caldav_connection():
+    """Connect to CalDAV server (iCloud) with stored credentials. Return client or None."""
+    try:
+        import caldav
+        cfg = get_config()
+        url = cfg.get("caldav_url", "").strip()
+        username = cfg.get("caldav_username", "").strip()
+        password = cfg.get("caldav_password", "").strip()
+
+        if not (url and username and password):
+            return None
+
+        return caldav.DAVClient(url=url, username=username, password=password, timeout=15)
+    except Exception as e:
+        log.warning("CalDAV connection failed: %s", e)
+        return None
+
+
+def _get_caldav_calendar():
+    """Get the primary calendar from CalDAV. Return calendar object or None."""
+    try:
+        client = _get_caldav_connection()
+        if not client:
+            return None
+
+        principal = client.principal()
+        calendars = principal.calendars()
+
+        if not calendars:
+            return None
+
+        # Return the primary/first calendar
+        return calendars[0]
+    except Exception as e:
+        log.warning("CalDAV calendar retrieval failed: %s", e)
+        return None
+
+
+def _caldav_localize(dt):
+    """Parse ISO string / attach the student's timezone to naive datetimes."""
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt)
+    if isinstance(dt, datetime) and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=get_tz())
+    return dt
+
+
+def _vevent_value(vevent, attr, default=""):
+    """Safely read a vobject content line's value (str(line) is a debug repr, not the value)."""
+    line = getattr(vevent, attr, None)
+    return str(line.value) if line is not None else default
+
+
+def _caldav_event_dict(vevent):
+    return {
+        "id": _vevent_value(vevent, 'uid'),
+        "title": _vevent_value(vevent, 'summary', "Untitled"),
+        "start": str(vevent.dtstart.value) if hasattr(vevent, 'dtstart') else "",
+        "end": str(vevent.dtend.value) if hasattr(vevent, 'dtend') else "",
+        "description": _vevent_value(vevent, 'description'),
+        "location": _vevent_value(vevent, 'location'),
+    }
+
+
+def _caldav_list_events(days_ahead=7):
+    """List CalDAV events for the next N days. Return list of dicts or empty list."""
+    try:
+        calendar = _get_caldav_calendar()
+        if not calendar:
+            return []
+
+        now = datetime.now(get_tz())
+        events = calendar.search(
+            start=now,
+            end=now + timedelta(days=days_ahead),
+            event=True,
+            expand=True,
+        )
+
+        result = []
+        for event in events:
+            try:
+                result.append(_caldav_event_dict(event.vobject_instance.vevent))
+            except Exception as e:
+                log.debug("Error parsing CalDAV event: %s", e)
+                continue
+
+        return result
+    except Exception as e:
+        log.warning("CalDAV list_events failed: %s", e)
+        return []
+
+
+def _caldav_create_event(title, start_dt, end_dt=None, description="", location=""):
+    """Create a new CalDAV event. Return event dict with id or error dict."""
+    try:
+        from icalendar import Calendar as ICalCalendar, Event as ICalEvent
+
+        calendar = _get_caldav_calendar()
+        if not calendar:
+            return {"error": "CalDAV not configured"}
+
+        start_dt = _caldav_localize(start_dt)
+        end_dt = _caldav_localize(end_dt) if end_dt else start_dt + timedelta(hours=1)
+        uid = str(uuid.uuid4())
+
+        # caldav's save_event wants a full VCALENDAR ical string, not a bare
+        # icalendar.Event object.
+        event = ICalEvent()
+        event.add('summary', title)
+        event.add('dtstart', start_dt)
+        event.add('dtend', end_dt)
+        if description:
+            event.add('description', description)
+        if location:
+            event.add('location', location)
+        event.add('uid', uid)
+        event.add('dtstamp', datetime.now(ZoneInfo("UTC")))
+
+        ical = ICalCalendar()
+        ical.add('prodid', '-//Jarvis Student AI//EN')
+        ical.add('version', '2.0')
+        ical.add_component(event)
+
+        calendar.save_event(ical.to_ical().decode("utf-8"))
+
+        return {
+            "id": uid,
+            "title": title,
+            "start": str(start_dt),
+            "end": str(end_dt),
+            "description": description,
+            "location": location,
+        }
+    except Exception as e:
+        log.warning("CalDAV create_event failed: %s", e)
+        return {"error": str(e)}
+
+
+def _caldav_set_value(vevent, attr, value):
+    """Set a vobject content line's value, creating the line if missing.
+    Assigning a raw string to the attribute (vevent.summary = 'x') corrupts
+    the component and breaks serialization — always go through .value."""
+    line = getattr(vevent, attr, None)
+    if line is None:
+        line = vevent.add(attr)
+    line.value = value
+
+
+def _caldav_update_event(event_id, title=None, start_dt=None, end_dt=None, description=None, location=None):
+    """Update an existing CalDAV event (by iCal UID). Return updated event dict or error."""
+    try:
+        calendar = _get_caldav_calendar()
+        if not calendar:
+            return {"error": "CalDAV not configured"}
+
+        try:
+            event = calendar.event_by_uid(event_id)
+        except Exception:
+            return {"error": f"Event {event_id} not found"}
+
+        vevent = event.vobject_instance.vevent
+
+        if title:
+            _caldav_set_value(vevent, 'summary', title)
+        if start_dt:
+            vevent.dtstart.value = _caldav_localize(start_dt)
+        if end_dt:
+            vevent.dtend.value = _caldav_localize(end_dt)
+        if description is not None:
+            _caldav_set_value(vevent, 'description', description)
+        if location is not None:
+            _caldav_set_value(vevent, 'location', location)
+
+        event.save()
+        return _caldav_event_dict(vevent)
+    except Exception as e:
+        log.warning("CalDAV update_event failed: %s", e)
+        return {"error": str(e)}
+
+
+def _caldav_delete_event(event_id):
+    """Delete a CalDAV event by iCal UID. Return success dict or error."""
+    try:
+        calendar = _get_caldav_calendar()
+        if not calendar:
+            return {"error": "CalDAV not configured"}
+
+        try:
+            event = calendar.event_by_uid(event_id)
+        except Exception:
+            return {"error": f"Event {event_id} not found"}
+
+        event.delete()
+        return {"status": "deleted", "id": event_id}
+    except Exception as e:
+        log.warning("CalDAV delete_event failed: %s", e)
+        return {"error": str(e)}
 
 
 def _mem0_store_worker(user_content, assistant_content):
@@ -3479,26 +3695,48 @@ def fetch_news(bucket="national", limit=3):
     return out
 
 
+DAVID_GOGGINS_QUOTES = [
+    "Motivation is crap. Motivation comes and goes. When you're driven, whatever's in front of you will get destroyed.",
+    "You are in danger of living a life so comfortable and soft, that you will die without ever realizing your true potential.",
+    "The most important conversations you'll ever have are the ones you'll have with yourself.",
+    "We live in a world where mediocrity is often celebrated. Where people just accept what is given to them.",
+    "Suffering is the true test of life.",
+    "Don't stop when you're tired. Stop when you're done.",
+    "It's supposed to be hard. If it wasn't hard, everyone would do it. The hard is what makes it great.",
+    "No one is going to come and save you. No one is coming to fix your life. It's on you.",
+    "You have to build calluses on your brain just like you build calluses on your hands.",
+    "The only way you're going to get to where you want to go is by getting uncomfortable.",
+    "Every morning when I wake up, I ask myself, what am I willing to do today to change my life?",
+    "Callus your mind through pain and suffering.",
+    "When you think you're done, you're only 40% into what your body's capable of doing.",
+    "You are the only one that can hold yourself back from your true potential.",
+    "Pain unlocks a secret doorway in the mind, one that leads to both peak performance and beautiful silence.",
+    "Discipline is the number one thing that will move you forward in a positive way in your life.",
+    "Stop being a victim. Stop complaining and take accountability.",
+    "You can't put a limit on anything. The more you dream, the farther you get.",
+    "If you can get through doing things that suck, without quitting, you will find they suck less and less.",
+    "Sometimes in life, you're going to have to do things you don't want to do, in order to become who you want to become.",
+    "The best way to get out of your comfort zone is to look yourself in the mirror and be honest about who you are and what you want.",
+    "A lot of people quit because they look how far they have to go, not how far they've come.",
+    "You are never as stuck as you think you are.",
+    "Own your mind, or someone else will.",
+    "Greatness is not for the chosen few. Greatness is for the few who choose.",
+    "You have to be able to callus your mind, the same way you callus your hands.",
+    "The most important gauge that I know of is how you feel about yourself.",
+    "Break your mind off from what your body is telling you, and start living off pure willpower.",
+    "It doesn't matter if you're the fastest or slowest person out there, the only person you're truly racing against is yourself.",
+    "Success isn't always about greatness. It's about consistency. Consistent hard work leads to success.",
+]
+
+
 def fetch_quote_of_day():
-    """ZenQuotes (no key). 24h cache."""
-    cached = _cache_get("zenquotes:today", 24 * 3600)
-    if cached is not None:
-        return cached
-    try:
-        resp = requests.get("https://zenquotes.io/api/today", timeout=10)
-        resp.raise_for_status()
-        j = resp.json() or []
-        if isinstance(j, list) and j:
-            q = j[0]
-            out = {"text": (q.get("q") or "").strip(), "author": (q.get("a") or "Unknown").strip()}
-            if out["text"]:
-                _cache_set("zenquotes:today", out)
-                return out
-    except Exception as e:
-        log.warning("ZenQuotes failed: %s", e)
+    """Always David Goggins. Chosen deterministically from today's date (student's
+    timezone), so a fresh one appears each day and stays stable until midnight."""
+    today = datetime.now(get_tz()).date()
+    idx = today.toordinal() % len(DAVID_GOGGINS_QUOTES)
     return {
-        "text": "The best way to predict the future is to invent it.",
-        "author": "Alan Kay",
+        "text": DAVID_GOGGINS_QUOTES[idx],
+        "author": "David Goggins",
     }
 
 
@@ -3946,19 +4184,82 @@ def send_ntfy_notification(title, message, priority="default", tags=None):
     headers = {"Content-Type": "application/json"}
     if NTFY_TOKEN:
         headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
-    try:
-        resp = requests.post(
-            NTFY_SERVER.rstrip("/"),
-            json=payload,
-            headers=headers,
-            timeout=10,
-        )
-        if not resp.ok:
-            log.warning("ntfy returned %s: %s", resp.status_code, resp.text[:200])
-        return resp.ok
-    except Exception as e:
-        log.error("ntfy notification failed: %s", e)
+    # One retry on transient failure so a network blip doesn't drop the push
+    for attempt in (1, 2):
+        try:
+            resp = requests.post(
+                NTFY_SERVER.rstrip("/"),
+                json=payload,
+                headers=headers,
+                timeout=10,
+            )
+            if resp.ok:
+                return True
+            log.warning("ntfy returned %s (attempt %s): %s", resp.status_code, attempt, resp.text[:200])
+            if 400 <= resp.status_code < 500:
+                return False  # bad topic/auth/payload — retrying won't help
+        except Exception as e:
+            log.error("ntfy notification failed (attempt %s): %s", attempt, e)
+        if attempt == 1:
+            time.sleep(2)
+    return False
+
+
+# ── Telegram push notification helpers ──────────────────────────────────────────
+
+def _telegram_configured():
+    return bool(TELEGRAM_BOT_TOKEN)
+
+
+def _telegram_chat_id():
+    return get_config().get("telegram_chat_id", "").strip()
+
+
+def _telegram_ready():
+    return bool(TELEGRAM_BOT_TOKEN and _telegram_chat_id())
+
+
+def _notifications_configured():
+    """True if at least one push channel (ntfy or Telegram) is usable."""
+    return bool(NTFY_TOPIC) or _telegram_ready()
+
+
+def send_telegram_notification(title, message, chat_id=None):
+    """Send a push notification via a Telegram bot. Returns True on success."""
+    if not TELEGRAM_BOT_TOKEN:
         return False
+    target = (chat_id or _telegram_chat_id()).strip()
+    if not target:
+        return False
+    title = (title or "").strip()
+    message = message or ""
+    # Telegram HTML parse mode — escape the handful of reserved characters
+    def esc(s):
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = f"<b>{esc(title)}</b>\n{esc(message)}" if title else esc(message)
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": target, "text": text[:4096], "parse_mode": "HTML"}
+    for attempt in (1, 2):
+        try:
+            resp = requests.post(url, json=payload, timeout=10)
+            if resp.ok:
+                return True
+            log.warning("Telegram sendMessage returned %s (attempt %s): %s", resp.status_code, attempt, resp.text[:200])
+            if 400 <= resp.status_code < 500:
+                return False  # bad chat_id/token/payload — retrying won't help
+        except Exception as e:
+            log.error("Telegram notification failed (attempt %s): %s", attempt, e)
+        if attempt == 1:
+            time.sleep(2)
+    return False
+
+
+def send_push_notification(title, message, priority="default", tags=None):
+    """Fan out a notification to every configured push channel (ntfy + Telegram).
+    Returns True if at least one channel delivered it."""
+    ntfy_ok = send_ntfy_notification(title, message, priority=priority, tags=tags) if NTFY_TOPIC else False
+    telegram_ok = send_telegram_notification(title, message) if _telegram_ready() else False
+    return ntfy_ok or telegram_ok
 
 
 def send_email(to_addr, subject, body_html):
@@ -4243,8 +4544,8 @@ ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content"
         cur.close()
         conn.close()
 
-        # Push a condensed briefing summary via ntfy
-        if NTFY_TOPIC:
+        # Push a condensed briefing summary to every configured channel
+        if _notifications_configured():
             try:
                 today_key = f"morning_briefing_{datetime.now(TZ).strftime('%Y-%m-%d')}"
                 if _ntfy_dedup(today_key, title="Morning Briefing", max_age_hours=20):
@@ -4252,14 +4553,14 @@ ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content"
                     preview = content[:300].strip()
                     if len(content) > 300:
                         preview += "…"
-                    send_ntfy_notification(
+                    send_push_notification(
                         title="Good morning — your briefing is ready",
                         message=preview,
                         priority="default",
                         tags=["sun_with_face", "memo"],
                     )
             except Exception as _e:
-                log.warning("briefing ntfy push failed: %s", _e)
+                log.warning("briefing push failed: %s", _e)
 
 
 scheduler = BackgroundScheduler(timezone=TZ)
@@ -4593,8 +4894,8 @@ def _notif_canvas_assignments():
 
 
 def check_assignment_due_notifications():
-    """Tier 1 — send ntfy for assignments due in ~24 h and ~2 h."""
-    if not NTFY_TOPIC:
+    """Tier 1 — push for assignments due in ~24 h and ~2 h."""
+    if not _notifications_configured():
         return
     try:
         assignments = _notif_canvas_assignments()
@@ -4615,7 +4916,7 @@ def check_assignment_due_notifications():
             if 22.5 <= hours_until <= 25.5:
                 key = f"asgn_24h_{a['title']}_{due_dt.strftime('%Y-%m-%d')}"
                 if _ntfy_dedup(key, title=a["title"], max_age_hours=20):
-                    send_ntfy_notification(
+                    send_push_notification(
                         title="Assignment Due Tomorrow",
                         message=f"{a['title']} ({course}) — due {due_disp}",
                         priority="high",
@@ -4624,7 +4925,7 @@ def check_assignment_due_notifications():
             elif 1.5 <= hours_until <= 2.5:
                 key = f"asgn_2h_{a['title']}_{due_dt.strftime('%Y-%m-%d-%H')}"
                 if _ntfy_dedup(key, title=a["title"], max_age_hours=4):
-                    send_ntfy_notification(
+                    send_push_notification(
                         title="Assignment Due in ~2 Hours",
                         message=f"{a['title']} ({course}) — due {due_disp}",
                         priority="urgent",
@@ -4635,8 +4936,8 @@ def check_assignment_due_notifications():
 
 
 def check_overdue_tasks():
-    """Tier 1 — send ntfy for tasks past their due date that haven't been completed."""
-    if not NTFY_TOPIC:
+    """Tier 1 — push for tasks past their due date that haven't been completed."""
+    if not _notifications_configured():
         return
     try:
         today = datetime.now(TZ).date()
@@ -4652,7 +4953,7 @@ def check_overdue_tasks():
         for task in overdue:
             key = f"task_overdue_{task['id']}_{today}"
             if _ntfy_dedup(key, title=task["title"], max_age_hours=20):
-                send_ntfy_notification(
+                send_push_notification(
                     title="Overdue Task",
                     message=f"{task['title']} — was due {task['due_date']}, still pending",
                     priority="high",
@@ -4664,7 +4965,7 @@ def check_overdue_tasks():
 
 def check_ap_test_countdown():
     """Tier 2 — warn 2 days before any AP exam found in Canvas."""
-    if not NTFY_TOPIC:
+    if not _notifications_configured():
         return
     try:
         assignments = _notif_canvas_assignments()
@@ -4685,7 +4986,7 @@ def check_ap_test_countdown():
             if days_until in (1, 2, 7):
                 key = f"ap_countdown_{a['title']}_{due_dt.strftime('%Y-%m-%d')}_{days_until}d"
                 if _ntfy_dedup(key, title=a["title"], max_age_hours=20):
-                    send_ntfy_notification(
+                    send_push_notification(
                         title=f"AP Exam in {days_until} Day{'s' if days_until != 1 else ''}",
                         message=f"{a['title']} is in {days_until} day{'s' if days_until != 1 else ''}, sir. You have been warned.",
                         priority="high",
@@ -4696,8 +4997,8 @@ def check_ap_test_countdown():
 
 
 def check_meeting_reminders():
-    """Tier 2 — send a 30-minute heads-up for upcoming calendar events."""
-    if not NTFY_TOPIC:
+    """Tier 2 — push a 30-minute heads-up for upcoming calendar events."""
+    if not _notifications_configured():
         return
     try:
         now = datetime.now(TZ)
@@ -4720,7 +5021,7 @@ def check_meeting_reminders():
                     if window_start <= start_dt <= window_end:
                         key = f"meeting_{ev['title']}_{start_dt.strftime('%Y-%m-%d-%H-%M')}"
                         if _ntfy_dedup(key, title=ev["title"], max_age_hours=20):
-                            send_ntfy_notification(
+                            send_push_notification(
                                 title="Event Starting Soon",
                                 message=f"{ev['title']} at {ev['start_display']}",
                                 priority="high",
@@ -4734,7 +5035,7 @@ def check_meeting_reminders():
 
 def check_idle_detection():
     """Tier 3 — nudge if no task/assignment logged in 3+ hours on a school night."""
-    if not NTFY_TOPIC:
+    if not _notifications_configured():
         return
     try:
         now = datetime.now(TZ)
@@ -4756,7 +5057,7 @@ def check_idle_detection():
             return
         key = f"idle_{now.strftime('%Y-%m-%d-%H')}"
         if _ntfy_dedup(key, title="Idle check", max_age_hours=1):
-            send_ntfy_notification(
+            send_push_notification(
                 title="Still with me, sir?",
                 message="No tasks logged in over 3 hours. Might be worth making a dent in that list.",
                 priority="default",
@@ -4768,7 +5069,7 @@ def check_idle_detection():
 
 def check_trash_recycling_reminder():
     """Tier 3 — remind about trash/recycling events from personal calendar at 7 PM."""
-    if not NTFY_TOPIC or not u_personal_ical():
+    if not _notifications_configured() or not u_personal_ical():
         return
     try:
         now = datetime.now(TZ)
@@ -4784,7 +5085,7 @@ def check_trash_recycling_reminder():
             if ev.get("date") == today_str and any(kw in title_lc for kw in ("trash", "recycling", "recycle", "garbage", "bin")):
                 key = f"trash_{ev['title']}_{today_str}"
                 if _ntfy_dedup(key, title=ev["title"], max_age_hours=20):
-                    send_ntfy_notification(
+                    send_push_notification(
                         title="Trash Reminder",
                         message=f"{ev['title']} tonight — don't forget.",
                         priority="default",
@@ -4796,7 +5097,7 @@ def check_trash_recycling_reminder():
 
 def check_weather_warning():
     """Tier 3 — check NWS alerts for Park City and push severe/extreme warnings."""
-    if not NTFY_TOPIC:
+    if not _notifications_configured():
         return
     try:
         resp = requests.get(
@@ -4817,7 +5118,7 @@ def check_weather_warning():
             alert_id = props.get("id", event)
             key = f"weather_{alert_id}"
             if _ntfy_dedup(key, title=event, max_age_hours=6):
-                send_ntfy_notification(
+                send_push_notification(
                     title=f"Weather Alert: {event}",
                     message=headline,
                     priority="high" if severity in ("Extreme", "Severe") else "default",
@@ -4829,7 +5130,7 @@ def check_weather_warning():
 
 def check_stock_alerts():
     """Tier 2 — alert on ±5% daily moves, target price hits, or stop-loss triggers."""
-    if not NTFY_TOPIC or not FINNHUB_API_KEY:
+    if not _notifications_configured() or not FINNHUB_API_KEY:
         return
     try:
         now = datetime.now(TZ)
@@ -4892,7 +5193,7 @@ def check_stock_alerts():
                 if alert_reason:
                     key = f"stock_{symbol}_{now.strftime('%Y-%m-%d-%H')}"
                     if _ntfy_dedup(key, title=symbol, max_age_hours=2):
-                        send_ntfy_notification(
+                        send_push_notification(
                             title=f"Stock Alert: {symbol}",
                             message=f"{symbol} {alert_reason}",
                             priority=priority,
@@ -4962,7 +5263,7 @@ def schedule_briefing():
     log.info("Weekly insight scheduled for Sun 08:00 Mountain")
     log.info("Cleanup job scheduled for 02:30 Mountain")
     log.info("Auto daily plan scheduled for 22:00 Mountain")
-    log.info("ntfy notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather)")
+    log.info("push notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather)")
 
 
 # ── Security Functions ──────────────────────────────────────────────────────────
@@ -7944,6 +8245,8 @@ def api_config_get():
         "canvas_base_url":       cfg.get("canvas_base_url", ""),
         "sports_ical_url":       cfg.get("sports_ical_url", ""),
         "job_schedule_ical_url": cfg.get("job_schedule_ical_url", ""),
+        "telegram_bot_configured": _telegram_configured(),
+        "telegram_chat_id":        get_config().get("telegram_chat_id", ""),
     })
 
 
@@ -9179,12 +9482,14 @@ JARVIS_TOOLS = [
     {
         "name": "send_notification",
         "description": (
-            "Send a push notification to the student's device via ntfy. "
+            "Send a push notification to the student's device (delivered via every push channel "
+            "the student has configured — ntfy and/or Telegram). "
             "Use proactively when you want to alert the student about something time-sensitive, "
             "remind them of an urgent task, or surface a critical insight they should act on now. "
             "Keep the message short and actionable — 1-2 sentences maximum. "
             "Priority levels: 'min' (background), 'low', 'default', 'high', 'urgent' (breaks DND). "
             "Only use 'urgent' for genuine emergencies. "
+            "Priority and tags only affect the ntfy channel if it's configured; Telegram ignores them. "
             "Tags are ntfy emoji names e.g. 'warning', 'books', 'rotating_light', 'calendar'."
         ),
         "input_schema": {
@@ -9278,6 +9583,73 @@ JARVIS_TOOLS = [
                 "query":       {"type": "string", "description": "Optional text search within event titles/descriptions"},
             },
             "required": [],
+        },
+    },
+    # ── CalDAV (Apple iCloud) Calendar tools ──────────────────────────────────────
+    {
+        "name": "list_caldav_events",
+        "description": (
+            "List upcoming events from the student's Apple iCloud Calendar (via CalDAV). "
+            "Returns event IDs, titles, start/end times, descriptions, and locations. "
+            "Use this to find event IDs before calling update_caldav_event or delete_caldav_event."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_ahead": {"type": "integer", "description": "Days ahead to look, default 7, max 60"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "create_caldav_event",
+        "description": (
+            "Create a new event in the student's Apple iCloud Calendar. "
+            "Use when the student asks to add something to their calendar, block time, "
+            "or schedule a study session, appointment, or reminder. "
+            "Returns the created event ID."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title":       {"type": "string", "description": "Event title/summary (required)"},
+                "start":       {"type": "string", "description": "Start time in ISO 8601 format (required), e.g. '2026-08-15T14:30:00'"},
+                "end":         {"type": "string", "description": "End time in ISO 8601 format, optional; defaults to 1 hour after start"},
+                "description": {"type": "string", "description": "Event description/notes"},
+                "location":    {"type": "string", "description": "Event location"},
+            },
+            "required": ["title", "start"],
+        },
+    },
+    {
+        "name": "update_caldav_event",
+        "description": (
+            "Update an existing Apple iCloud Calendar event. "
+            "Pass only the fields you want to change — omitted fields are preserved. "
+            "Use the event_id from list_caldav_events or create_caldav_event."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_id":    {"type": "string", "description": "Event UID to update (required)"},
+                "title":       {"type": "string", "description": "New title (omit to keep existing)"},
+                "start":       {"type": "string", "description": "New start time in ISO 8601 format (omit to keep existing)"},
+                "end":         {"type": "string", "description": "New end time in ISO 8601 format (omit to keep existing)"},
+                "description": {"type": "string", "description": "New description (omit to keep existing)"},
+                "location":    {"type": "string", "description": "New location (omit to keep existing)"},
+            },
+            "required": ["event_id"],
+        },
+    },
+    {
+        "name": "delete_caldav_event",
+        "description": "Delete an Apple iCloud Calendar event by its ID. Irreversible — confirm with the student first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string", "description": "Event UID to delete (required)"},
+            },
+            "required": ["event_id"],
         },
     },
 ]
@@ -10635,8 +11007,8 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             }
 
         elif name == "send_notification":
-            if not NTFY_TOPIC:
-                return {"status": "skipped", "reason": "NTFY_TOPIC environment variable not configured"}
+            if not _notifications_configured():
+                return {"status": "skipped", "reason": "No push channel configured — set up ntfy (NTFY_TOPIC) or Telegram in Settings."}
             title = str(inputs.get("title", "Jarvis")).strip()[:100]
             message = str(inputs.get("message", "")).strip()[:500]
             if not message:
@@ -10648,7 +11020,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             if not isinstance(tags, list):
                 tags = []
             tags = [str(t).strip() for t in tags if str(t).strip()]
-            ok = send_ntfy_notification(title, message, priority=priority, tags=tags)
+            ok = send_push_notification(title, message, priority=priority, tags=tags)
             log.info("Jarvis tool send_notification: %r ok=%s", title, ok)
             return {"status": "sent" if ok else "failed", "title": title, "priority": priority}
 
@@ -10764,6 +11136,67 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                     return {"error": "event_id is required"}
                 cal_svc.events().delete(calendarId=cal_id, eventId=event_id).execute()
                 log.info("Jarvis tool: deleted calendar event id=%s", event_id)
+                return {"status": "deleted", "event_id": event_id}
+
+        elif name in ("list_caldav_events", "create_caldav_event", "update_caldav_event", "delete_caldav_event"):
+            if not _caldav_configured():
+                return {"error": "Apple Calendar not configured. Set up CalDAV credentials in Settings."}
+
+            if name == "list_caldav_events":
+                days_ahead = min(int(inputs.get("days_ahead", 7)), 60)
+                events = _caldav_list_events(days_ahead=days_ahead)
+                return {"events": events, "count": len(events)}
+
+            elif name == "create_caldav_event":
+                title = str(inputs.get("title", "")).strip()
+                if not title:
+                    return {"error": "title is required"}
+                start = str(inputs.get("start", "")).strip()
+                if not start:
+                    return {"error": "start is required"}
+                end = inputs.get("end", "")
+                desc = str(inputs.get("description", "")).strip()
+                loc = str(inputs.get("location", "")).strip()
+
+                result = _caldav_create_event(
+                    title=title,
+                    start_dt=start,
+                    end_dt=end or None,
+                    description=desc,
+                    location=loc
+                )
+                if "error" in result:
+                    return result
+                log.info("Jarvis tool: created CalDAV event '%s' id=%s", title, result.get("id"))
+                return {"status": "created", "event_id": result.get("id"), "title": title}
+
+            elif name == "update_caldav_event":
+                event_id = str(inputs.get("event_id", "")).strip()
+                if not event_id:
+                    return {"error": "event_id is required"}
+
+                result = _caldav_update_event(
+                    event_id=event_id,
+                    title=inputs.get("title"),
+                    start_dt=inputs.get("start"),
+                    end_dt=inputs.get("end"),
+                    description=inputs.get("description"),
+                    location=inputs.get("location")
+                )
+                if "error" in result:
+                    return result
+                log.info("Jarvis tool: updated CalDAV event id=%s", event_id)
+                return {"status": "updated", "event_id": event_id, "title": result.get("title")}
+
+            elif name == "delete_caldav_event":
+                event_id = str(inputs.get("event_id", "")).strip()
+                if not event_id:
+                    return {"error": "event_id is required"}
+
+                result = _caldav_delete_event(event_id=event_id)
+                if "error" in result:
+                    return result
+                log.info("Jarvis tool: deleted CalDAV event id=%s", event_id)
                 return {"status": "deleted", "event_id": event_id}
 
         else:
@@ -10948,6 +11381,8 @@ _GOOGLE_TOOL_NAMES = frozenset({
     "update_form_question", "delete_form_question", "delete_slide",
     "create_calendar_event", "update_calendar_event", "delete_calendar_event",
     "list_google_calendar_events",
+    "create_caldav_event", "update_caldav_event", "delete_caldav_event",
+    "list_caldav_events",
 })
 
 
@@ -10959,7 +11394,7 @@ def _build_active_tools() -> list:
         name = t.get("name", "")
         if name in _GOOGLE_TOOL_NAMES and not google_on:
             continue
-        if name == "send_notification" and not NTFY_TOPIC:
+        if name == "send_notification" and not _notifications_configured():
             continue
         if name == "get_climate_history" and not NOAA_API_TOKEN:
             continue
@@ -11061,13 +11496,16 @@ def api_chat():
             "present the profile conversationally. Use list_people when asked who Jarvis remembers.\n"
             "- SAVE_MEMORY: Call save_memory for significant personal facts about the student themselves "
             "(goals, preferences, life events, study habits). This is separate from people profiles.\n"
-            "- PUSH NOTIFICATIONS: You have send_notification to push real-time alerts to the student's phone via ntfy. "
+            "- PUSH NOTIFICATIONS: You have send_notification to push real-time alerts to the student's phone (ntfy and/or Telegram, whichever the student has connected). "
             "Use it proactively when something is genuinely urgent and the student should know *right now* — "
             "an assignment due in under 2 hours, a stock hitting a threshold they cared about, or an insight they'd want acted on immediately. "
             "Keep the message ≤2 sentences, actionable, in Jarvis voice. Don't notify for routine chat responses.\n"
             "- GOOGLE CALENDAR WRITE: You have create_calendar_event, update_calendar_event, delete_calendar_event, and list_google_calendar_events. "
-            "Use these when the student asks to add, change, or remove calendar items. "
-            "Always confirm the event details before deleting. Use list_google_calendar_events to look up event IDs when needed."
+            "Use these when the student asks to add, change, or remove calendar items on their Google Calendar. "
+            "Always confirm the event details before deleting. Use list_google_calendar_events to look up event IDs when needed.\n"
+            "- APPLE CALENDAR WRITE (CalDAV): You have create_caldav_event, update_caldav_event, delete_caldav_event, and list_caldav_events. "
+            "Use these when the student asks to add, change, or remove calendar items on their Apple iCloud Calendar. "
+            "Always confirm the event details before deleting. Use list_caldav_events to look up event IDs when needed."
         )
 
         system_dynamic = (
@@ -12959,6 +13397,136 @@ def google_disconnect():
     return jsonify({"status": "disconnected"})
 
 
+# ── CalDAV (Apple iCloud Calendar) routes ─────────────────────────────────────────
+
+@app.route("/api/caldav/status")
+def caldav_status():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    configured = _caldav_configured()
+    return jsonify({"configured": configured})
+
+
+@app.route("/api/caldav/configure", methods=["POST"])
+def caldav_configure():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    data = request.get_json() or {}
+    url = str(data.get("url", "")).strip()[:500]
+    username = str(data.get("username", "")).strip()[:200]
+    password = str(data.get("password", "")).strip()[:200]
+
+    if not (url and username and password):
+        return jsonify({"error": "url, username, and password are required"}), 400
+    # Credentials ride on every CalDAV request — never allow plaintext http.
+    if not url.lower().startswith("https://"):
+        return jsonify({"error": "CalDAV URL must start with https://"}), 400
+
+    # Test the connection
+    import caldav
+    try:
+        test_client = caldav.DAVClient(url=url, username=username, password=password, timeout=15)
+        principal = test_client.principal()
+        calendars = principal.calendars()
+        if not calendars:
+            return jsonify({"error": "No calendars found on this account"}), 400
+    except Exception as e:
+        log.warning("CalDAV configure test failed for %s: %s", username, e)
+        return jsonify({"error": "Connection failed — check the server URL, Apple ID, and app-specific password"}), 400
+
+    # Save credentials
+    set_config({
+        "caldav_url": url,
+        "caldav_username": username,
+        "caldav_password": password,
+    })
+    log.info("CalDAV configured for %s", username)
+    return jsonify({"status": "configured", "calendar_count": len(calendars)})
+
+
+@app.route("/api/caldav/disconnect", methods=["POST"])
+def caldav_disconnect():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    set_config({
+        "caldav_url": "",
+        "caldav_username": "",
+        "caldav_password": "",
+    })
+    return jsonify({"status": "disconnected"})
+
+
+# ── Telegram push notification routes ───────────────────────────────────────────
+# No OAuth here — Telegram bots are simpler: the student creates a bot via
+# @BotFather (gets a token, set as TELEGRAM_BOT_TOKEN), messages it once, and
+# we look up the resulting chat_id via getUpdates. That chat_id is where
+# send_push_notification / send_telegram_notification deliver to.
+
+@app.route("/api/telegram/status")
+def telegram_status():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    return jsonify({
+        "configured": _telegram_configured(),
+        "chat_id": _telegram_chat_id(),
+        "ready": _telegram_ready(),
+    })
+
+
+@app.route("/api/telegram/detect-chat-id", methods=["POST"])
+def telegram_detect_chat_id():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    if not TELEGRAM_BOT_TOKEN:
+        return jsonify({"error": "Set TELEGRAM_BOT_TOKEN first."}), 400
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+            params={"limit": 50, "timeout": 0},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        results = (resp.json() or {}).get("result", [])
+    except Exception as e:
+        log.warning("Telegram getUpdates failed: %s", e)
+        return jsonify({"error": "Could not reach Telegram. Check TELEGRAM_BOT_TOKEN."}), 502
+    if not results:
+        return jsonify({
+            "error": "No messages found yet. Open a chat with your bot on Telegram, "
+                     "send it any message (e.g. \"hi\"), then try again."
+        }), 404
+    # Most recent update wins
+    last = results[-1]
+    chat = ((last.get("message") or last.get("channel_post") or {}).get("chat")) or {}
+    chat_id = chat.get("id")
+    if chat_id is None:
+        return jsonify({"error": "Could not find a chat in the latest Telegram update."}), 404
+    chat_name = chat.get("username") or chat.get("first_name") or chat.get("title") or str(chat_id)
+    set_config({"telegram_chat_id": str(chat_id)})
+    return jsonify({"status": "ok", "chat_id": str(chat_id), "chat_name": chat_name})
+
+
+@app.route("/api/telegram/set-chat-id", methods=["POST"])
+def telegram_set_chat_id():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    data = request.get_json(force=True) or {}
+    chat_id = str(data.get("chat_id", "")).strip()[:64]
+    set_config({"telegram_chat_id": chat_id})
+    return jsonify({"status": "ok", "chat_id": chat_id})
+
+
+@app.route("/api/telegram/test", methods=["POST"])
+def telegram_test():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    if not _telegram_ready():
+        return jsonify({"error": "Telegram isn't fully connected yet."}), 400
+    ok = send_telegram_notification("Jarvis", "This is a test notification. If you can read this, Telegram is wired up correctly, sir.")
+    return jsonify({"status": "sent" if ok else "failed"})
+
+
 # ── WHOOP OAuth2 routes ────────────────────────────────────────────────────────
 
 @app.route("/whoop-auth/start")
@@ -13969,7 +14537,7 @@ def api_signup_request_access():
         cur.close(); conn.close()
 
     try:
-        send_ntfy_notification(
+        send_push_notification(
             "New access request",
             f"{name} <{email}> requested access",
             priority="default",

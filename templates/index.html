@@ -215,6 +215,12 @@ z-index: 1;
 
 .page.active {
 display: flex;
+animation: pageEnter 0.22s ease-out;
+}
+
+@keyframes pageEnter {
+from { opacity: 0; transform: translateY(6px); }
+to { opacity: 1; transform: translateY(0); }
 }
 
 #page-chat {
@@ -1111,22 +1117,6 @@ min-width: 90px;
 .news-rate-btn:hover { background: var(--surface3); }
 .news-rate-btn.active-like    { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
 .news-rate-btn.active-dislike { background: rgba(255,122,122,0.12); border-color: var(--red); color: var(--red); }
-
-.stock-toast {
-  position: fixed;
-  top: 20px;
-  right: 20px;
-  background: var(--surface2);
-  border: 1px solid rgba(85,230,165,0.4);
-  color: var(--text);
-  padding: 12px 16px;
-  border-radius: var(--r-sm);
-  font-size: 13px;
-  z-index: 10000;
-  box-shadow: 0 12px 34px rgba(0,0,0,0.5), 0 0 22px rgba(85,230,165,0.1);
-  animation: slideInToast 0.3s ease-out;
-}
-@keyframes slideInToast { from { transform: translateX(120%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
 .message.user .message-bubble {
 background: var(--accent);
@@ -2189,24 +2179,44 @@ border-radius: var(--r-sm);
 }
 
 /* ── Toast Notifications ── */
-.toast {
+#toastContainer {
 position: fixed;
 bottom: 20px;
 right: 20px;
+z-index: 3000;
+display: flex;
+flex-direction: column;
+align-items: flex-end;
+gap: 10px;
+pointer-events: none;
+max-width: min(380px, calc(100vw - 32px));
+}
+
+.toast {
 background: var(--surface2);
 border: 1px solid var(--border2);
 border-radius: 999px;
-padding: 14px 22px;
+padding: 13px 20px;
 color: var(--text);
 font-size: 14px;
-z-index: 1000;
 box-shadow: 0 16px 50px rgba(0,0,0,0.5);
 display: flex;
 align-items: center;
 gap: 12px;
 animation: toastSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-max-width: 340px;
+max-width: 100%;
+pointer-events: auto;
+cursor: pointer;
+transition: transform 0.15s ease, filter 0.15s ease;
 }
+
+.toast:hover { filter: brightness(1.12); }
+
+.toast .toast-msg { white-space: pre-line; overflow-wrap: anywhere; }
+
+/* Multi-line messages read better in a card than a pill */
+.toast.multiline { border-radius: var(--r-sm); align-items: flex-start; }
+.toast.multiline .toast-icon { margin-top: 1px; }
 
 .toast.success {
 background: rgba(85,230,165,0.12);
@@ -2231,6 +2241,87 @@ animation: toastSlideOut 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
 font-size: 18px;
 flex-shrink: 0;
 }
+
+/* ── Confirm Dialog (replaces native confirm()) ── */
+.confirm-overlay {
+position: fixed;
+inset: 0;
+background: rgba(4,8,12,0.62);
+backdrop-filter: blur(6px);
+-webkit-backdrop-filter: blur(6px);
+z-index: 4000;
+display: flex;
+align-items: center;
+justify-content: center;
+padding: 20px;
+animation: confirmFadeIn 0.15s ease-out;
+}
+
+.confirm-card {
+background: var(--surface);
+border: 1px solid var(--border2);
+border-radius: var(--r);
+padding: 24px;
+max-width: 380px;
+width: 100%;
+box-shadow: 0 30px 80px rgba(0,0,0,0.6);
+animation: confirmPopIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.confirm-card-title {
+font-family: var(--font-display);
+font-size: 16px;
+font-weight: 600;
+color: var(--text);
+margin-bottom: 8px;
+}
+
+.confirm-card-msg {
+font-size: 14px;
+color: var(--text2);
+line-height: 1.5;
+white-space: pre-line;
+margin-bottom: 20px;
+}
+
+.confirm-card-actions {
+display: flex;
+gap: 10px;
+justify-content: flex-end;
+}
+
+.confirm-btn {
+border-radius: 999px;
+padding: 9px 18px;
+font-size: 13px;
+font-weight: 600;
+cursor: pointer;
+border: 1px solid var(--border2);
+background: transparent;
+color: var(--text2);
+transition: filter 0.15s ease, background 0.15s ease;
+}
+
+.confirm-btn:hover { filter: brightness(1.2); background: var(--surface2); }
+
+.confirm-btn.primary {
+background: var(--accent);
+border-color: var(--accent);
+color: var(--accent-ink);
+}
+
+.confirm-btn.primary:hover { background: var(--accent2); filter: none; }
+
+.confirm-btn.danger {
+background: rgba(255,122,122,0.14);
+border-color: rgba(255,122,122,0.5);
+color: var(--red);
+}
+
+.confirm-btn.danger:hover { background: rgba(255,122,122,0.24); filter: none; }
+
+@keyframes confirmFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes confirmPopIn { from { opacity: 0; transform: scale(0.96) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
 
 /* ── Enhanced Button Feedback ── */
 button {
@@ -3703,6 +3794,58 @@ margin: 8px 2px 10px;
           <div id="whoopStatusText" style="font-size:13px;color:var(--text2);margin-bottom:10px;">Checking status&hellip;</div>
           <button class="btn-accent" id="whoopConnectBtn" style="display:none;" onclick="location.href='/whoop-auth/start'">Connect WHOOP</button>
           <button class="btn-danger-outline" id="whoopDisconnectBtn" style="display:none;" onclick="disconnectWhoop()">Disconnect WHOOP</button>
+        </div>
+      </div>
+      <div class="settings-section" id="googleCalSettingsSection" style="display:none;">
+        <h3>Google Calendar</h3>
+        <p style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">Let Jarvis create, move, and delete events directly on your Google Calendar — just ask in chat. Once connected, new events also show up in any iCal feed you've subscribed to that points at this calendar.</p>
+        <div class="settings-item" style="display:block;">
+          <div id="googleCalStatusText" style="font-size:13px;color:var(--text2);margin-bottom:10px;">Checking status&hellip;</div>
+          <button class="btn-accent" id="googleCalConnectBtn" style="display:none;" onclick="location.href='/google-auth/start'">Connect Google Calendar</button>
+          <button class="btn-danger-outline" id="googleCalDisconnectBtn" style="display:none;" onclick="disconnectGoogleCal()">Disconnect Google Calendar</button>
+        </div>
+      </div>
+      <div class="settings-section" id="caldavSettingsSection" style="display:none;">
+        <h3>Apple iCloud Calendar</h3>
+        <p style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">Connect your Apple iCloud Calendar so Jarvis can create, update, and delete events — just ask in chat. Your family can share their calendars with you using Calendar's sharing settings, then set them up here.</p>
+        <div class="settings-item" style="display:block;">
+          <div id="caldavStatusText" style="font-size:13px;color:var(--text2);margin-bottom:10px;">Checking status&hellip;</div>
+          <div id="caldavConfigForm" style="display:none;margin-bottom:12px;">
+            <div style="margin-bottom:8px;">
+              <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">CalDAV Server URL (usually https://caldav.icloud.com)</label>
+              <input type="text" id="caldavUrl" value="https://caldav.icloud.com" placeholder="https://caldav.icloud.com" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+            </div>
+            <div style="margin-bottom:8px;">
+              <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Apple ID Email</label>
+              <input type="email" id="caldavUsername" placeholder="you@icloud.com" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+            </div>
+            <div style="margin-bottom:12px;">
+              <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">App-Specific Password</label>
+              <input type="password" id="caldavPassword" placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+              <div style="font-size:11px;color:var(--text3);margin-top:4px;">Never enter your main Apple ID password here. Generate an app-specific password at <strong>account.apple.com › Sign-In and Security › App-Specific Passwords</strong> — it only grants app access and can be revoked anytime without changing your real password.</div>
+            </div>
+            <button class="btn-accent" onclick="configureCaldav()" style="width:100%;">Connect Apple Calendar</button>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn-danger-outline" id="caldavDisconnectBtn" style="display:none;" onclick="disconnectCaldav()">Disconnect Apple Calendar</button>
+          </div>
+        </div>
+      </div>
+      <div class="settings-section" id="telegramSettingsSection" style="display:none;">
+        <h3>Telegram Notifications</h3>
+        <p style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">Get Jarvis's push notifications — assignment reminders, briefings, urgent alerts — sent through a Telegram bot instead of (or alongside) ntfy.</p>
+        <div class="settings-item" style="display:block;">
+          <div id="telegramStatusText" style="font-size:13px;color:var(--text2);margin-bottom:10px;">Checking status&hellip;</div>
+          <div id="telegramSetupSteps" style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.5;display:none;">
+            1. Open Telegram and message your bot (search its @username, or the link your admin gave you).<br>
+            2. Send it any message, like "hi".<br>
+            3. Come back here and tap <strong>Detect Chat ID</strong> below.
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn-accent" id="telegramDetectBtn" style="display:none;" onclick="detectTelegramChatId()">Detect Chat ID</button>
+            <button class="btn-accent" id="telegramTestBtn" style="display:none;" onclick="testTelegramNotification()">Send Test</button>
+            <button class="btn-danger-outline" id="telegramDisconnectBtn" style="display:none;" onclick="disconnectTelegram()">Disconnect</button>
+          </div>
         </div>
       </div>
       <div class="settings-section">
@@ -5403,6 +5546,172 @@ function openSettings() {
   }).catch(() => {});
 
   loadWhoopStatus();
+  loadGoogleCalStatus();
+  loadCaldavStatus();
+  loadTelegramStatus();
+}
+
+function loadGoogleCalStatus() {
+  fetch('/api/google/status').then(r => r.json()).then(status => {
+    const section = document.getElementById('googleCalSettingsSection');
+    const text = document.getElementById('googleCalStatusText');
+    const connectBtn = document.getElementById('googleCalConnectBtn');
+    const disconnectBtn = document.getElementById('googleCalDisconnectBtn');
+    if (!section || !status || !status.configured) {
+      if (section) section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    if (status.authorized) {
+      text.textContent = 'Connected — Jarvis can read and write your calendar.';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = '';
+    } else {
+      text.textContent = status.refresh_error ? 'Connection expired — please reconnect.' : 'Not connected.';
+      connectBtn.style.display = '';
+      disconnectBtn.style.display = 'none';
+    }
+  }).catch(() => {
+    const section = document.getElementById('googleCalSettingsSection');
+    if (section) section.style.display = 'none';
+  });
+}
+
+function disconnectGoogleCal() {
+  fetch('/api/google/disconnect', { method: 'POST' }).then(() => {
+    loadGoogleCalStatus();
+  }).catch(() => {});
+}
+
+function loadCaldavStatus() {
+  fetch('/api/caldav/status').then(r => r.json()).then(status => {
+    const section = document.getElementById('caldavSettingsSection');
+    const text = document.getElementById('caldavStatusText');
+    const form = document.getElementById('caldavConfigForm');
+    const disconnectBtn = document.getElementById('caldavDisconnectBtn');
+    if (!section || !status) {
+      if (section) section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    if (status.configured) {
+      text.textContent = 'Connected — Jarvis can read and write your Apple Calendar.';
+      form.style.display = 'none';
+      disconnectBtn.style.display = '';
+    } else {
+      text.textContent = 'Not connected yet.';
+      form.style.display = 'block';
+      disconnectBtn.style.display = 'none';
+    }
+  }).catch(() => {
+    const section = document.getElementById('caldavSettingsSection');
+    if (section) section.style.display = 'none';
+  });
+}
+
+function configureCaldav() {
+  const url = document.getElementById('caldavUrl').value.trim();
+  const username = document.getElementById('caldavUsername').value.trim();
+  const password = document.getElementById('caldavPassword').value.trim();
+
+  if (!url || !username || !password) {
+    if (typeof showToast === 'function') showToast('Please fill in all fields', 'error');
+    return;
+  }
+
+  fetch('/api/caldav/configure', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, username, password })
+  }).then(r => r.json()).then(data => {
+    if (data.error) {
+      if (typeof showToast === 'function') showToast(data.error, 'error');
+    } else {
+      if (typeof showToast === 'function') showToast('Apple Calendar connected!', 'success', 2500);
+      loadCaldavStatus();
+    }
+  }).catch(e => {
+    if (typeof showToast === 'function') showToast('Connection failed — check your credentials', 'error');
+  });
+}
+
+function disconnectCaldav() {
+  fetch('/api/caldav/disconnect', { method: 'POST' }).then(() => {
+    loadCaldavStatus();
+    if (typeof showToast === 'function') showToast('Apple Calendar disconnected', 'success', 2500);
+  }).catch(() => {});
+}
+
+function loadTelegramStatus() {
+  fetch('/api/telegram/status').then(r => r.json()).then(status => {
+    const section = document.getElementById('telegramSettingsSection');
+    const text = document.getElementById('telegramStatusText');
+    const steps = document.getElementById('telegramSetupSteps');
+    const detectBtn = document.getElementById('telegramDetectBtn');
+    const testBtn = document.getElementById('telegramTestBtn');
+    const disconnectBtn = document.getElementById('telegramDisconnectBtn');
+    if (!section || !status || !status.configured) {
+      if (section) section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    if (status.ready) {
+      text.textContent = 'Connected — notifications will be sent to this Telegram chat.';
+      steps.style.display = 'none';
+      detectBtn.style.display = '';
+      detectBtn.textContent = 'Re-detect Chat ID';
+      testBtn.style.display = '';
+      disconnectBtn.style.display = '';
+    } else {
+      text.textContent = 'Not connected yet.';
+      steps.style.display = 'block';
+      detectBtn.style.display = '';
+      detectBtn.textContent = 'Detect Chat ID';
+      testBtn.style.display = 'none';
+      disconnectBtn.style.display = 'none';
+    }
+  }).catch(() => {
+    const section = document.getElementById('telegramSettingsSection');
+    if (section) section.style.display = 'none';
+  });
+}
+
+function detectTelegramChatId() {
+  const btn = document.getElementById('telegramDetectBtn');
+  const prevText = btn.textContent;
+  btn.textContent = 'Detecting…';
+  btn.disabled = true;
+  fetch('/api/telegram/detect-chat-id', { method: 'POST' }).then(async (r) => {
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
+    showToast('Telegram connected as ' + (body.chat_name || body.chat_id), 'success');
+    loadTelegramStatus();
+  }).catch((e) => {
+    showToast(e.message || 'Could not detect chat ID', 'error');
+  }).finally(() => {
+    btn.disabled = false;
+    if (btn.textContent === 'Detecting…') btn.textContent = prevText;
+  });
+}
+
+function testTelegramNotification() {
+  fetch('/api/telegram/test', { method: 'POST' }).then(async (r) => {
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok || body.status !== 'sent') throw new Error(body.error || 'Send failed');
+    showToast('Test notification sent — check Telegram.', 'success');
+  }).catch((e) => {
+    showToast(e.message || 'Could not send test notification', 'error');
+  });
+}
+
+function disconnectTelegram() {
+  fetch('/api/telegram/set-chat-id', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: '' }),
+  }).then(() => {
+    loadTelegramStatus();
+  }).catch(() => {});
 }
 
 function loadWhoopStatus() {
@@ -5453,6 +5762,21 @@ function disconnectWhoop() {
   history.replaceState({}, '', location.pathname + (qs ? '?' + qs : ''));
 })();
 
+(function handleGoogleOAuthRedirect() {
+  const params = new URLSearchParams(location.search);
+  if (params.has('google_connected')) {
+    if (typeof showToast === 'function') showToast('Google Calendar connected!', 'success', 2500);
+  } else if (params.has('google_error')) {
+    if (typeof showToast === 'function') showToast('Could not connect Google Calendar — please try again.', 'error');
+  } else {
+    return;
+  }
+  params.delete('google_connected');
+  params.delete('google_error');
+  const qs = params.toString();
+  history.replaceState({}, '', location.pathname + (qs ? '?' + qs : ''));
+})();
+
 function closeSettingsModal() {
   const modal = document.getElementById('settingsModal');
   const backdrop = document.getElementById('settingsBackdrop');
@@ -5474,7 +5798,7 @@ function saveSettings() {
   const timezone = document.getElementById('settingsTimezoneSelect').value;
 
   if (!customName) {
-    alert('Please enter a name');
+    showToast('Please enter a name', 'error');
     return;
   }
 
@@ -5515,7 +5839,7 @@ function saveSettings() {
     if (!r.ok || (body && body.status === 'error')) {
       const msg = (body && body.message) || (body && body.error) ||
                   ('Save failed (HTTP ' + r.status + ')');
-      alert('Could not save settings: ' + msg);
+      showToast('Could not save settings: ' + msg, 'error');
       return;
     }
     closeSettingsModal();
@@ -5523,9 +5847,9 @@ function saveSettings() {
     // — surface those warnings so a dead link doesn't silently import nothing.
     const warnings = (body && Array.isArray(body.warnings)) ? body.warnings : [];
     if (warnings.length) {
-      alert('Settings saved, but:\n\n• ' + warnings.join('\n• '));
+      showToast('Settings saved, but:\n• ' + warnings.join('\n• '), 'info', 6000);
     } else {
-      alert('Settings saved successfully');
+      showToast('Settings saved', 'success');
     }
     // Calendar URLs may have changed — drop cached views and re-pull so the
     // newly saved iCal feeds take effect immediately instead of next reload.
@@ -5534,7 +5858,7 @@ function saveSettings() {
       try { if (typeof fn === 'function') fn(); } catch (_e) {}
     });
   }).catch((e) => {
-    alert('Could not save settings: ' + (e && e.message ? e.message : 'network error'));
+    showToast('Could not save settings: ' + (e && e.message ? e.message : 'network error'), 'error');
   });
 }
 
@@ -5778,8 +6102,8 @@ function toggleBucketItem(id, cb) {
     .then(r => r.json()).then(() => loadBucketList()).catch(() => { cb.checked = !cb.checked; });
 }
 
-function deleteBucketItem(id) {
-  if (!confirm('Delete this item?')) return;
+async function deleteBucketItem(id) {
+  if (!(await showConfirm('Delete this item from your bucket list?', { title: 'Delete item', confirmText: 'Delete', danger: true }))) return;
   fetch('/api/bucket-list/' + id, { method: 'DELETE' }).then(() => loadBucketList());
 }
 
@@ -5878,8 +6202,8 @@ function toggleBook(id, cb) {
     .then(r => r.json()).then(() => loadBooks()).catch(() => { cb.checked = !cb.checked; });
 }
 
-function deleteBook(id) {
-  if (!confirm('Remove this book from your list?')) return;
+async function deleteBook(id) {
+  if (!(await showConfirm('Remove this book from your reading list?', { title: 'Remove book', confirmText: 'Remove', danger: true }))) return;
   fetch('/api/books/' + id, { method: 'DELETE' }).then(() => loadBooks());
 }
 
@@ -6001,8 +6325,8 @@ function toggleSkill(id, cb) {
     .then(r => r.json()).then(() => loadSkills()).catch(() => { cb.checked = !cb.checked; });
 }
 
-function deleteSkill(id) {
-  if (!confirm('Remove this skill?')) return;
+async function deleteSkill(id) {
+  if (!(await showConfirm('Remove this skill from your tracker?', { title: 'Remove skill', confirmText: 'Remove', danger: true }))) return;
   fetch('/api/skills/' + id, { method: 'DELETE' }).then(() => loadSkills());
 }
 
@@ -6043,8 +6367,8 @@ function loadVerseOfDay() {
   }).catch(() => { el.innerHTML = '<p style="color:var(--text3);font-size:13px;">Could not load today\'s verse.</p>'; });
 }
 
-function confirmLogout() {
-  const confirmed = confirm('Are you sure you want to log out?');
+async function confirmLogout() {
+  const confirmed = await showConfirm('You will need your password to sign back in.', { title: 'Log out?', confirmText: 'Log out' });
   if (confirmed) window.location.href = '/logout';
 }
 
@@ -6119,12 +6443,12 @@ function startNewChat() {
   closeChatHistory();
 }
 
-function clearAllChatHistory() {
+async function clearAllChatHistory() {
   const count = JSON.parse(localStorage.getItem('chatHistories') || '[]').length;
   const msg = count === 0
     ? 'Clear the current chat? This cannot be undone.'
     : `Delete all ${count} saved chat${count !== 1 ? 's' : ''} and the current conversation? This cannot be undone.`;
-  if (!confirm(msg)) return;
+  if (!(await showConfirm(msg, { title: 'Clear chat history', confirmText: 'Delete', danger: true }))) return;
   localStorage.removeItem('chatHistories');
   conversationHistory = [];
   newConversationId();
@@ -6602,7 +6926,7 @@ async function openProjectDetailsModal(projectId) {
 
     const project = projectsCache.find(p => p.id === projectId);
     if (!project) {
-      alert('Project not found');
+      showToast('Project not found', 'error');
       return;
     }
 
@@ -6700,7 +7024,7 @@ async function openProjectDetailsModal(projectId) {
     requestAnimationFrame(() => { content.style.opacity = '1'; });
   } catch (e) {
     console.error('Error loading project details:', e);
-    alert('Failed to load project details: ' + e.message);
+    showToast('Failed to load project details: ' + e.message, 'error');
   }
 }
 
@@ -6726,11 +7050,11 @@ async function addProjectNote(projectId) {
     if (response.ok) {
       await refreshProjectNotes(projectId);
     } else {
-      alert('Failed to add note');
+      showToast('Failed to add note', 'error');
     }
   } catch (e) {
     console.error('Error adding note:', e);
-    alert('Error adding note');
+    showToast('Error adding note', 'error');
   }
 }
 
@@ -6765,7 +7089,7 @@ async function refreshProjectNotes(projectId) {
 }
 
 async function deleteProjectNote(projectId, noteId) {
-  if (!confirm('Delete this note?')) return;
+  if (!(await showConfirm('Delete this note?', { title: 'Delete note', confirmText: 'Delete', danger: true }))) return;
 
   try {
     const response = await fetch(`/api/projects/${projectId}/notes/${noteId}`, {
@@ -6775,11 +7099,11 @@ async function deleteProjectNote(projectId, noteId) {
     if (response.ok) {
       await refreshProjectNotes(projectId);
     } else {
-      alert('Failed to delete note');
+      showToast('Failed to delete note', 'error');
     }
   } catch (e) {
     console.error('Error deleting note:', e);
-    alert('Error deleting note');
+    showToast('Error deleting note', 'error');
   }
 }
 
@@ -6852,7 +7176,7 @@ function closeProjectTaskModal() {
 
 async function saveProjectTask(projectId, taskId) {
   const title = document.getElementById('projectTaskTitle').value.trim();
-  if (!title) { alert('Title cannot be empty'); return; }
+  if (!title) { showToast('Title cannot be empty', 'error'); return; }
   const due_date = document.getElementById('projectTaskDueDate').value || null;
   const status = document.getElementById('projectTaskStatus').value;
   const notes = document.getElementById('projectTaskNotes').value;
@@ -6872,14 +7196,14 @@ async function saveProjectTask(projectId, taskId) {
     });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
-      alert('Failed to save task: ' + (data.error || `HTTP ${resp.status}`));
+      showToast('Failed to save task: ' + (data.error || `HTTP ${resp.status}`), 'error');
       return;
     }
     closeProjectTaskModal();
     await refreshProjectTasks(projectId);
   } catch (e) {
     console.error('Error saving project task:', e);
-    alert('Error saving task: ' + e.message);
+    showToast('Error saving task: ' + e.message, 'error');
   }
 }
 
@@ -6931,7 +7255,7 @@ async function refreshProjectTasks(projectId) {
 }
 
 async function deleteProjectTask(projectId, taskId) {
-  if (!confirm('Delete this task?')) return;
+  if (!(await showConfirm('Delete this task?', { title: 'Delete task', confirmText: 'Delete', danger: true }))) return;
 
   try {
     const response = await fetch(`/api/projects/${projectId}/tasks/${taskId}`, {
@@ -6941,11 +7265,11 @@ async function deleteProjectTask(projectId, taskId) {
     if (response.ok) {
       await refreshProjectTasks(projectId);
     } else {
-      alert('Failed to delete task');
+      showToast('Failed to delete task', 'error');
     }
   } catch (e) {
     console.error('Error deleting task:', e);
-    alert('Error deleting task');
+    showToast('Error deleting task', 'error');
   }
 }
 
@@ -7087,7 +7411,7 @@ async function saveTaskEdit(taskId) {
   const newNotes = document.getElementById('editNotes').value.trim();
 
   if (!newTitle) {
-    alert('Title cannot be empty');
+    showToast('Title cannot be empty', 'error');
     return;
   }
 
@@ -7122,11 +7446,11 @@ async function saveTaskEdit(taskId) {
       messagesDiv.appendChild(bubble);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
     } else {
-      alert('Failed to save task');
+      showToast('Failed to save task', 'error');
     }
   } catch (e) {
     console.error('Error saving task:', e);
-    alert('Error saving task');
+    showToast('Error saving task', 'error');
   }
 }
 
@@ -7344,14 +7668,14 @@ async function generatePlan() {
     } else {
       try {
         const error = await response.json();
-        alert('Error generating plan: ' + (error.error || `HTTP ${response.status}`));
+        showToast('Error generating plan: ' + (error.error || `HTTP ${response.status}`), 'error');
       } catch (e) {
-        alert(`Error generating plan: HTTP ${response.status}`);
+        showToast(`Error generating plan: HTTP ${response.status}`, 'error');
       }
     }
   } catch (e) {
     console.error('Failed to generate plan:', e);
-    alert('Failed to generate plan: ' + e.message);
+    showToast('Failed to generate plan: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;
@@ -7360,11 +7684,11 @@ async function generatePlan() {
 }
 
 async function deletePlanItem(itemId) {
-  if (!confirm('Remove this item from your plan?')) return;
+  if (!(await showConfirm('Remove this item from your plan?', { title: 'Remove item', confirmText: 'Remove', danger: true }))) return;
   try {
     const resp = await fetch(`/api/plan-my-day/items/${itemId}`, { method: 'DELETE' });
     if (!resp.ok) {
-      alert('Could not remove item.');
+      showToast('Could not remove item.', 'error');
       return;
     }
     const data = await fetchPlanMyDay(true);
@@ -7374,12 +7698,12 @@ async function deletePlanItem(itemId) {
     }
   } catch (e) {
     console.error('Failed to delete plan item:', e);
-    alert('Failed to remove item: ' + e.message);
+    showToast('Failed to remove item: ' + e.message, 'error');
   }
 }
 
 async function deletePlan() {
-  if (!confirm('Delete today\'s plan?')) return;
+  if (!(await showConfirm('Delete today\'s plan? You can generate a new one anytime.', { title: 'Delete plan', confirmText: 'Delete', danger: true }))) return;
 
   try {
     const response = await fetch('/api/plan-my-day', {
@@ -7390,11 +7714,11 @@ async function deletePlan() {
       const planData = await fetchPlanMyDay(true);
       renderPlan(planData);
     } else {
-      alert(`Error deleting plan: HTTP ${response.status}`);
+      showToast(`Error deleting plan: HTTP ${response.status}`, 'error');
     }
   } catch (e) {
     console.error('Failed to delete plan:', e);
-    alert('Failed to delete plan: ' + e.message);
+    showToast('Failed to delete plan: ' + e.message, 'error');
   }
 }
 
@@ -7462,12 +7786,7 @@ function displayPlanInChat(planData) {
 let _lastOutlook = null;
 
 function showStockToast(msg) {
-  const t = document.createElement('div');
-  t.className = 'stock-toast';
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; }, 2200);
-  setTimeout(() => { t.remove(); }, 2600);
+  showToast(msg, 'info', 2600);
 }
 
 async function generateDailyOutlook() {
@@ -7904,7 +8223,7 @@ async function saveStockNote(symbol) {
 }
 
 async function deleteStockNote(symbol) {
-  if (!confirm(`Clear the saved note for ${symbol}?`)) return;
+  if (!(await showConfirm(`Clear the saved note for ${symbol}?`, { title: 'Clear note', confirmText: 'Clear', danger: true }))) return;
   try {
     await fetch(`/api/stocks/notes/${encodeURIComponent(symbol)}`, { method: 'DELETE' });
     showStockToast(`Note cleared for ${symbol}.`);
@@ -9292,7 +9611,7 @@ async function saveNewTask() {
   const notes = document.getElementById('newTaskNotes').value.trim();
 
   if (!title) {
-    alert('Task title is required');
+    showToast('Task title is required', 'error');
     return;
   }
 
@@ -9322,11 +9641,11 @@ async function saveNewTask() {
       messagesDiv.appendChild(bubble);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
     } else {
-      alert('Failed to create task');
+      showToast('Failed to create task', 'error');
     }
   } catch (e) {
     console.error('Error creating task:', e);
-    alert('Error creating task');
+    showToast('Error creating task', 'error');
   }
 }
 
@@ -9480,7 +9799,7 @@ async function saveNewProject() {
   const description = document.getElementById('projectDescription').value.trim();
 
   if (!title) {
-    alert('Project title is required');
+    showToast('Project title is required', 'error');
     return;
   }
 
@@ -9505,11 +9824,11 @@ async function saveNewProject() {
       messagesDiv.appendChild(bubble);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
     } else {
-      alert('Failed to create project');
+      showToast('Failed to create project', 'error');
     }
   } catch (e) {
     console.error('Error creating project:', e);
-    alert('Error creating project');
+    showToast('Error creating project', 'error');
   }
 }
 
@@ -9580,7 +9899,7 @@ async function saveEditProject(projectId) {
   const description = document.getElementById('editProjectDescription').value.trim();
 
   if (!title) {
-    alert('Project title is required');
+    showToast('Project title is required', 'error');
     return;
   }
 
@@ -9604,11 +9923,11 @@ async function saveEditProject(projectId) {
       messagesDiv.appendChild(bubble);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
     } else {
-      alert('Failed to update project');
+      showToast('Failed to update project', 'error');
     }
   } catch (e) {
     console.error('Error updating project:', e);
-    alert('Error updating project');
+    showToast('Error updating project', 'error');
   }
 }
 
@@ -9741,7 +10060,7 @@ async function openRecurringTasksModal() {
     };
   } catch (e) {
     console.error('Error loading recurring tasks:', e);
-    alert('Failed to load recurring tasks');
+    showToast('Failed to load recurring tasks', 'error');
   }
 }
 
@@ -9841,7 +10160,7 @@ async function saveNewRecurringTask() {
   const notes = document.getElementById('recurringNotes').value.trim();
 
   if (!title) {
-    alert('Title is required');
+    showToast('Title is required', 'error');
     return;
   }
 
@@ -9862,11 +10181,11 @@ async function saveNewRecurringTask() {
       closeAddRecurringTaskModal();
       await openRecurringTasksModal();
     } else {
-      alert('Failed to create recurring task');
+      showToast('Failed to create recurring task', 'error');
     }
   } catch (e) {
     console.error('Error creating recurring task:', e);
-    alert('Error creating recurring task');
+    showToast('Error creating recurring task', 'error');
   }
 }
 
@@ -9956,7 +10275,7 @@ async function saveEditRecurringTask(taskId) {
   const notes = document.getElementById('editRecurringNotes').value.trim();
 
   if (!title) {
-    alert('Title is required');
+    showToast('Title is required', 'error');
     return;
   }
 
@@ -9976,11 +10295,11 @@ async function saveEditRecurringTask(taskId) {
       closeEditRecurringTaskModal();
       await openRecurringTasksModal();
     } else {
-      alert('Failed to update recurring task');
+      showToast('Failed to update recurring task', 'error');
     }
   } catch (e) {
     console.error('Error updating recurring task:', e);
-    alert('Error updating recurring task');
+    showToast('Error updating recurring task', 'error');
   }
 }
 
@@ -9989,7 +10308,7 @@ async function deleteRecurringTask(taskId) {
 }
 
 async function deleteRecurringTaskConfirm(taskId) {
-  if (!confirm('Delete this recurring task?')) {
+  if (!(await showConfirm('Delete this recurring task? Future occurrences will stop.', { title: 'Delete recurring task', confirmText: 'Delete', danger: true }))) {
     return;
   }
 
@@ -10002,11 +10321,11 @@ async function deleteRecurringTaskConfirm(taskId) {
       closeEditRecurringTaskModal();
       await openRecurringTasksModal();
     } else {
-      alert('Failed to delete recurring task');
+      showToast('Failed to delete recurring task', 'error');
     }
   } catch (e) {
     console.error('Error deleting recurring task:', e);
-    alert('Error deleting recurring task');
+    showToast('Error deleting recurring task', 'error');
   }
 }
 
@@ -10370,23 +10689,113 @@ setTimeout(() => {
 // ── Enhanced UX Functions ──
 
 // Toast notification system
-function showToast(message, type = 'info', duration = 3000) {
+function getToastContainer() {
+  let c = document.getElementById('toastContainer');
+  if (!c) {
+    c = document.createElement('div');
+    c.id = 'toastContainer';
+    document.body.appendChild(c);
+  }
+  return c;
+}
+
+function dismissToast(toast) {
+  if (!toast || toast.dataset.closing) return;
+  toast.dataset.closing = '1';
+  toast.classList.add('closing');
+  setTimeout(() => toast.remove(), 300);
+}
+
+function showToast(message, type = 'info', duration) {
+  const container = getToastContainer();
+  // Keep the stack short — drop the oldest when a 4th arrives
+  while (container.children.length >= 3) dismissToast(container.firstElementChild);
+
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
+  const text = String(message == null ? '' : message);
+  if (text.includes('\n') || text.length > 90) toast.classList.add('multiline');
 
-  const icons = {
-    success: '✓',
-    error: '✕',
-    info: 'ℹ'
-  };
+  const icons = { success: '✓', error: '✕', info: 'ℹ' };
+  const icon = document.createElement('span');
+  icon.className = 'toast-icon';
+  icon.textContent = icons[type] || icons.info;
+  const msg = document.createElement('span');
+  msg.className = 'toast-msg';
+  msg.textContent = text;
+  toast.appendChild(icon);
+  toast.appendChild(msg);
+  container.appendChild(toast);
 
-  toast.innerHTML = `<span class="toast-icon">${icons[type]}</span><span>${message}</span>`;
-  document.body.appendChild(toast);
+  // Errors and long messages linger a little longer by default
+  if (duration == null) duration = type === 'error' ? 4500 : (toast.classList.contains('multiline') ? 5000 : 3000);
 
-  setTimeout(() => {
-    toast.classList.add('closing');
-    setTimeout(() => toast.remove(), 300);
-  }, duration);
+  const timer = setTimeout(() => dismissToast(toast), duration);
+  toast.addEventListener('click', () => { clearTimeout(timer); dismissToast(toast); });
+  return toast;
+}
+
+// Promise-based replacement for native confirm(). Resolves true/false.
+// opts: { title, confirmText, cancelText, danger }
+function showConfirm(message, opts = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+
+    const card = document.createElement('div');
+    card.className = 'confirm-card';
+    card.setAttribute('role', 'alertdialog');
+    card.setAttribute('aria-modal', 'true');
+
+    const title = document.createElement('div');
+    title.className = 'confirm-card-title';
+    title.textContent = opts.title || 'Are you sure?';
+
+    const msg = document.createElement('div');
+    msg.className = 'confirm-card-msg';
+    msg.textContent = String(message == null ? '' : message);
+
+    const actions = document.createElement('div');
+    actions.className = 'confirm-card-actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'confirm-btn';
+    cancelBtn.textContent = opts.cancelText || 'Cancel';
+
+    const okBtn = document.createElement('button');
+    okBtn.className = 'confirm-btn ' + (opts.danger ? 'danger' : 'primary');
+    okBtn.textContent = opts.confirmText || 'Confirm';
+
+    actions.appendChild(cancelBtn);
+    actions.appendChild(okBtn);
+    card.appendChild(title);
+    card.appendChild(msg);
+    card.appendChild(actions);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    const prevFocus = document.activeElement;
+    function close(result) {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      if (prevFocus && typeof prevFocus.focus === 'function') { try { prevFocus.focus(); } catch (_) {} }
+      resolve(result);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); }
+      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); close(true); }
+      else if (e.key === 'Tab') {
+        // Trap focus between the two buttons
+        e.preventDefault();
+        (document.activeElement === okBtn ? cancelBtn : okBtn).focus();
+      }
+    }
+    document.addEventListener('keydown', onKey, true);
+    cancelBtn.addEventListener('click', () => close(false));
+    okBtn.addEventListener('click', () => close(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    okBtn.focus();
+  });
 }
 
 // Soft-delete with an Undo toast. The caller passes:
@@ -10401,11 +10810,12 @@ function scheduleUndoableDelete(label, commit, rollback) {
   toast.style.alignItems = 'center';
   toast.style.gap = '12px';
   toast.innerHTML = '<span class="toast-icon">↺</span><span>' + label + '</span>';
+  toast.style.cursor = 'default';
   const btn = document.createElement('button');
   btn.textContent = 'Undo';
   btn.style.cssText = 'background:transparent;border:1px solid var(--accent);color:var(--accent);padding:4px 10px;border-radius:var(--r-sm);font-size:12px;font-weight:600;cursor:pointer;';
   toast.appendChild(btn);
-  document.body.appendChild(toast);
+  getToastContainer().appendChild(toast);
 
   let cancelled = false;
   const timer = setTimeout(async () => {
@@ -10417,8 +10827,7 @@ function scheduleUndoableDelete(label, commit, rollback) {
       try { rollback(); } catch (_) {}
       showToast('Could not delete — restored.', 'error', 3000);
     } finally {
-      toast.classList.add('closing');
-      setTimeout(() => toast.remove(), 300);
+      dismissToast(toast);
     }
   }, 5000);
 
@@ -10426,8 +10835,7 @@ function scheduleUndoableDelete(label, commit, rollback) {
     cancelled = true;
     clearTimeout(timer);
     try { rollback(); } catch (e) { console.error('Undo rollback failed:', e); }
-    toast.classList.add('closing');
-    setTimeout(() => toast.remove(), 300);
+    dismissToast(toast);
   });
 }
 
