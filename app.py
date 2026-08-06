@@ -490,6 +490,12 @@ NTFY_TOPIC  = os.environ.get("NTFY_TOPIC", "").strip()
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").strip()
 NTFY_TOKEN  = os.environ.get("NTFY_TOKEN", "").strip()
 
+# ── Telegram push notifications ────────────────────────────────────────────────
+# Bot token comes from @BotFather (secret, env var). The chat to message is
+# stored in `config` (key "telegram_chat_id") since it's discovered at runtime
+# via /api/telegram/detect-chat-id rather than something you'd hardcode.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive",               # full Drive access (create/edit/delete)
     "https://www.googleapis.com/auth/documents",           # read/write Google Docs
@@ -3989,6 +3995,63 @@ def send_ntfy_notification(title, message, priority="default", tags=None):
     return False
 
 
+# ── Telegram push notification helpers ──────────────────────────────────────────
+
+def _telegram_configured():
+    return bool(TELEGRAM_BOT_TOKEN)
+
+
+def _telegram_chat_id():
+    return get_config().get("telegram_chat_id", "").strip()
+
+
+def _telegram_ready():
+    return bool(TELEGRAM_BOT_TOKEN and _telegram_chat_id())
+
+
+def _notifications_configured():
+    """True if at least one push channel (ntfy or Telegram) is usable."""
+    return bool(NTFY_TOPIC) or _telegram_ready()
+
+
+def send_telegram_notification(title, message, chat_id=None):
+    """Send a push notification via a Telegram bot. Returns True on success."""
+    if not TELEGRAM_BOT_TOKEN:
+        return False
+    target = (chat_id or _telegram_chat_id()).strip()
+    if not target:
+        return False
+    title = (title or "").strip()
+    message = message or ""
+    # Telegram HTML parse mode — escape the handful of reserved characters
+    def esc(s):
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = f"<b>{esc(title)}</b>\n{esc(message)}" if title else esc(message)
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": target, "text": text[:4096], "parse_mode": "HTML"}
+    for attempt in (1, 2):
+        try:
+            resp = requests.post(url, json=payload, timeout=10)
+            if resp.ok:
+                return True
+            log.warning("Telegram sendMessage returned %s (attempt %s): %s", resp.status_code, attempt, resp.text[:200])
+            if 400 <= resp.status_code < 500:
+                return False  # bad chat_id/token/payload — retrying won't help
+        except Exception as e:
+            log.error("Telegram notification failed (attempt %s): %s", attempt, e)
+        if attempt == 1:
+            time.sleep(2)
+    return False
+
+
+def send_push_notification(title, message, priority="default", tags=None):
+    """Fan out a notification to every configured push channel (ntfy + Telegram).
+    Returns True if at least one channel delivered it."""
+    ntfy_ok = send_ntfy_notification(title, message, priority=priority, tags=tags) if NTFY_TOPIC else False
+    telegram_ok = send_telegram_notification(title, message) if _telegram_ready() else False
+    return ntfy_ok or telegram_ok
+
+
 def send_email(to_addr, subject, body_html):
     """Send an email via SMTP. Returns True on success, False on failure/not configured."""
     mail_server = os.environ.get("MAIL_SERVER", "").strip()
@@ -4271,8 +4334,8 @@ ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content"
         cur.close()
         conn.close()
 
-        # Push a condensed briefing summary via ntfy
-        if NTFY_TOPIC:
+        # Push a condensed briefing summary to every configured channel
+        if _notifications_configured():
             try:
                 today_key = f"morning_briefing_{datetime.now(TZ).strftime('%Y-%m-%d')}"
                 if _ntfy_dedup(today_key, title="Morning Briefing", max_age_hours=20):
@@ -4280,14 +4343,14 @@ ON CONFLICT (id) DO UPDATE SET generated_at = NOW(), content = EXCLUDED.content"
                     preview = content[:300].strip()
                     if len(content) > 300:
                         preview += "…"
-                    send_ntfy_notification(
+                    send_push_notification(
                         title="Good morning — your briefing is ready",
                         message=preview,
                         priority="default",
                         tags=["sun_with_face", "memo"],
                     )
             except Exception as _e:
-                log.warning("briefing ntfy push failed: %s", _e)
+                log.warning("briefing push failed: %s", _e)
 
 
 scheduler = BackgroundScheduler(timezone=TZ)
@@ -4621,8 +4684,8 @@ def _notif_canvas_assignments():
 
 
 def check_assignment_due_notifications():
-    """Tier 1 — send ntfy for assignments due in ~24 h and ~2 h."""
-    if not NTFY_TOPIC:
+    """Tier 1 — push for assignments due in ~24 h and ~2 h."""
+    if not _notifications_configured():
         return
     try:
         assignments = _notif_canvas_assignments()
@@ -4643,7 +4706,7 @@ def check_assignment_due_notifications():
             if 22.5 <= hours_until <= 25.5:
                 key = f"asgn_24h_{a['title']}_{due_dt.strftime('%Y-%m-%d')}"
                 if _ntfy_dedup(key, title=a["title"], max_age_hours=20):
-                    send_ntfy_notification(
+                    send_push_notification(
                         title="Assignment Due Tomorrow",
                         message=f"{a['title']} ({course}) — due {due_disp}",
                         priority="high",
@@ -4652,7 +4715,7 @@ def check_assignment_due_notifications():
             elif 1.5 <= hours_until <= 2.5:
                 key = f"asgn_2h_{a['title']}_{due_dt.strftime('%Y-%m-%d-%H')}"
                 if _ntfy_dedup(key, title=a["title"], max_age_hours=4):
-                    send_ntfy_notification(
+                    send_push_notification(
                         title="Assignment Due in ~2 Hours",
                         message=f"{a['title']} ({course}) — due {due_disp}",
                         priority="urgent",
@@ -4663,8 +4726,8 @@ def check_assignment_due_notifications():
 
 
 def check_overdue_tasks():
-    """Tier 1 — send ntfy for tasks past their due date that haven't been completed."""
-    if not NTFY_TOPIC:
+    """Tier 1 — push for tasks past their due date that haven't been completed."""
+    if not _notifications_configured():
         return
     try:
         today = datetime.now(TZ).date()
@@ -4680,7 +4743,7 @@ def check_overdue_tasks():
         for task in overdue:
             key = f"task_overdue_{task['id']}_{today}"
             if _ntfy_dedup(key, title=task["title"], max_age_hours=20):
-                send_ntfy_notification(
+                send_push_notification(
                     title="Overdue Task",
                     message=f"{task['title']} — was due {task['due_date']}, still pending",
                     priority="high",
@@ -4692,7 +4755,7 @@ def check_overdue_tasks():
 
 def check_ap_test_countdown():
     """Tier 2 — warn 2 days before any AP exam found in Canvas."""
-    if not NTFY_TOPIC:
+    if not _notifications_configured():
         return
     try:
         assignments = _notif_canvas_assignments()
@@ -4713,7 +4776,7 @@ def check_ap_test_countdown():
             if days_until in (1, 2, 7):
                 key = f"ap_countdown_{a['title']}_{due_dt.strftime('%Y-%m-%d')}_{days_until}d"
                 if _ntfy_dedup(key, title=a["title"], max_age_hours=20):
-                    send_ntfy_notification(
+                    send_push_notification(
                         title=f"AP Exam in {days_until} Day{'s' if days_until != 1 else ''}",
                         message=f"{a['title']} is in {days_until} day{'s' if days_until != 1 else ''}, sir. You have been warned.",
                         priority="high",
@@ -4724,8 +4787,8 @@ def check_ap_test_countdown():
 
 
 def check_meeting_reminders():
-    """Tier 2 — send a 30-minute heads-up for upcoming calendar events."""
-    if not NTFY_TOPIC:
+    """Tier 2 — push a 30-minute heads-up for upcoming calendar events."""
+    if not _notifications_configured():
         return
     try:
         now = datetime.now(TZ)
@@ -4748,7 +4811,7 @@ def check_meeting_reminders():
                     if window_start <= start_dt <= window_end:
                         key = f"meeting_{ev['title']}_{start_dt.strftime('%Y-%m-%d-%H-%M')}"
                         if _ntfy_dedup(key, title=ev["title"], max_age_hours=20):
-                            send_ntfy_notification(
+                            send_push_notification(
                                 title="Event Starting Soon",
                                 message=f"{ev['title']} at {ev['start_display']}",
                                 priority="high",
@@ -4762,7 +4825,7 @@ def check_meeting_reminders():
 
 def check_idle_detection():
     """Tier 3 — nudge if no task/assignment logged in 3+ hours on a school night."""
-    if not NTFY_TOPIC:
+    if not _notifications_configured():
         return
     try:
         now = datetime.now(TZ)
@@ -4784,7 +4847,7 @@ def check_idle_detection():
             return
         key = f"idle_{now.strftime('%Y-%m-%d-%H')}"
         if _ntfy_dedup(key, title="Idle check", max_age_hours=1):
-            send_ntfy_notification(
+            send_push_notification(
                 title="Still with me, sir?",
                 message="No tasks logged in over 3 hours. Might be worth making a dent in that list.",
                 priority="default",
@@ -4796,7 +4859,7 @@ def check_idle_detection():
 
 def check_trash_recycling_reminder():
     """Tier 3 — remind about trash/recycling events from personal calendar at 7 PM."""
-    if not NTFY_TOPIC or not u_personal_ical():
+    if not _notifications_configured() or not u_personal_ical():
         return
     try:
         now = datetime.now(TZ)
@@ -4812,7 +4875,7 @@ def check_trash_recycling_reminder():
             if ev.get("date") == today_str and any(kw in title_lc for kw in ("trash", "recycling", "recycle", "garbage", "bin")):
                 key = f"trash_{ev['title']}_{today_str}"
                 if _ntfy_dedup(key, title=ev["title"], max_age_hours=20):
-                    send_ntfy_notification(
+                    send_push_notification(
                         title="Trash Reminder",
                         message=f"{ev['title']} tonight — don't forget.",
                         priority="default",
@@ -4824,7 +4887,7 @@ def check_trash_recycling_reminder():
 
 def check_weather_warning():
     """Tier 3 — check NWS alerts for Park City and push severe/extreme warnings."""
-    if not NTFY_TOPIC:
+    if not _notifications_configured():
         return
     try:
         resp = requests.get(
@@ -4845,7 +4908,7 @@ def check_weather_warning():
             alert_id = props.get("id", event)
             key = f"weather_{alert_id}"
             if _ntfy_dedup(key, title=event, max_age_hours=6):
-                send_ntfy_notification(
+                send_push_notification(
                     title=f"Weather Alert: {event}",
                     message=headline,
                     priority="high" if severity in ("Extreme", "Severe") else "default",
@@ -4857,7 +4920,7 @@ def check_weather_warning():
 
 def check_stock_alerts():
     """Tier 2 — alert on ±5% daily moves, target price hits, or stop-loss triggers."""
-    if not NTFY_TOPIC or not FINNHUB_API_KEY:
+    if not _notifications_configured() or not FINNHUB_API_KEY:
         return
     try:
         now = datetime.now(TZ)
@@ -4920,7 +4983,7 @@ def check_stock_alerts():
                 if alert_reason:
                     key = f"stock_{symbol}_{now.strftime('%Y-%m-%d-%H')}"
                     if _ntfy_dedup(key, title=symbol, max_age_hours=2):
-                        send_ntfy_notification(
+                        send_push_notification(
                             title=f"Stock Alert: {symbol}",
                             message=f"{symbol} {alert_reason}",
                             priority=priority,
@@ -4990,7 +5053,7 @@ def schedule_briefing():
     log.info("Weekly insight scheduled for Sun 08:00 Mountain")
     log.info("Cleanup job scheduled for 02:30 Mountain")
     log.info("Auto daily plan scheduled for 22:00 Mountain")
-    log.info("ntfy notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather)")
+    log.info("push notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather)")
 
 
 # ── Security Functions ──────────────────────────────────────────────────────────
@@ -7972,6 +8035,8 @@ def api_config_get():
         "canvas_base_url":       cfg.get("canvas_base_url", ""),
         "sports_ical_url":       cfg.get("sports_ical_url", ""),
         "job_schedule_ical_url": cfg.get("job_schedule_ical_url", ""),
+        "telegram_bot_configured": _telegram_configured(),
+        "telegram_chat_id":        get_config().get("telegram_chat_id", ""),
     })
 
 
@@ -9207,12 +9272,14 @@ JARVIS_TOOLS = [
     {
         "name": "send_notification",
         "description": (
-            "Send a push notification to the student's device via ntfy. "
+            "Send a push notification to the student's device (delivered via every push channel "
+            "the student has configured — ntfy and/or Telegram). "
             "Use proactively when you want to alert the student about something time-sensitive, "
             "remind them of an urgent task, or surface a critical insight they should act on now. "
             "Keep the message short and actionable — 1-2 sentences maximum. "
             "Priority levels: 'min' (background), 'low', 'default', 'high', 'urgent' (breaks DND). "
             "Only use 'urgent' for genuine emergencies. "
+            "Priority and tags only affect the ntfy channel if it's configured; Telegram ignores them. "
             "Tags are ntfy emoji names e.g. 'warning', 'books', 'rotating_light', 'calendar'."
         ),
         "input_schema": {
@@ -10663,8 +10730,8 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             }
 
         elif name == "send_notification":
-            if not NTFY_TOPIC:
-                return {"status": "skipped", "reason": "NTFY_TOPIC environment variable not configured"}
+            if not _notifications_configured():
+                return {"status": "skipped", "reason": "No push channel configured — set up ntfy (NTFY_TOPIC) or Telegram in Settings."}
             title = str(inputs.get("title", "Jarvis")).strip()[:100]
             message = str(inputs.get("message", "")).strip()[:500]
             if not message:
@@ -10676,7 +10743,7 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
             if not isinstance(tags, list):
                 tags = []
             tags = [str(t).strip() for t in tags if str(t).strip()]
-            ok = send_ntfy_notification(title, message, priority=priority, tags=tags)
+            ok = send_push_notification(title, message, priority=priority, tags=tags)
             log.info("Jarvis tool send_notification: %r ok=%s", title, ok)
             return {"status": "sent" if ok else "failed", "title": title, "priority": priority}
 
@@ -10987,7 +11054,7 @@ def _build_active_tools() -> list:
         name = t.get("name", "")
         if name in _GOOGLE_TOOL_NAMES and not google_on:
             continue
-        if name == "send_notification" and not NTFY_TOPIC:
+        if name == "send_notification" and not _notifications_configured():
             continue
         if name == "get_climate_history" and not NOAA_API_TOKEN:
             continue
@@ -11089,7 +11156,7 @@ def api_chat():
             "present the profile conversationally. Use list_people when asked who Jarvis remembers.\n"
             "- SAVE_MEMORY: Call save_memory for significant personal facts about the student themselves "
             "(goals, preferences, life events, study habits). This is separate from people profiles.\n"
-            "- PUSH NOTIFICATIONS: You have send_notification to push real-time alerts to the student's phone via ntfy. "
+            "- PUSH NOTIFICATIONS: You have send_notification to push real-time alerts to the student's phone (ntfy and/or Telegram, whichever the student has connected). "
             "Use it proactively when something is genuinely urgent and the student should know *right now* — "
             "an assignment due in under 2 hours, a stock hitting a threshold they cared about, or an insight they'd want acted on immediately. "
             "Keep the message ≤2 sentences, actionable, in Jarvis voice. Don't notify for routine chat responses.\n"
@@ -12987,6 +13054,76 @@ def google_disconnect():
     return jsonify({"status": "disconnected"})
 
 
+# ── Telegram push notification routes ───────────────────────────────────────────
+# No OAuth here — Telegram bots are simpler: the student creates a bot via
+# @BotFather (gets a token, set as TELEGRAM_BOT_TOKEN), messages it once, and
+# we look up the resulting chat_id via getUpdates. That chat_id is where
+# send_push_notification / send_telegram_notification deliver to.
+
+@app.route("/api/telegram/status")
+def telegram_status():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    return jsonify({
+        "configured": _telegram_configured(),
+        "chat_id": _telegram_chat_id(),
+        "ready": _telegram_ready(),
+    })
+
+
+@app.route("/api/telegram/detect-chat-id", methods=["POST"])
+def telegram_detect_chat_id():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    if not TELEGRAM_BOT_TOKEN:
+        return jsonify({"error": "Set TELEGRAM_BOT_TOKEN first."}), 400
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+            params={"limit": 50, "timeout": 0},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        results = (resp.json() or {}).get("result", [])
+    except Exception as e:
+        log.warning("Telegram getUpdates failed: %s", e)
+        return jsonify({"error": "Could not reach Telegram. Check TELEGRAM_BOT_TOKEN."}), 502
+    if not results:
+        return jsonify({
+            "error": "No messages found yet. Open a chat with your bot on Telegram, "
+                     "send it any message (e.g. \"hi\"), then try again."
+        }), 404
+    # Most recent update wins
+    last = results[-1]
+    chat = ((last.get("message") or last.get("channel_post") or {}).get("chat")) or {}
+    chat_id = chat.get("id")
+    if chat_id is None:
+        return jsonify({"error": "Could not find a chat in the latest Telegram update."}), 404
+    chat_name = chat.get("username") or chat.get("first_name") or chat.get("title") or str(chat_id)
+    set_config({"telegram_chat_id": str(chat_id)})
+    return jsonify({"status": "ok", "chat_id": str(chat_id), "chat_name": chat_name})
+
+
+@app.route("/api/telegram/set-chat-id", methods=["POST"])
+def telegram_set_chat_id():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    data = request.get_json(force=True) or {}
+    chat_id = str(data.get("chat_id", "")).strip()[:64]
+    set_config({"telegram_chat_id": chat_id})
+    return jsonify({"status": "ok", "chat_id": chat_id})
+
+
+@app.route("/api/telegram/test", methods=["POST"])
+def telegram_test():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    if not _telegram_ready():
+        return jsonify({"error": "Telegram isn't fully connected yet."}), 400
+    ok = send_telegram_notification("Jarvis", "This is a test notification. If you can read this, Telegram is wired up correctly, sir.")
+    return jsonify({"status": "sent" if ok else "failed"})
+
+
 # ── WHOOP OAuth2 routes ────────────────────────────────────────────────────────
 
 @app.route("/whoop-auth/start")
@@ -13997,7 +14134,7 @@ def api_signup_request_access():
         cur.close(); conn.close()
 
     try:
-        send_ntfy_notification(
+        send_push_notification(
             "New access request",
             f"{name} <{email}> requested access",
             priority="default",
