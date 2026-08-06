@@ -3479,26 +3479,48 @@ def fetch_news(bucket="national", limit=3):
     return out
 
 
+DAVID_GOGGINS_QUOTES = [
+    "Motivation is crap. Motivation comes and goes. When you're driven, whatever's in front of you will get destroyed.",
+    "You are in danger of living a life so comfortable and soft, that you will die without ever realizing your true potential.",
+    "The most important conversations you'll ever have are the ones you'll have with yourself.",
+    "We live in a world where mediocrity is often celebrated. Where people just accept what is given to them.",
+    "Suffering is the true test of life.",
+    "Don't stop when you're tired. Stop when you're done.",
+    "It's supposed to be hard. If it wasn't hard, everyone would do it. The hard is what makes it great.",
+    "No one is going to come and save you. No one is coming to fix your life. It's on you.",
+    "You have to build calluses on your brain just like you build calluses on your hands.",
+    "The only way you're going to get to where you want to go is by getting uncomfortable.",
+    "Every morning when I wake up, I ask myself, what am I willing to do today to change my life?",
+    "Callus your mind through pain and suffering.",
+    "When you think you're done, you're only 40% into what your body's capable of doing.",
+    "You are the only one that can hold yourself back from your true potential.",
+    "Pain unlocks a secret doorway in the mind, one that leads to both peak performance and beautiful silence.",
+    "Discipline is the number one thing that will move you forward in a positive way in your life.",
+    "Stop being a victim. Stop complaining and take accountability.",
+    "You can't put a limit on anything. The more you dream, the farther you get.",
+    "If you can get through doing things that suck, without quitting, you will find they suck less and less.",
+    "Sometimes in life, you're going to have to do things you don't want to do, in order to become who you want to become.",
+    "The best way to get out of your comfort zone is to look yourself in the mirror and be honest about who you are and what you want.",
+    "A lot of people quit because they look how far they have to go, not how far they've come.",
+    "You are never as stuck as you think you are.",
+    "Own your mind, or someone else will.",
+    "Greatness is not for the chosen few. Greatness is for the few who choose.",
+    "You have to be able to callus your mind, the same way you callus your hands.",
+    "The most important gauge that I know of is how you feel about yourself.",
+    "Break your mind off from what your body is telling you, and start living off pure willpower.",
+    "It doesn't matter if you're the fastest or slowest person out there, the only person you're truly racing against is yourself.",
+    "Success isn't always about greatness. It's about consistency. Consistent hard work leads to success.",
+]
+
+
 def fetch_quote_of_day():
-    """ZenQuotes (no key). 24h cache."""
-    cached = _cache_get("zenquotes:today", 24 * 3600)
-    if cached is not None:
-        return cached
-    try:
-        resp = requests.get("https://zenquotes.io/api/today", timeout=10)
-        resp.raise_for_status()
-        j = resp.json() or []
-        if isinstance(j, list) and j:
-            q = j[0]
-            out = {"text": (q.get("q") or "").strip(), "author": (q.get("a") or "Unknown").strip()}
-            if out["text"]:
-                _cache_set("zenquotes:today", out)
-                return out
-    except Exception as e:
-        log.warning("ZenQuotes failed: %s", e)
+    """Always David Goggins. Chosen deterministically from today's date (student's
+    timezone), so a fresh one appears each day and stays stable until midnight."""
+    today = datetime.now(get_tz()).date()
+    idx = today.toordinal() % len(DAVID_GOGGINS_QUOTES)
     return {
-        "text": "The best way to predict the future is to invent it.",
-        "author": "Alan Kay",
+        "text": DAVID_GOGGINS_QUOTES[idx],
+        "author": "David Goggins",
     }
 
 
