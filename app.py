@@ -1317,6 +1317,8 @@ def _google_client_config():
 
 
 # ── CalDAV (Apple iCloud) helpers ──────────────────────────────────────────────
+# Event IDs exposed to Jarvis/the UI are always the iCal UID — stable across
+# list/create/update/delete, unlike caldav's URL-derived object ids.
 
 def _caldav_configured():
     """Check if CalDAV credentials are set."""
@@ -1336,8 +1338,7 @@ def _get_caldav_connection():
         if not (url and username and password):
             return None
 
-        client = caldav.DAVClient(url=url, username=username, password=password)
-        return client
+        return caldav.DAVClient(url=url, username=username, password=password, timeout=15)
     except Exception as e:
         log.warning("CalDAV connection failed: %s", e)
         return None
@@ -1363,22 +1364,43 @@ def _get_caldav_calendar():
         return None
 
 
+def _caldav_localize(dt):
+    """Parse ISO string / attach the student's timezone to naive datetimes."""
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt)
+    if isinstance(dt, datetime) and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=get_tz())
+    return dt
+
+
+def _vevent_value(vevent, attr, default=""):
+    """Safely read a vobject content line's value (str(line) is a debug repr, not the value)."""
+    line = getattr(vevent, attr, None)
+    return str(line.value) if line is not None else default
+
+
+def _caldav_event_dict(vevent):
+    return {
+        "id": _vevent_value(vevent, 'uid'),
+        "title": _vevent_value(vevent, 'summary', "Untitled"),
+        "start": str(vevent.dtstart.value) if hasattr(vevent, 'dtstart') else "",
+        "end": str(vevent.dtend.value) if hasattr(vevent, 'dtend') else "",
+        "description": _vevent_value(vevent, 'description'),
+        "location": _vevent_value(vevent, 'location'),
+    }
+
+
 def _caldav_list_events(days_ahead=7):
     """List CalDAV events for the next N days. Return list of dicts or empty list."""
     try:
-        import caldav
         calendar = _get_caldav_calendar()
         if not calendar:
             return []
 
-        now = datetime.now(ZoneInfo("America/Denver"))
-        start = now
-        end = now + timedelta(days=days_ahead)
-
-        # Search for events in date range
+        now = datetime.now(get_tz())
         events = calendar.search(
-            start=start,
-            end=end,
+            start=now,
+            end=now + timedelta(days=days_ahead),
             event=True,
             expand=True,
         )
@@ -1386,16 +1408,7 @@ def _caldav_list_events(days_ahead=7):
         result = []
         for event in events:
             try:
-                vevent = event.vobject_instance.vevent
-                result.append({
-                    "id": event.id,
-                    "uid": str(vevent.uid),
-                    "title": str(vevent.summary) if hasattr(vevent, 'summary') else "Untitled",
-                    "start": str(vevent.dtstart.dt) if hasattr(vevent, 'dtstart') else "",
-                    "end": str(vevent.dtend.dt) if hasattr(vevent, 'dtend') else "",
-                    "description": str(vevent.description) if hasattr(vevent, 'description') else "",
-                    "location": str(vevent.location) if hasattr(vevent, 'location') else "",
-                })
+                result.append(_caldav_event_dict(event.vobject_instance.vevent))
             except Exception as e:
                 log.debug("Error parsing CalDAV event: %s", e)
                 continue
@@ -1409,23 +1422,18 @@ def _caldav_list_events(days_ahead=7):
 def _caldav_create_event(title, start_dt, end_dt=None, description="", location=""):
     """Create a new CalDAV event. Return event dict with id or error dict."""
     try:
-        import caldav
-        from icalendar import Event as ICalEvent
+        from icalendar import Calendar as ICalCalendar, Event as ICalEvent
 
         calendar = _get_caldav_calendar()
         if not calendar:
             return {"error": "CalDAV not configured"}
 
-        # Ensure datetime objects
-        if isinstance(start_dt, str):
-            start_dt = datetime.fromisoformat(start_dt)
-        if end_dt and isinstance(end_dt, str):
-            end_dt = datetime.fromisoformat(end_dt)
+        start_dt = _caldav_localize(start_dt)
+        end_dt = _caldav_localize(end_dt) if end_dt else start_dt + timedelta(hours=1)
+        uid = str(uuid.uuid4())
 
-        if not end_dt:
-            end_dt = start_dt + timedelta(hours=1)
-
-        # Create ICS event
+        # caldav's save_event wants a full VCALENDAR ical string, not a bare
+        # icalendar.Event object.
         event = ICalEvent()
         event.add('summary', title)
         event.add('dtstart', start_dt)
@@ -1434,16 +1442,18 @@ def _caldav_create_event(title, start_dt, end_dt=None, description="", location=
             event.add('description', description)
         if location:
             event.add('location', location)
-        event.add('uid', str(uuid.uuid4()))
-        event.add('created', datetime.now(ZoneInfo("UTC")))
-        event.add('last-modified', datetime.now(ZoneInfo("UTC")))
+        event.add('uid', uid)
+        event.add('dtstamp', datetime.now(ZoneInfo("UTC")))
 
-        # Save to calendar
-        saved_event = calendar.save_event(event)
+        ical = ICalCalendar()
+        ical.add('prodid', '-//Jarvis Student AI//EN')
+        ical.add('version', '2.0')
+        ical.add_component(event)
+
+        calendar.save_event(ical.to_ical().decode("utf-8"))
 
         return {
-            "id": saved_event.id,
-            "uid": str(event['uid']),
+            "id": uid,
             "title": title,
             "start": str(start_dt),
             "end": str(end_dt),
@@ -1455,60 +1465,58 @@ def _caldav_create_event(title, start_dt, end_dt=None, description="", location=
         return {"error": str(e)}
 
 
+def _caldav_set_value(vevent, attr, value):
+    """Set a vobject content line's value, creating the line if missing.
+    Assigning a raw string to the attribute (vevent.summary = 'x') corrupts
+    the component and breaks serialization — always go through .value."""
+    line = getattr(vevent, attr, None)
+    if line is None:
+        line = vevent.add(attr)
+    line.value = value
+
+
 def _caldav_update_event(event_id, title=None, start_dt=None, end_dt=None, description=None, location=None):
-    """Update an existing CalDAV event. Return updated event dict or error."""
+    """Update an existing CalDAV event (by iCal UID). Return updated event dict or error."""
     try:
         calendar = _get_caldav_calendar()
         if not calendar:
             return {"error": "CalDAV not configured"}
 
-        # Find and fetch the event
-        event = calendar.event_by_uid(event_id)
-        if not event:
+        try:
+            event = calendar.event_by_uid(event_id)
+        except Exception:
             return {"error": f"Event {event_id} not found"}
 
         vevent = event.vobject_instance.vevent
 
         if title:
-            vevent.summary = title
+            _caldav_set_value(vevent, 'summary', title)
         if start_dt:
-            if isinstance(start_dt, str):
-                start_dt = datetime.fromisoformat(start_dt)
-            vevent.dtstart.dt = start_dt
+            vevent.dtstart.value = _caldav_localize(start_dt)
         if end_dt:
-            if isinstance(end_dt, str):
-                end_dt = datetime.fromisoformat(end_dt)
-            vevent.dtend.dt = end_dt
+            vevent.dtend.value = _caldav_localize(end_dt)
         if description is not None:
-            vevent.description = description
+            _caldav_set_value(vevent, 'description', description)
         if location is not None:
-            vevent.location = location
+            _caldav_set_value(vevent, 'location', location)
 
         event.save()
-
-        return {
-            "id": event.id,
-            "uid": str(vevent.uid),
-            "title": str(vevent.summary),
-            "start": str(vevent.dtstart.dt),
-            "end": str(vevent.dtend.dt),
-            "description": str(vevent.description) if hasattr(vevent, 'description') else "",
-            "location": str(vevent.location) if hasattr(vevent, 'location') else "",
-        }
+        return _caldav_event_dict(vevent)
     except Exception as e:
         log.warning("CalDAV update_event failed: %s", e)
         return {"error": str(e)}
 
 
 def _caldav_delete_event(event_id):
-    """Delete a CalDAV event by ID. Return success dict or error."""
+    """Delete a CalDAV event by iCal UID. Return success dict or error."""
     try:
         calendar = _get_caldav_calendar()
         if not calendar:
             return {"error": "CalDAV not configured"}
 
-        event = calendar.event_by_uid(event_id)
-        if not event:
+        try:
+            event = calendar.event_by_uid(event_id)
+        except Exception:
             return {"error": f"Event {event_id} not found"}
 
         event.delete()
@@ -13405,23 +13413,27 @@ def caldav_configure():
         return jsonify({"error": "Not authenticated"}), 401
 
     data = request.get_json() or {}
-    url = str(data.get("url", "")).strip()
-    username = str(data.get("username", "")).strip()
-    password = str(data.get("password", "")).strip()
+    url = str(data.get("url", "")).strip()[:500]
+    username = str(data.get("username", "")).strip()[:200]
+    password = str(data.get("password", "")).strip()[:200]
 
     if not (url and username and password):
         return jsonify({"error": "url, username, and password are required"}), 400
+    # Credentials ride on every CalDAV request — never allow plaintext http.
+    if not url.lower().startswith("https://"):
+        return jsonify({"error": "CalDAV URL must start with https://"}), 400
 
     # Test the connection
     import caldav
     try:
-        test_client = caldav.DAVClient(url=url, username=username, password=password)
+        test_client = caldav.DAVClient(url=url, username=username, password=password, timeout=15)
         principal = test_client.principal()
         calendars = principal.calendars()
         if not calendars:
             return jsonify({"error": "No calendars found on this account"}), 400
     except Exception as e:
-        return jsonify({"error": f"Connection failed: {str(e)}"}), 400
+        log.warning("CalDAV configure test failed for %s: %s", username, e)
+        return jsonify({"error": "Connection failed — check the server URL, Apple ID, and app-specific password"}), 400
 
     # Save credentials
     set_config({

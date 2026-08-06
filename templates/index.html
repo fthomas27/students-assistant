@@ -3813,7 +3813,7 @@ margin: 8px 2px 10px;
           <div id="caldavConfigForm" style="display:none;margin-bottom:12px;">
             <div style="margin-bottom:8px;">
               <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">CalDAV Server URL (usually https://caldav.icloud.com)</label>
-              <input type="text" id="caldavUrl" placeholder="https://caldav.icloud.com" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+              <input type="text" id="caldavUrl" value="https://caldav.icloud.com" placeholder="https://caldav.icloud.com" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
             </div>
             <div style="margin-bottom:8px;">
               <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Apple ID Email</label>
@@ -3821,8 +3821,8 @@ margin: 8px 2px 10px;
             </div>
             <div style="margin-bottom:12px;">
               <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">App-Specific Password</label>
-              <input type="password" id="caldavPassword" placeholder="Generated in Apple ID settings" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
-              <div style="font-size:11px;color:var(--text3);margin-top:4px;">Generate one in <strong>iCloud.com › Account Settings › Security › App-specific passwords</strong>, or just use your Apple ID password if you have 2-factor authentication disabled.</div>
+              <input type="password" id="caldavPassword" placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+              <div style="font-size:11px;color:var(--text3);margin-top:4px;">Never enter your main Apple ID password here. Generate an app-specific password at <strong>account.apple.com › Sign-In and Security › App-Specific Passwords</strong> — it only grants app access and can be revoked anytime without changing your real password.</div>
             </div>
             <button class="btn-accent" onclick="configureCaldav()" style="width:100%;">Connect Apple Calendar</button>
           </div>
