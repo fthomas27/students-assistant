@@ -11386,13 +11386,21 @@ _GOOGLE_TOOL_NAMES = frozenset({
 })
 
 
+_CALDAV_TOOL_NAMES = frozenset({
+    "create_caldav_event", "update_caldav_event", "delete_caldav_event", "list_caldav_events",
+})
+
+
 def _build_active_tools() -> list:
     """Return the trimmed tool list for this request based on what's configured."""
     tools = []
     google_on = _google_configured()
+    caldav_on = _caldav_configured()
     for t in JARVIS_TOOLS:
         name = t.get("name", "")
         if name in _GOOGLE_TOOL_NAMES and not google_on:
+            continue
+        if name in _CALDAV_TOOL_NAMES and not caldav_on:
             continue
         if name == "send_notification" and not _notifications_configured():
             continue
@@ -13471,6 +13479,7 @@ def telegram_status():
         "configured": _telegram_configured(),
         "chat_id": _telegram_chat_id(),
         "ready": _telegram_ready(),
+        "chat_enabled": _telegram_chat_enabled(),
     })
 
 
@@ -13480,6 +13489,9 @@ def telegram_detect_chat_id():
         return jsonify({"error": "Not authenticated"}), 401
     if not TELEGRAM_BOT_TOKEN:
         return jsonify({"error": "Set TELEGRAM_BOT_TOKEN first."}), 400
+    if _telegram_chat_enabled():
+        # getUpdates 409s while a webhook is registered.
+        return jsonify({"error": "Two-way chat is enabled — disable it first, then detect the chat id."}), 409
     try:
         resp = requests.get(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
@@ -13513,7 +13525,12 @@ def telegram_set_chat_id():
         return jsonify({"error": "Not authenticated"}), 401
     data = request.get_json(force=True) or {}
     chat_id = str(data.get("chat_id", "")).strip()[:64]
-    set_config({"telegram_chat_id": chat_id})
+    updates = {"telegram_chat_id": chat_id}
+    if not chat_id and _telegram_chat_enabled():
+        # Disconnecting entirely — tear the webhook down too.
+        _telegram_api("deleteWebhook", {"drop_pending_updates": True}, timeout=15)
+        updates["telegram_webhook_secret"] = ""
+    set_config(updates)
     return jsonify({"status": "ok", "chat_id": chat_id})
 
 
@@ -13525,6 +13542,275 @@ def telegram_test():
         return jsonify({"error": "Telegram isn't fully connected yet."}), 400
     ok = send_telegram_notification("Jarvis", "This is a test notification. If you can read this, Telegram is wired up correctly, sir.")
     return jsonify({"status": "sent" if ok else "failed"})
+
+
+# ── Telegram two-way chat (webhook) ──────────────────────────────────────────
+# The student texts the bot; Telegram POSTs the message to /api/webhooks/telegram
+# (auth/CSRF-exempt path, guarded by a per-install secret header instead), and a
+# background thread runs a fast Jarvis turn and replies in the same chat.
+# Fast path: no extended thinking, concise replies, typing indicator up straight
+# away. If a turn needs tools/time, an interim "working on it" note is sent so
+# the student is never left staring at a silent chat.
+
+_TELEGRAM_CHAT_CONVERSATION_ID = "telegram"
+
+
+def _telegram_chat_enabled():
+    return bool(get_config().get("telegram_webhook_secret", "").strip())
+
+
+def _telegram_api(method, payload, timeout=10):
+    """POST to the Telegram Bot API. Returns parsed JSON or None."""
+    if not TELEGRAM_BOT_TOKEN:
+        return None
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}",
+            json=payload, timeout=timeout,
+        )
+        data = resp.json() if resp.content else {}
+        if not resp.ok or not data.get("ok"):
+            log.warning("Telegram %s failed: %s %s", method, resp.status_code, str(data)[:200])
+            return None
+        return data
+    except Exception as e:
+        log.warning("Telegram %s error: %s", method, e)
+        return None
+
+
+def _telegram_send_chunked(chat_id, text):
+    """Send a (possibly long) plain-text reply, split at Telegram's 4096 cap."""
+    text = (text or "").strip() or "…"
+    chunks = []
+    while text:
+        if len(text) <= 4000:
+            chunks.append(text); break
+        cut = text.rfind("\n", 0, 4000)
+        if cut < 500:
+            cut = 4000
+        chunks.append(text[:cut]); text = text[cut:].lstrip("\n")
+    for chunk in chunks:
+        send_telegram_notification("", chunk, chat_id=chat_id)
+
+
+_TELEGRAM_MD_STRIP = re.compile(r"^#{1,4}\s+", re.MULTILINE)
+
+
+def _telegram_plainify(text):
+    """The web chat renders markdown; Telegram (plain sends) does not — strip the noise."""
+    text = _TELEGRAM_MD_STRIP.sub("", text or "")
+    return text.replace("**", "").replace("__", "")
+
+
+def _telegram_history_messages(limit=10):
+    """Prior Telegram-conversation turns as alternating API messages, oldest-first."""
+    rows = _chat_last_messages(_TELEGRAM_CHAT_CONVERSATION_ID, limit=limit)
+    messages = []
+    for r in rows:
+        role = r.get("role")
+        content = (r.get("content") or "").strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        if messages and messages[-1]["role"] == role:
+            messages[-1]["content"] += "\n" + content
+        else:
+            messages.append({"role": role, "content": content})
+    # The API requires the first message to be from the user.
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
+    return messages
+
+
+def _telegram_run_jarvis(user_text, chat_id):
+    """Run one fast Jarvis turn for a Telegram message and reply in-chat."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        _telegram_send_chunked(chat_id, "I'm afraid my language faculties are offline — no API key configured, sir.")
+        return
+    interim_timer = None
+    try:
+        _telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=5)
+
+        now_chat = datetime.now(TZ)
+        system_text = (
+            "You are Jarvis — the dry, sardonic British AI from the Iron Man films — "
+            "texting with the student over Telegram. You are brilliant, utterly reliable, "
+            "and incapable of resisting a pointed remark; sarcasm flavours the delivery but "
+            "never replaces the substance. Never break character or call yourself an AI model.\n\n"
+            "THIS IS A TEXTING CHANNEL — keep replies SHORT and conversational: usually 1-4 "
+            "sentences, like a text message. No markdown (no ##, no **, no bullet walls). "
+            "Plain text only. Only go longer when the student explicitly asks for detail.\n\n"
+            "SPEED — prefer answering directly from context. Only call tools when the answer "
+            "genuinely requires live data or an action (tasks, grades, calendar, web). "
+            "One tool call is usually enough.\n\n"
+            "TOOLS — you have the same tools as the main app: tasks (get/create/complete/delete), "
+            "projects, grades and assignment details, Google Calendar and Apple Calendar events, "
+            "web search/fetch, notifications. Tool results are authoritative — when a tool returns "
+            "a success status the action HAS BEEN TAKEN; confirm it plainly.\n\n"
+            "TEMPORAL FORMATTING — render dates human-readably ('Tuesday at 5 PM'), never raw ISO.\n\n"
+            f"AUTHORITATIVE DATE & TIME — Today is {now_chat.strftime('%A, %-m/%-d/%Y')}. "
+            f"Current local time (Utah/Mountain): {now_chat.strftime('%-I:%M %p %Z')}."
+        )
+
+        # Recent cross-session memory, same as the web chat uses.
+        try:
+            summaries = _chat_recent_summaries(_TELEGRAM_CHAT_CONVERSATION_ID, limit=3)
+            if summaries:
+                lines = "\n".join(f"- {s['summary']}" for s in summaries if s.get("summary"))
+                if lines:
+                    system_text += "\n\nRECENT CONVERSATIONS (context, don't recite):\n" + lines
+        except Exception:
+            pass
+
+        messages = _telegram_history_messages(limit=10)
+        if messages and messages[-1]["role"] == "user":
+            # Prior turn died before the assistant reply persisted — roles must alternate.
+            messages[-1]["content"] += "\n" + user_text
+        else:
+            messages.append({"role": "user", "content": user_text})
+        _chat_persist_message(_TELEGRAM_CHAT_CONVERSATION_ID, "user", user_text)
+
+        # If the turn runs long (tool calls, web search), tell the student once.
+        def _send_interim():
+            _telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=5)
+            send_telegram_notification("", "A moment, sir — this one requires a bit of digging.", chat_id=chat_id)
+        interim_timer = threading.Timer(7.0, _send_interim)
+        interim_timer.daemon = True
+        interim_timer.start()
+
+        client = anthropic.Anthropic(api_key=api_key, max_retries=2, timeout=45.0)
+        tools = _build_active_tools()
+        final_text = ""
+
+        for _iteration in range(6):
+            response = client.beta.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1500,
+                tools=tools,
+                system=[{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}],
+                messages=messages,
+                betas=["web-fetch-2025-09-10"],
+            )
+            try:
+                track_api_usage(response)
+            except Exception:
+                pass
+
+            text_parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
+            if text_parts:
+                final_text = "\n".join(text_parts)
+
+            if response.stop_reason == "pause_turn":
+                # A server tool (web fetch/search) ran long — replay verbatim and continue.
+                messages.append({"role": "assistant", "content": [b.model_dump() for b in response.content]})
+                continue
+
+            if response.stop_reason != "tool_use":
+                break
+
+            # Keep the typing indicator alive while tools run.
+            _telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=5)
+
+            assistant_content = []
+            tool_results = []
+            for block in response.content:
+                btype = getattr(block, "type", None)
+                if btype == "text":
+                    assistant_content.append({"type": "text", "text": block.text})
+                elif btype == "tool_use":
+                    assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+                    result = _execute_jarvis_tool(block.name, block.input or {}, conversation_id=_TELEGRAM_CHAT_CONVERSATION_ID)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result, default=str)[:8000],
+                    })
+                elif btype in ("server_tool_use", "web_search_tool_result", "web_fetch_tool_result"):
+                    # Anthropic-executed — replay verbatim for the next iteration.
+                    assistant_content.append(block.model_dump())
+            messages.append({"role": "assistant", "content": assistant_content})
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+
+        if interim_timer:
+            interim_timer.cancel()
+        final_text = _telegram_plainify(final_text) or "I appear to have produced nothing, sir. Do try again."
+        _telegram_send_chunked(chat_id, final_text)
+        _chat_persist_message(_TELEGRAM_CHAT_CONVERSATION_ID, "assistant", final_text)
+    except Exception:
+        log.error("Telegram chat turn failed", exc_info=True)
+        if interim_timer:
+            interim_timer.cancel()
+        _telegram_send_chunked(chat_id, "Something went wrong on my end, sir. Give it another try in a moment.")
+
+
+@app.route("/api/webhooks/telegram", methods=["POST"])
+def telegram_webhook():
+    # No session here — Telegram is the caller. The per-install secret header
+    # (set when the webhook was registered) is the authentication.
+    secret = get_config().get("telegram_webhook_secret", "").strip()
+    provided = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not secret or not secrets.compare_digest(secret, provided):
+        return jsonify({"ok": False}), 403
+
+    update = request.get_json(silent=True) or {}
+    update_id = update.get("update_id")
+
+    # Telegram redelivers updates until it sees a 2xx — dedupe on update_id.
+    try:
+        last_seen = int(get_config().get("telegram_last_update_id", "0") or 0)
+    except ValueError:
+        last_seen = 0
+    if update_id is not None:
+        if update_id <= last_seen:
+            return jsonify({"ok": True})
+        set_config({"telegram_last_update_id": str(update_id)})
+
+    message = update.get("message") or {}
+    text = (message.get("text") or "").strip()
+    from_chat = str(((message.get("chat") or {}).get("id")) or "")
+
+    # Only ever talk to the connected student's chat.
+    if not text or not from_chat or from_chat != _telegram_chat_id():
+        return jsonify({"ok": True})
+
+    threading.Thread(
+        target=_telegram_run_jarvis, args=(text[:4000], from_chat), daemon=True
+    ).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/telegram/enable-chat", methods=["POST"])
+def telegram_enable_chat():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    if not _telegram_ready():
+        return jsonify({"error": "Connect Telegram first (Detect Chat ID), then enable two-way chat."}), 400
+    webhook_url = request.url_root.rstrip("/") + "/api/webhooks/telegram"
+    if not webhook_url.startswith("https://"):
+        return jsonify({"error": "Two-way chat requires the app to be served over https."}), 400
+    secret = secrets.token_urlsafe(48)[:128]
+    result = _telegram_api("setWebhook", {
+        "url": webhook_url,
+        "secret_token": secret,
+        "allowed_updates": ["message"],
+        "drop_pending_updates": True,
+    }, timeout=15)
+    if not result:
+        return jsonify({"error": "Telegram rejected the webhook. Check TELEGRAM_BOT_TOKEN and that the app is publicly reachable."}), 502
+    set_config({"telegram_webhook_secret": secret})
+    log.info("Telegram two-way chat enabled (webhook registered)")
+    return jsonify({"status": "enabled"})
+
+
+@app.route("/api/telegram/disable-chat", methods=["POST"])
+def telegram_disable_chat():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    _telegram_api("deleteWebhook", {"drop_pending_updates": True}, timeout=15)
+    set_config({"telegram_webhook_secret": ""})
+    log.info("Telegram two-way chat disabled (webhook removed)")
+    return jsonify({"status": "disabled"})
 
 
 # ── WHOOP OAuth2 routes ────────────────────────────────────────────────────────
