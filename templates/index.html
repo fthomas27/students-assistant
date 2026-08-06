@@ -3805,6 +3805,32 @@ margin: 8px 2px 10px;
           <button class="btn-danger-outline" id="googleCalDisconnectBtn" style="display:none;" onclick="disconnectGoogleCal()">Disconnect Google Calendar</button>
         </div>
       </div>
+      <div class="settings-section" id="caldavSettingsSection" style="display:none;">
+        <h3>Apple iCloud Calendar</h3>
+        <p style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">Connect your Apple iCloud Calendar so Jarvis can create, update, and delete events — just ask in chat. Your family can share their calendars with you using Calendar's sharing settings, then set them up here.</p>
+        <div class="settings-item" style="display:block;">
+          <div id="caldavStatusText" style="font-size:13px;color:var(--text2);margin-bottom:10px;">Checking status&hellip;</div>
+          <div id="caldavConfigForm" style="display:none;margin-bottom:12px;">
+            <div style="margin-bottom:8px;">
+              <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">CalDAV Server URL (usually https://caldav.icloud.com)</label>
+              <input type="text" id="caldavUrl" placeholder="https://caldav.icloud.com" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+            </div>
+            <div style="margin-bottom:8px;">
+              <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Apple ID Email</label>
+              <input type="email" id="caldavUsername" placeholder="you@icloud.com" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+            </div>
+            <div style="margin-bottom:12px;">
+              <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">App-Specific Password</label>
+              <input type="password" id="caldavPassword" placeholder="Generated in Apple ID settings" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;">
+              <div style="font-size:11px;color:var(--text3);margin-top:4px;">Generate one in <strong>iCloud.com › Account Settings › Security › App-specific passwords</strong>, or just use your Apple ID password if you have 2-factor authentication disabled.</div>
+            </div>
+            <button class="btn-accent" onclick="configureCaldav()" style="width:100%;">Connect Apple Calendar</button>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn-danger-outline" id="caldavDisconnectBtn" style="display:none;" onclick="disconnectCaldav()">Disconnect Apple Calendar</button>
+          </div>
+        </div>
+      </div>
       <div class="settings-section" id="telegramSettingsSection" style="display:none;">
         <h3>Telegram Notifications</h3>
         <p style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">Get Jarvis's push notifications — assignment reminders, briefings, urgent alerts — sent through a Telegram bot instead of (or alongside) ntfy.</p>
@@ -5521,6 +5547,7 @@ function openSettings() {
 
   loadWhoopStatus();
   loadGoogleCalStatus();
+  loadCaldavStatus();
   loadTelegramStatus();
 }
 
@@ -5553,6 +5580,65 @@ function loadGoogleCalStatus() {
 function disconnectGoogleCal() {
   fetch('/api/google/disconnect', { method: 'POST' }).then(() => {
     loadGoogleCalStatus();
+  }).catch(() => {});
+}
+
+function loadCaldavStatus() {
+  fetch('/api/caldav/status').then(r => r.json()).then(status => {
+    const section = document.getElementById('caldavSettingsSection');
+    const text = document.getElementById('caldavStatusText');
+    const form = document.getElementById('caldavConfigForm');
+    const disconnectBtn = document.getElementById('caldavDisconnectBtn');
+    if (!section || !status) {
+      if (section) section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    if (status.configured) {
+      text.textContent = 'Connected — Jarvis can read and write your Apple Calendar.';
+      form.style.display = 'none';
+      disconnectBtn.style.display = '';
+    } else {
+      text.textContent = 'Not connected yet.';
+      form.style.display = 'block';
+      disconnectBtn.style.display = 'none';
+    }
+  }).catch(() => {
+    const section = document.getElementById('caldavSettingsSection');
+    if (section) section.style.display = 'none';
+  });
+}
+
+function configureCaldav() {
+  const url = document.getElementById('caldavUrl').value.trim();
+  const username = document.getElementById('caldavUsername').value.trim();
+  const password = document.getElementById('caldavPassword').value.trim();
+
+  if (!url || !username || !password) {
+    if (typeof showToast === 'function') showToast('Please fill in all fields', 'error');
+    return;
+  }
+
+  fetch('/api/caldav/configure', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, username, password })
+  }).then(r => r.json()).then(data => {
+    if (data.error) {
+      if (typeof showToast === 'function') showToast(data.error, 'error');
+    } else {
+      if (typeof showToast === 'function') showToast('Apple Calendar connected!', 'success', 2500);
+      loadCaldavStatus();
+    }
+  }).catch(e => {
+    if (typeof showToast === 'function') showToast('Connection failed — check your credentials', 'error');
+  });
+}
+
+function disconnectCaldav() {
+  fetch('/api/caldav/disconnect', { method: 'POST' }).then(() => {
+    loadCaldavStatus();
+    if (typeof showToast === 'function') showToast('Apple Calendar disconnected', 'success', 2500);
   }).catch(() => {});
 }
 

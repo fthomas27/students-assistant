@@ -1316,6 +1316,208 @@ def _google_client_config():
     }
 
 
+# ── CalDAV (Apple iCloud) helpers ──────────────────────────────────────────────
+
+def _caldav_configured():
+    """Check if CalDAV credentials are set."""
+    cfg = get_config()
+    return bool(cfg.get("caldav_url") and cfg.get("caldav_username") and cfg.get("caldav_password"))
+
+
+def _get_caldav_connection():
+    """Connect to CalDAV server (iCloud) with stored credentials. Return client or None."""
+    try:
+        import caldav
+        cfg = get_config()
+        url = cfg.get("caldav_url", "").strip()
+        username = cfg.get("caldav_username", "").strip()
+        password = cfg.get("caldav_password", "").strip()
+
+        if not (url and username and password):
+            return None
+
+        client = caldav.DAVClient(url=url, username=username, password=password)
+        return client
+    except Exception as e:
+        log.warning("CalDAV connection failed: %s", e)
+        return None
+
+
+def _get_caldav_calendar():
+    """Get the primary calendar from CalDAV. Return calendar object or None."""
+    try:
+        client = _get_caldav_connection()
+        if not client:
+            return None
+
+        principal = client.principal()
+        calendars = principal.calendars()
+
+        if not calendars:
+            return None
+
+        # Return the primary/first calendar
+        return calendars[0]
+    except Exception as e:
+        log.warning("CalDAV calendar retrieval failed: %s", e)
+        return None
+
+
+def _caldav_list_events(days_ahead=7):
+    """List CalDAV events for the next N days. Return list of dicts or empty list."""
+    try:
+        import caldav
+        calendar = _get_caldav_calendar()
+        if not calendar:
+            return []
+
+        now = datetime.now(ZoneInfo("America/Denver"))
+        start = now
+        end = now + timedelta(days=days_ahead)
+
+        # Search for events in date range
+        events = calendar.search(
+            start=start,
+            end=end,
+            event=True,
+            expand=True,
+        )
+
+        result = []
+        for event in events:
+            try:
+                vevent = event.vobject_instance.vevent
+                result.append({
+                    "id": event.id,
+                    "uid": str(vevent.uid),
+                    "title": str(vevent.summary) if hasattr(vevent, 'summary') else "Untitled",
+                    "start": str(vevent.dtstart.dt) if hasattr(vevent, 'dtstart') else "",
+                    "end": str(vevent.dtend.dt) if hasattr(vevent, 'dtend') else "",
+                    "description": str(vevent.description) if hasattr(vevent, 'description') else "",
+                    "location": str(vevent.location) if hasattr(vevent, 'location') else "",
+                })
+            except Exception as e:
+                log.debug("Error parsing CalDAV event: %s", e)
+                continue
+
+        return result
+    except Exception as e:
+        log.warning("CalDAV list_events failed: %s", e)
+        return []
+
+
+def _caldav_create_event(title, start_dt, end_dt=None, description="", location=""):
+    """Create a new CalDAV event. Return event dict with id or error dict."""
+    try:
+        import caldav
+        from icalendar import Event as ICalEvent
+
+        calendar = _get_caldav_calendar()
+        if not calendar:
+            return {"error": "CalDAV not configured"}
+
+        # Ensure datetime objects
+        if isinstance(start_dt, str):
+            start_dt = datetime.fromisoformat(start_dt)
+        if end_dt and isinstance(end_dt, str):
+            end_dt = datetime.fromisoformat(end_dt)
+
+        if not end_dt:
+            end_dt = start_dt + timedelta(hours=1)
+
+        # Create ICS event
+        event = ICalEvent()
+        event.add('summary', title)
+        event.add('dtstart', start_dt)
+        event.add('dtend', end_dt)
+        if description:
+            event.add('description', description)
+        if location:
+            event.add('location', location)
+        event.add('uid', str(uuid.uuid4()))
+        event.add('created', datetime.now(ZoneInfo("UTC")))
+        event.add('last-modified', datetime.now(ZoneInfo("UTC")))
+
+        # Save to calendar
+        saved_event = calendar.save_event(event)
+
+        return {
+            "id": saved_event.id,
+            "uid": str(event['uid']),
+            "title": title,
+            "start": str(start_dt),
+            "end": str(end_dt),
+            "description": description,
+            "location": location,
+        }
+    except Exception as e:
+        log.warning("CalDAV create_event failed: %s", e)
+        return {"error": str(e)}
+
+
+def _caldav_update_event(event_id, title=None, start_dt=None, end_dt=None, description=None, location=None):
+    """Update an existing CalDAV event. Return updated event dict or error."""
+    try:
+        calendar = _get_caldav_calendar()
+        if not calendar:
+            return {"error": "CalDAV not configured"}
+
+        # Find and fetch the event
+        event = calendar.event_by_uid(event_id)
+        if not event:
+            return {"error": f"Event {event_id} not found"}
+
+        vevent = event.vobject_instance.vevent
+
+        if title:
+            vevent.summary = title
+        if start_dt:
+            if isinstance(start_dt, str):
+                start_dt = datetime.fromisoformat(start_dt)
+            vevent.dtstart.dt = start_dt
+        if end_dt:
+            if isinstance(end_dt, str):
+                end_dt = datetime.fromisoformat(end_dt)
+            vevent.dtend.dt = end_dt
+        if description is not None:
+            vevent.description = description
+        if location is not None:
+            vevent.location = location
+
+        event.save()
+
+        return {
+            "id": event.id,
+            "uid": str(vevent.uid),
+            "title": str(vevent.summary),
+            "start": str(vevent.dtstart.dt),
+            "end": str(vevent.dtend.dt),
+            "description": str(vevent.description) if hasattr(vevent, 'description') else "",
+            "location": str(vevent.location) if hasattr(vevent, 'location') else "",
+        }
+    except Exception as e:
+        log.warning("CalDAV update_event failed: %s", e)
+        return {"error": str(e)}
+
+
+def _caldav_delete_event(event_id):
+    """Delete a CalDAV event by ID. Return success dict or error."""
+    try:
+        calendar = _get_caldav_calendar()
+        if not calendar:
+            return {"error": "CalDAV not configured"}
+
+        event = calendar.event_by_uid(event_id)
+        if not event:
+            return {"error": f"Event {event_id} not found"}
+
+        event.delete()
+        return {"status": "deleted", "id": event_id}
+    except Exception as e:
+        log.warning("CalDAV delete_event failed: %s", e)
+        return {"error": str(e)}
+
+
 def _mem0_store_worker(user_content, assistant_content):
     """Background: send user+assistant exchange to Mem0 for memory extraction."""
     try:
@@ -9375,6 +9577,73 @@ JARVIS_TOOLS = [
             "required": [],
         },
     },
+    # ── CalDAV (Apple iCloud) Calendar tools ──────────────────────────────────────
+    {
+        "name": "list_caldav_events",
+        "description": (
+            "List upcoming events from the student's Apple iCloud Calendar (via CalDAV). "
+            "Returns event IDs, titles, start/end times, descriptions, and locations. "
+            "Use this to find event IDs before calling update_caldav_event or delete_caldav_event."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_ahead": {"type": "integer", "description": "Days ahead to look, default 7, max 60"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "create_caldav_event",
+        "description": (
+            "Create a new event in the student's Apple iCloud Calendar. "
+            "Use when the student asks to add something to their calendar, block time, "
+            "or schedule a study session, appointment, or reminder. "
+            "Returns the created event ID."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title":       {"type": "string", "description": "Event title/summary (required)"},
+                "start":       {"type": "string", "description": "Start time in ISO 8601 format (required), e.g. '2026-08-15T14:30:00'"},
+                "end":         {"type": "string", "description": "End time in ISO 8601 format, optional; defaults to 1 hour after start"},
+                "description": {"type": "string", "description": "Event description/notes"},
+                "location":    {"type": "string", "description": "Event location"},
+            },
+            "required": ["title", "start"],
+        },
+    },
+    {
+        "name": "update_caldav_event",
+        "description": (
+            "Update an existing Apple iCloud Calendar event. "
+            "Pass only the fields you want to change — omitted fields are preserved. "
+            "Use the event_id from list_caldav_events or create_caldav_event."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_id":    {"type": "string", "description": "Event UID to update (required)"},
+                "title":       {"type": "string", "description": "New title (omit to keep existing)"},
+                "start":       {"type": "string", "description": "New start time in ISO 8601 format (omit to keep existing)"},
+                "end":         {"type": "string", "description": "New end time in ISO 8601 format (omit to keep existing)"},
+                "description": {"type": "string", "description": "New description (omit to keep existing)"},
+                "location":    {"type": "string", "description": "New location (omit to keep existing)"},
+            },
+            "required": ["event_id"],
+        },
+    },
+    {
+        "name": "delete_caldav_event",
+        "description": "Delete an Apple iCloud Calendar event by its ID. Irreversible — confirm with the student first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string", "description": "Event UID to delete (required)"},
+            },
+            "required": ["event_id"],
+        },
+    },
 ]
 
 
@@ -10861,6 +11130,67 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 log.info("Jarvis tool: deleted calendar event id=%s", event_id)
                 return {"status": "deleted", "event_id": event_id}
 
+        elif name in ("list_caldav_events", "create_caldav_event", "update_caldav_event", "delete_caldav_event"):
+            if not _caldav_configured():
+                return {"error": "Apple Calendar not configured. Set up CalDAV credentials in Settings."}
+
+            if name == "list_caldav_events":
+                days_ahead = min(int(inputs.get("days_ahead", 7)), 60)
+                events = _caldav_list_events(days_ahead=days_ahead)
+                return {"events": events, "count": len(events)}
+
+            elif name == "create_caldav_event":
+                title = str(inputs.get("title", "")).strip()
+                if not title:
+                    return {"error": "title is required"}
+                start = str(inputs.get("start", "")).strip()
+                if not start:
+                    return {"error": "start is required"}
+                end = inputs.get("end", "")
+                desc = str(inputs.get("description", "")).strip()
+                loc = str(inputs.get("location", "")).strip()
+
+                result = _caldav_create_event(
+                    title=title,
+                    start_dt=start,
+                    end_dt=end or None,
+                    description=desc,
+                    location=loc
+                )
+                if "error" in result:
+                    return result
+                log.info("Jarvis tool: created CalDAV event '%s' id=%s", title, result.get("id"))
+                return {"status": "created", "event_id": result.get("id"), "title": title}
+
+            elif name == "update_caldav_event":
+                event_id = str(inputs.get("event_id", "")).strip()
+                if not event_id:
+                    return {"error": "event_id is required"}
+
+                result = _caldav_update_event(
+                    event_id=event_id,
+                    title=inputs.get("title"),
+                    start_dt=inputs.get("start"),
+                    end_dt=inputs.get("end"),
+                    description=inputs.get("description"),
+                    location=inputs.get("location")
+                )
+                if "error" in result:
+                    return result
+                log.info("Jarvis tool: updated CalDAV event id=%s", event_id)
+                return {"status": "updated", "event_id": event_id, "title": result.get("title")}
+
+            elif name == "delete_caldav_event":
+                event_id = str(inputs.get("event_id", "")).strip()
+                if not event_id:
+                    return {"error": "event_id is required"}
+
+                result = _caldav_delete_event(event_id=event_id)
+                if "error" in result:
+                    return result
+                log.info("Jarvis tool: deleted CalDAV event id=%s", event_id)
+                return {"status": "deleted", "event_id": event_id}
+
         else:
             return {"error": f"Unknown tool: {name}"}
 
@@ -11043,6 +11373,8 @@ _GOOGLE_TOOL_NAMES = frozenset({
     "update_form_question", "delete_form_question", "delete_slide",
     "create_calendar_event", "update_calendar_event", "delete_calendar_event",
     "list_google_calendar_events",
+    "create_caldav_event", "update_caldav_event", "delete_caldav_event",
+    "list_caldav_events",
 })
 
 
@@ -11161,8 +11493,11 @@ def api_chat():
             "an assignment due in under 2 hours, a stock hitting a threshold they cared about, or an insight they'd want acted on immediately. "
             "Keep the message ≤2 sentences, actionable, in Jarvis voice. Don't notify for routine chat responses.\n"
             "- GOOGLE CALENDAR WRITE: You have create_calendar_event, update_calendar_event, delete_calendar_event, and list_google_calendar_events. "
-            "Use these when the student asks to add, change, or remove calendar items. "
-            "Always confirm the event details before deleting. Use list_google_calendar_events to look up event IDs when needed."
+            "Use these when the student asks to add, change, or remove calendar items on their Google Calendar. "
+            "Always confirm the event details before deleting. Use list_google_calendar_events to look up event IDs when needed.\n"
+            "- APPLE CALENDAR WRITE (CalDAV): You have create_caldav_event, update_caldav_event, delete_caldav_event, and list_caldav_events. "
+            "Use these when the student asks to add, change, or remove calendar items on their Apple iCloud Calendar. "
+            "Always confirm the event details before deleting. Use list_caldav_events to look up event IDs when needed."
         )
 
         system_dynamic = (
@@ -13051,6 +13386,62 @@ def google_disconnect():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
     set_config({"google_refresh_token": ""})
+    return jsonify({"status": "disconnected"})
+
+
+# ── CalDAV (Apple iCloud Calendar) routes ─────────────────────────────────────────
+
+@app.route("/api/caldav/status")
+def caldav_status():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    configured = _caldav_configured()
+    return jsonify({"configured": configured})
+
+
+@app.route("/api/caldav/configure", methods=["POST"])
+def caldav_configure():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    data = request.get_json() or {}
+    url = str(data.get("url", "")).strip()
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", "")).strip()
+
+    if not (url and username and password):
+        return jsonify({"error": "url, username, and password are required"}), 400
+
+    # Test the connection
+    import caldav
+    try:
+        test_client = caldav.DAVClient(url=url, username=username, password=password)
+        principal = test_client.principal()
+        calendars = principal.calendars()
+        if not calendars:
+            return jsonify({"error": "No calendars found on this account"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Connection failed: {str(e)}"}), 400
+
+    # Save credentials
+    set_config({
+        "caldav_url": url,
+        "caldav_username": username,
+        "caldav_password": password,
+    })
+    log.info("CalDAV configured for %s", username)
+    return jsonify({"status": "configured", "calendar_count": len(calendars)})
+
+
+@app.route("/api/caldav/disconnect", methods=["POST"])
+def caldav_disconnect():
+    if not session.get("authenticated"):
+        return jsonify({"error": "Not authenticated"}), 401
+    set_config({
+        "caldav_url": "",
+        "caldav_username": "",
+        "caldav_password": "",
+    })
     return jsonify({"status": "disconnected"})
 
 
