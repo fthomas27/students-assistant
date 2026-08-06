@@ -271,6 +271,10 @@ def ensure_csrf_token_for_authenticated():
             or session.get("parent_authenticated")):
         if not session.get("csrf_token"):
             _ensure_session_csrf_token()
+        if request.path == "/":
+            # Two-way Telegram chat is on by default — page loads are when we
+            # know the public https root, so arm the webhook from here.
+            _telegram_maybe_autoenable()
     return None
 
 
@@ -13516,7 +13520,12 @@ def telegram_detect_chat_id():
         return jsonify({"error": "Could not find a chat in the latest Telegram update."}), 404
     chat_name = chat.get("username") or chat.get("first_name") or chat.get("title") or str(chat_id)
     set_config({"telegram_chat_id": str(chat_id)})
-    return jsonify({"status": "ok", "chat_id": str(chat_id), "chat_name": chat_name})
+    # Two-way chat is on by default — arm the webhook right away unless the
+    # student has explicitly turned it off.
+    chat_on = False
+    if get_config().get("telegram_chat_disabled", "") != "true" and request.url_root.startswith("https://"):
+        chat_on = _telegram_register_webhook(request.url_root)
+    return jsonify({"status": "ok", "chat_id": str(chat_id), "chat_name": chat_name, "chat_enabled": chat_on})
 
 
 @app.route("/api/telegram/set-chat-id", methods=["POST"])
@@ -13531,6 +13540,9 @@ def telegram_set_chat_id():
         _telegram_api("deleteWebhook", {"drop_pending_updates": True}, timeout=15)
         updates["telegram_webhook_secret"] = ""
     set_config(updates)
+    if chat_id and get_config().get("telegram_chat_disabled", "") != "true" \
+            and request.url_root.startswith("https://"):
+        _telegram_register_webhook(request.url_root)
     return jsonify({"status": "ok", "chat_id": chat_id})
 
 
@@ -13557,6 +13569,60 @@ _TELEGRAM_CHAT_CONVERSATION_ID = "telegram"
 
 def _telegram_chat_enabled():
     return bool(get_config().get("telegram_webhook_secret", "").strip())
+
+
+def _telegram_webhook_secret():
+    """Deterministic per-install webhook secret. Derived (not random) so
+    concurrent gunicorn workers auto-registering the webhook can't race each
+    other into a state where Telegram holds one secret and config another."""
+    seed = f"{app.secret_key}:{TELEGRAM_BOT_TOKEN}:telegram-webhook"
+    return hashlib.sha256(seed.encode()).hexdigest()
+
+
+def _telegram_register_webhook(root_url):
+    """Register the Telegram webhook for two-way chat. Returns True on success."""
+    webhook_url = root_url.rstrip("/") + "/api/webhooks/telegram"
+    if not webhook_url.startswith("https://"):
+        return False
+    secret = _telegram_webhook_secret()
+    result = _telegram_api("setWebhook", {
+        "url": webhook_url,
+        "secret_token": secret,
+        "allowed_updates": ["message"],
+        "drop_pending_updates": True,
+    }, timeout=15)
+    if not result:
+        return False
+    set_config({"telegram_webhook_secret": secret})
+    log.info("Telegram two-way chat webhook registered")
+    return True
+
+
+_telegram_autoenable_done = False
+
+
+def _telegram_maybe_autoenable():
+    """Two-way chat is on by default: whenever Telegram is connected and the
+    student hasn't explicitly disabled it, register the webhook automatically.
+    Called from authenticated page loads (that's when we know the public
+    https root). One-shot per worker process."""
+    global _telegram_autoenable_done
+    if _telegram_autoenable_done:
+        return
+    try:
+        if not _telegram_ready() or _telegram_chat_enabled():
+            _telegram_autoenable_done = True
+            return
+        if get_config().get("telegram_chat_disabled", "") == "true":
+            _telegram_autoenable_done = True
+            return
+        root = request.url_root.rstrip("/")
+        if not root.startswith("https://"):
+            return  # keep trying — a later request may arrive over https
+        _telegram_autoenable_done = True
+        threading.Thread(target=_telegram_register_webhook, args=(root,), daemon=True).start()
+    except Exception:
+        log.warning("Telegram auto-enable check failed", exc_info=True)
 
 
 def _telegram_api(method, payload, timeout=10):
@@ -13786,20 +13852,11 @@ def telegram_enable_chat():
         return jsonify({"error": "Not authenticated"}), 401
     if not _telegram_ready():
         return jsonify({"error": "Connect Telegram first (Detect Chat ID), then enable two-way chat."}), 400
-    webhook_url = request.url_root.rstrip("/") + "/api/webhooks/telegram"
-    if not webhook_url.startswith("https://"):
+    if not request.url_root.startswith("https://"):
         return jsonify({"error": "Two-way chat requires the app to be served over https."}), 400
-    secret = secrets.token_urlsafe(48)[:128]
-    result = _telegram_api("setWebhook", {
-        "url": webhook_url,
-        "secret_token": secret,
-        "allowed_updates": ["message"],
-        "drop_pending_updates": True,
-    }, timeout=15)
-    if not result:
+    if not _telegram_register_webhook(request.url_root):
         return jsonify({"error": "Telegram rejected the webhook. Check TELEGRAM_BOT_TOKEN and that the app is publicly reachable."}), 502
-    set_config({"telegram_webhook_secret": secret})
-    log.info("Telegram two-way chat enabled (webhook registered)")
+    set_config({"telegram_chat_disabled": ""})
     return jsonify({"status": "enabled"})
 
 
@@ -13808,7 +13865,8 @@ def telegram_disable_chat():
     if not session.get("authenticated"):
         return jsonify({"error": "Not authenticated"}), 401
     _telegram_api("deleteWebhook", {"drop_pending_updates": True}, timeout=15)
-    set_config({"telegram_webhook_secret": ""})
+    # Remember the opt-out so auto-enable doesn't re-arm it on the next page load.
+    set_config({"telegram_webhook_secret": "", "telegram_chat_disabled": "true"})
     log.info("Telegram two-way chat disabled (webhook removed)")
     return jsonify({"status": "disabled"})
 
