@@ -11414,8 +11414,6 @@ _GOOGLE_TOOL_NAMES = frozenset({
     "update_form_question", "delete_form_question", "delete_slide",
     "create_calendar_event", "update_calendar_event", "delete_calendar_event",
     "list_google_calendar_events",
-    "create_caldav_event", "update_caldav_event", "delete_caldav_event",
-    "list_caldav_events",
 })
 
 

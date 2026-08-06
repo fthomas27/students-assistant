@@ -838,3 +838,23 @@ def test_verse_of_the_day_returns_reference_and_text(client):
     again = c.get("/api/verse-of-the-day").get_json()
     assert again["reference"] == data["reference"]
     assert again["text"] == data["text"]
+
+
+def test_caldav_tools_present_without_google(client):
+    """Regression: CalDAV tools were once listed in _GOOGLE_TOOL_NAMES, so an
+    unconfigured Google integration silently pruned Apple Calendar tools too —
+    Jarvis then told the student it had no calendar access despite CalDAV
+    being connected. CalDAV tools must gate only on CalDAV's own config."""
+    _, flask_app = client
+    caldav_names = {"create_caldav_event", "update_caldav_event",
+                    "delete_caldav_event", "list_caldav_events"}
+    assert not (caldav_names & flask_app._GOOGLE_TOOL_NAMES)
+    with mock.patch.object(flask_app, "_caldav_configured", return_value=True), \
+         mock.patch.object(flask_app, "_google_configured", return_value=False):
+        names = {t.get("name") for t in flask_app._build_active_tools()}
+    assert caldav_names <= names
+    assert "create_calendar_event" not in names  # google stays pruned
+    with mock.patch.object(flask_app, "_caldav_configured", return_value=False), \
+         mock.patch.object(flask_app, "_google_configured", return_value=False):
+        names = {t.get("name") for t in flask_app._build_active_tools()}
+    assert not (caldav_names & names)
