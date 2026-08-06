@@ -3968,19 +3968,25 @@ def send_ntfy_notification(title, message, priority="default", tags=None):
     headers = {"Content-Type": "application/json"}
     if NTFY_TOKEN:
         headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
-    try:
-        resp = requests.post(
-            NTFY_SERVER.rstrip("/"),
-            json=payload,
-            headers=headers,
-            timeout=10,
-        )
-        if not resp.ok:
-            log.warning("ntfy returned %s: %s", resp.status_code, resp.text[:200])
-        return resp.ok
-    except Exception as e:
-        log.error("ntfy notification failed: %s", e)
-        return False
+    # One retry on transient failure so a network blip doesn't drop the push
+    for attempt in (1, 2):
+        try:
+            resp = requests.post(
+                NTFY_SERVER.rstrip("/"),
+                json=payload,
+                headers=headers,
+                timeout=10,
+            )
+            if resp.ok:
+                return True
+            log.warning("ntfy returned %s (attempt %s): %s", resp.status_code, attempt, resp.text[:200])
+            if 400 <= resp.status_code < 500:
+                return False  # bad topic/auth/payload — retrying won't help
+        except Exception as e:
+            log.error("ntfy notification failed (attempt %s): %s", attempt, e)
+        if attempt == 1:
+            time.sleep(2)
+    return False
 
 
 def send_email(to_addr, subject, body_html):
