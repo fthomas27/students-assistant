@@ -760,6 +760,8 @@ def init_db():
         ("skills", "CREATE TABLE IF NOT EXISTS skills (id SERIAL PRIMARY KEY, name TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', focus BOOLEAN NOT NULL DEFAULT FALSE, completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("people_profiles", "CREATE TABLE IF NOT EXISTS people_profiles (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, relationship TEXT NOT NULL DEFAULT '', facts TEXT NOT NULL DEFAULT '[]', mem0_synced BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("gmail_drafts", "CREATE TABLE IF NOT EXISTS gmail_drafts (id SERIAL PRIMARY KEY, to_addr TEXT NOT NULL, cc_addr TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', conversation_id TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("reminders", "CREATE TABLE IF NOT EXISTS reminders (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL DEFAULT 'Reminder', message TEXT NOT NULL, needs_generation BOOLEAN NOT NULL DEFAULT FALSE, recurrence TEXT NOT NULL DEFAULT 'once', time_of_day TEXT NOT NULL DEFAULT '', day_of_week INT, next_run TIMESTAMPTZ NOT NULL, last_fired_at TIMESTAMPTZ, active BOOLEAN NOT NULL DEFAULT TRUE)"),
+        ("reminders_active_idx", "CREATE INDEX IF NOT EXISTS idx_reminders_active_next_run ON reminders(next_run) WHERE active = TRUE"),
         ("gmail_drafts_conv_idx", "CREATE INDEX IF NOT EXISTS idx_gmail_drafts_conv ON gmail_drafts(conversation_id) WHERE conversation_id != ''"),
         ("notification_log", "CREATE TABLE IF NOT EXISTS notification_log (id SERIAL PRIMARY KEY, notification_key TEXT UNIQUE NOT NULL, title TEXT NOT NULL DEFAULT '', sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("notification_log_idx", "CREATE INDEX IF NOT EXISTS idx_notification_log_key_sent ON notification_log(notification_key, sent_at DESC)"),
@@ -5161,6 +5163,173 @@ def check_weather_warning():
         log.error("check_weather_warning error: %s", e)
 
 
+def _reminder_compute_next_run(recurrence, time_of_day, day_of_week, remind_at_iso=None, after=None):
+    """Return the next TZ-aware datetime a reminder should fire, strictly after `after`
+    (defaults to now). Raises ValueError on bad/missing input."""
+    now = after or datetime.now(TZ)
+    if recurrence == "once":
+        if not remind_at_iso:
+            raise ValueError("remind_at is required for a one-time reminder")
+        try:
+            dt = datetime.fromisoformat(str(remind_at_iso))
+        except ValueError:
+            raise ValueError("remind_at must be an ISO 8601 datetime, e.g. 2026-08-07T15:00:00")
+        dt = dt.replace(tzinfo=TZ) if dt.tzinfo is None else dt.astimezone(TZ)
+        return dt
+
+    try:
+        hh, mm = (int(x) for x in str(time_of_day).split(":", 1))
+        assert 0 <= hh <= 23 and 0 <= mm <= 59
+    except Exception:
+        raise ValueError("time_of_day must be 24-hour 'HH:MM' for a recurring reminder")
+
+    candidate = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+
+    if recurrence == "weekdays":
+        while candidate.weekday() >= 5:  # Sat=5, Sun=6
+            candidate += timedelta(days=1)
+    elif recurrence == "weekly":
+        if day_of_week is None or str(day_of_week) == "":
+            raise ValueError("day_of_week (0=Monday..6=Sunday) is required for a weekly reminder")
+        try:
+            dow = int(day_of_week)
+            assert 0 <= dow <= 6
+        except Exception:
+            raise ValueError("day_of_week must be an integer 0 (Monday) through 6 (Sunday)")
+        while candidate.weekday() != dow:
+            candidate += timedelta(days=1)
+    elif recurrence != "daily":
+        raise ValueError("recurrence must be one of once/daily/weekdays/weekly")
+
+    return candidate
+
+
+def _generate_reminder_content(instruction):
+    """Run a reminder's instruction through Jarvis, with full tool access (including
+    live web search), and return the generated notification text — or None on failure.
+    Used for reminders created with needs_generation=True (news, weather, etc.) where
+    the content has to be produced fresh at fire time rather than sent verbatim."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return None
+    try:
+        now_local = datetime.now(TZ)
+        system_text = (
+            "You are Jarvis, generating the body of a scheduled, automatic push notification "
+            "for the student. This is not a live conversation — there is no one to ask follow-up "
+            "questions, so fulfill the instruction directly using your tools and produce the final "
+            "notification text: concise plain text (no markdown formatting), suitable for a phone "
+            "push notification or text message. A few sentences unless the instruction clearly asks "
+            "for more.\n\n"
+            f"Today is {now_local.strftime('%A, %-m/%-d/%Y')}, current time {now_local.strftime('%-I:%M %p %Z')}."
+        )
+        client = anthropic.Anthropic(api_key=api_key, max_retries=2, timeout=45.0)
+        tools = _build_active_tools()
+        messages = [{"role": "user", "content": str(instruction)[:2000]}]
+        final_text = ""
+        for _iteration in range(6):
+            response = client.beta.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1200,
+                tools=tools,
+                system=[{"type": "text", "text": system_text}],
+                messages=messages,
+                betas=["web-fetch-2025-09-10"],
+            )
+            try:
+                track_api_usage(response)
+            except Exception:
+                pass
+
+            text_parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
+            if text_parts:
+                final_text = "\n".join(text_parts)
+
+            if response.stop_reason == "pause_turn":
+                messages.append({"role": "assistant", "content": [b.model_dump() for b in response.content]})
+                continue
+            if response.stop_reason != "tool_use":
+                break
+
+            assistant_content = []
+            tool_results = []
+            for block in response.content:
+                btype = getattr(block, "type", None)
+                if btype == "text":
+                    assistant_content.append({"type": "text", "text": block.text})
+                elif btype == "tool_use":
+                    assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+                    result = _execute_jarvis_tool(block.name, block.input or {}, conversation_id="reminders")
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result, default=str)[:8000],
+                    })
+                elif btype in ("server_tool_use", "web_search_tool_result", "web_fetch_tool_result"):
+                    assistant_content.append(block.model_dump())
+            messages.append({"role": "assistant", "content": assistant_content})
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+
+        return _telegram_plainify(final_text).strip() or None
+    except Exception as e:
+        log.error("_generate_reminder_content failed: %s", e)
+        return None
+
+
+def _fire_reminder(r, now):
+    """Deliver one due reminder, then either deactivate it (one-time) or reschedule
+    it to its next occurrence (recurring)."""
+    try:
+        if r["needs_generation"]:
+            content = _generate_reminder_content(r["message"]) or r["message"]
+        else:
+            content = r["message"]
+        send_push_notification(title=r["title"], message=content, priority="default", tags=["alarm_clock"])
+        log.info("Fired reminder id=%s title=%r recurrence=%s", r["id"], r["title"], r["recurrence"])
+    except Exception as e:
+        log.error("_fire_reminder id=%s failed: %s", r.get("id"), e)
+    finally:
+        conn = get_db()
+        cur = conn.cursor()
+        if r["recurrence"] == "once":
+            cur.execute("UPDATE reminders SET active = FALSE, last_fired_at = %s WHERE id = %s", (now, r["id"]))
+        else:
+            try:
+                next_run = _reminder_compute_next_run(
+                    r["recurrence"], r["time_of_day"], r["day_of_week"], after=now,
+                )
+                cur.execute(
+                    "UPDATE reminders SET next_run = %s, last_fired_at = %s WHERE id = %s",
+                    (next_run, now, r["id"]),
+                )
+            except Exception as e:
+                log.error("Failed to reschedule reminder id=%s, deactivating: %s", r["id"], e)
+                cur.execute("UPDATE reminders SET active = FALSE, last_fired_at = %s WHERE id = %s", (now, r["id"]))
+        conn.commit(); cur.close(); conn.close()
+
+
+def check_scheduled_reminders():
+    """Fire any due reminders created via the create_reminder Jarvis tool."""
+    try:
+        now = datetime.now(TZ)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, title, message, needs_generation, recurrence, time_of_day, day_of_week "
+            "FROM reminders WHERE active = TRUE AND next_run <= %s",
+            (now,),
+        )
+        due = [dict(r) for r in cur.fetchall()]
+        cur.close(); conn.close()
+        for r in due:
+            _fire_reminder(r, now)
+    except Exception as e:
+        log.error("check_scheduled_reminders error: %s", e)
+
+
 def check_stock_alerts():
     """Tier 2 — alert on ±5% daily moves, target price hits, or stop-loss triggers."""
     if not _notifications_configured() or not FINNHUB_API_KEY:
@@ -5289,6 +5458,9 @@ def schedule_briefing():
     # Tier 3: weather warnings — every 2 hours
     scheduler.add_job(check_weather_warning, "interval", minutes=120,
                       id="notif_weather", replace_existing=True)
+    # User-created reminders (Jarvis create_reminder tool) — every minute for punctual firing
+    scheduler.add_job(check_scheduled_reminders, "interval", minutes=1,
+                      id="notif_scheduled_reminders", replace_existing=True)
 
     log.info("Briefing scheduled for %02d:%02d Mountain", hour, minute)
     log.info("Evening debrief scheduled for 18:30 Mountain")
@@ -5296,7 +5468,7 @@ def schedule_briefing():
     log.info("Weekly insight scheduled for Sun 08:00 Mountain")
     log.info("Cleanup job scheduled for 02:30 Mountain")
     log.info("Auto daily plan scheduled for 22:00 Mountain")
-    log.info("push notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather)")
+    log.info("push notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather, scheduled_reminders)")
 
 
 # ── Security Functions ──────────────────────────────────────────────────────────
@@ -9544,6 +9716,60 @@ JARVIS_TOOLS = [
             "required": ["title", "message"],
         },
     },
+    {
+        "name": "create_reminder",
+        "description": (
+            "Schedule an automatic reminder or recurring notification that fires on its own and is "
+            "pushed to the student's phone (every push channel they've configured — ntfy and/or "
+            "Telegram) at a specific time. Use this directly whenever the student asks to be reminded "
+            "of something at a time, or wants something delivered automatically on a schedule — do "
+            "NOT ask them to confirm or say anything like 'I'll set up a routine' first, just create "
+            "it and confirm what you scheduled.\n\n"
+            "Two modes, chosen with needs_generation:\n"
+            "- needs_generation=false: a simple reminder. 'message' is sent to the student VERBATIM "
+            "at the scheduled time, e.g. message='Take out the trash'. Use this for reminders about "
+            "a fixed thing to do.\n"
+            "- needs_generation=true: a generated briefing. 'message' is an INSTRUCTION describing "
+            "what to look up or produce, e.g. message='Search for today's top news headlines and "
+            "summarize the 3-4 most important stories in a couple sentences each'. At fire time this "
+            "instruction is run through you again with full tool access (including live web search) "
+            "and the result is what gets pushed to the student. Use this for anything that needs "
+            "fresh/live content generated each time it fires — news, weather, current events, market "
+            "updates, etc.\n\n"
+            "Timing: for a one-time reminder set recurrence='once' and give remind_at (an ISO 8601 "
+            "datetime local to the student's timezone, e.g. '2026-08-07T15:00:00' for 3 PM that day — "
+            "you know today's date and the current time from context). For a recurring reminder set "
+            "recurrence to 'daily', 'weekdays' (Mon-Fri only), or 'weekly', and give time_of_day as "
+            "24-hour 'HH:MM' local time; a 'weekly' reminder also needs day_of_week (0=Monday..6=Sunday)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short notification title, e.g. 'Trash Reminder' or 'Morning News'"},
+                "message": {"type": "string", "description": "Verbatim reminder text (needs_generation=false) or the generation instruction (needs_generation=true) — see description"},
+                "needs_generation": {"type": "boolean", "description": "True if fresh content must be generated at fire time (news, weather, research, etc); false for a static reminder message"},
+                "recurrence": {"type": "string", "enum": ["once", "daily", "weekdays", "weekly"], "description": "How often this fires"},
+                "remind_at": {"type": "string", "description": "ISO 8601 local datetime, required when recurrence='once'"},
+                "time_of_day": {"type": "string", "description": "24-hour 'HH:MM' local time, required when recurrence is daily/weekdays/weekly"},
+                "day_of_week": {"type": "integer", "description": "0=Monday..6=Sunday, required when recurrence='weekly'"},
+            },
+            "required": ["title", "message", "needs_generation", "recurrence"],
+        },
+    },
+    {
+        "name": "list_reminders",
+        "description": "List the student's active scheduled reminders and recurring notifications, with when each will next fire. Use before cancel_reminder if you don't already know the id, or when the student asks what reminders they have set.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "cancel_reminder",
+        "description": "Cancel a scheduled reminder by its id so it never fires again. Use list_reminders first if you don't already know the id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer", "description": "The reminder's id, from list_reminders"}},
+            "required": ["id"],
+        },
+    },
     # ── Google Calendar write tools ───────────────────────────────────────────
     {
         "name": "create_calendar_event",
@@ -11232,6 +11458,68 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 log.info("Jarvis tool: deleted CalDAV event id=%s", event_id)
                 return {"status": "deleted", "event_id": event_id}
 
+        elif name == "create_reminder":
+            title = str(inputs.get("title", "Reminder")).strip()[:100] or "Reminder"
+            message = str(inputs.get("message", "")).strip()[:2000]
+            if not message:
+                return {"error": "message is required"}
+            needs_generation = bool(inputs.get("needs_generation"))
+            recurrence = str(inputs.get("recurrence", "once")).strip().lower()
+            if recurrence not in ("once", "daily", "weekdays", "weekly"):
+                return {"error": "recurrence must be one of once/daily/weekdays/weekly"}
+            time_of_day = str(inputs.get("time_of_day", "")).strip()
+            day_of_week = inputs.get("day_of_week")
+            try:
+                next_run = _reminder_compute_next_run(
+                    recurrence, time_of_day, day_of_week, remind_at_iso=inputs.get("remind_at"),
+                )
+            except ValueError as e:
+                return {"error": str(e)}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO reminders (title, message, needs_generation, recurrence, time_of_day, day_of_week, next_run) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (title, message, needs_generation, recurrence, time_of_day,
+                 int(day_of_week) if day_of_week is not None else None, next_run),
+            )
+            new_id = cur.fetchone()["id"]
+            conn.commit(); cur.close(); conn.close()
+            log.info("Jarvis tool create_reminder: id=%s title=%r next_run=%s recurrence=%s",
+                      new_id, title, next_run, recurrence)
+            return {"status": "scheduled", "id": new_id, "title": title,
+                    "next_run": next_run.isoformat(), "recurrence": recurrence}
+
+        elif name == "list_reminders":
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, title, message, needs_generation, recurrence, time_of_day, day_of_week, next_run "
+                "FROM reminders WHERE active = TRUE ORDER BY next_run ASC"
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            for r in rows:
+                if r.get("next_run"):
+                    r["next_run"] = r["next_run"].astimezone(TZ).isoformat()
+            return {"count": len(rows), "reminders": rows}
+
+        elif name == "cancel_reminder":
+            rid = inputs.get("id")
+            if rid is None:
+                return {"error": "id is required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE reminders SET active = FALSE WHERE id = %s AND active = TRUE RETURNING title",
+                (int(rid),),
+            )
+            row = cur.fetchone()
+            conn.commit(); cur.close(); conn.close()
+            if not row:
+                return {"status": "not_found", "id": rid}
+            return {"status": "cancelled", "id": rid, "title": row["title"]}
+
         else:
             return {"error": f"Unknown tool: {name}"}
 
@@ -11433,7 +11721,7 @@ def _build_active_tools() -> list:
             continue
         if name in _CALDAV_TOOL_NAMES and not caldav_on:
             continue
-        if name == "send_notification" and not _notifications_configured():
+        if name in ("send_notification", "create_reminder", "list_reminders", "cancel_reminder") and not _notifications_configured():
             continue
         if name == "get_climate_history" and not NOAA_API_TOKEN:
             continue
@@ -11539,6 +11827,11 @@ def api_chat():
             "Use it proactively when something is genuinely urgent and the student should know *right now* — "
             "an assignment due in under 2 hours, a stock hitting a threshold they cared about, or an insight they'd want acted on immediately. "
             "Keep the message ≤2 sentences, actionable, in Jarvis voice. Don't notify for routine chat responses.\n"
+            "- SCHEDULED REMINDERS: You have create_reminder, list_reminders, and cancel_reminder for things that should fire automatically in the future — "
+            "'remind me to take out the trash at 3pm', 'give me the news every morning', 'text me the weather each day at 7am'. "
+            "Call create_reminder directly the moment the student asks for this — never say you'll 'set up a routine' or ask them to confirm first, just schedule it and tell them what you scheduled. "
+            "Use needs_generation=false for a fixed reminder message sent verbatim; use needs_generation=true when fresh content must be produced at fire time (news, weather, research) — 'message' then becomes the instruction you'll carry out later, with full tool access including web search. "
+            "Use list_reminders when asked what's scheduled, and cancel_reminder to cancel one.\n"
             "- GOOGLE CALENDAR WRITE: You have create_calendar_event, update_calendar_event, delete_calendar_event, and list_google_calendar_events. "
             "Use these when the student asks to add, change, or remove calendar items on their Google Calendar. "
             "Always confirm the event details before deleting. Use list_google_calendar_events to look up event IDs when needed.\n"
