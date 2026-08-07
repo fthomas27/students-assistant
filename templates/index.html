@@ -3242,6 +3242,7 @@ gap: 12px;
 flex-shrink: 0;
 }
 .dashx-tiles-4 { grid-template-columns: repeat(4, 1fr); }
+.dashx-tiles-5 { grid-template-columns: repeat(5, 1fr); }
 .tile {
 background: var(--surface);
 border: 1px solid var(--border);
@@ -3395,12 +3396,14 @@ transition: background 0.15s, border-color 0.15s;
 .dashx-span5, .dashx-span9 { grid-column: span 2; }
 .dashx-tiles { grid-template-columns: repeat(3, 1fr); }
 .dashx-tiles-4 { grid-template-columns: repeat(2, 1fr); }
+.dashx-tiles-5 { grid-template-columns: repeat(3, 1fr); }
 .dashx-list { max-height: 300px; }
 }
 @media (max-width: 640px) {
 .dashx-main { grid-template-columns: 1fr; }
 .dashx-span3, .dashx-span4, .dashx-span5, .dashx-span9 { grid-column: span 1; }
 .dashx-tiles { grid-template-columns: repeat(2, 1fr); }
+.dashx-tiles-5 { grid-template-columns: repeat(2, 1fr); }
 .dashx-head { flex-direction: column; align-items: flex-start; gap: 4px; }
 
 /* Phones can't fit the desktop's fixed-viewport dashboard grid, so drop
@@ -4191,7 +4194,7 @@ margin: 8px 2px 10px;
       <div class="dash-sub" id="healthSub">WHOOP metrics, workouts, records, and planning.</div>
     </div>
 
-    <div class="dashx-tiles dashx-tiles-4">
+    <div class="dashx-tiles dashx-tiles-5">
       <section class="tile tile-accent">
         <div class="tile-label">Recovery</div>
         <div class="tile-num" id="healthStatRecovery">&ndash;</div>
@@ -4211,6 +4214,11 @@ margin: 8px 2px 10px;
         <div class="tile-label">Heart Rate</div>
         <div class="tile-num" id="healthStatHR">&ndash;</div>
         <div class="tile-meta" id="healthStatHRMeta"></div>
+      </section>
+      <section class="tile">
+        <div class="tile-label">Resting HR</div>
+        <div class="tile-num" id="healthStatRHR">&ndash;</div>
+        <div class="tile-meta" id="healthStatRHRMeta"></div>
       </section>
     </div>
 
@@ -5115,6 +5123,8 @@ function renderHealthDash() {
   _setText('healthStatStrainMeta', day ? 'today’s cardiovascular load' : 'not connected');
   _setText('healthStatSleep', day && day.sleep_hours != null ? day.sleep_hours + 'h' : '–');
   _setText('healthStatSleepMeta', day && day.sleep_performance != null ? day.sleep_performance + '% performance' : (day ? 'last night' : 'not connected'));
+  _setText('healthStatRHR', day && day.rhr != null ? day.rhr : '–');
+  _setText('healthStatRHRMeta', day && day.rhr != null ? 'bpm · resting' : (day ? '' : 'not connected'));
   _renderHRWidget(hr);
   _renderSleepScoreChart(summary);
   _renderBedtimeWidget(bedtime);
@@ -5163,12 +5173,12 @@ function renderHealthDash() {
       const r = prs.records[k] || {};
       const when = r.achieved_on ? new Date(r.achieved_on + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
       return '<div class="upnext-row" style="cursor:default;">'
-        + '<span style="font-size:15px;flex-shrink:0;">' + icons[k] + '</span>'
+        + '<span style="font-size:15px;flex-shrink:0;width:20px;text-align:center;">' + icons[k] + '</span>'
         + '<div class="upnext-main">'
         +   '<div class="upnext-title">' + escapeHtml(r.label || k) + '</div>'
-        +   (when ? '<div class="upnext-meta">' + escapeHtml(when) + '</div>' : '')
+        +   '<div class="upnext-meta">' + (when ? escapeHtml(when) : 'Not logged yet') + '</div>'
         + '</div>'
-        + '<span class="upnext-due" style="font-weight:700;color:var(--accent);">' + escapeHtml(r.value_display || '—') + '</span>'
+        + '<span class="upnext-due" style="font-weight:700;color:' + (r.value_display ? 'var(--accent)' : 'var(--text3)') + ';">' + escapeHtml(r.value_display || '—') + '</span>'
         + '</div>';
     }).join('');
   }
@@ -10541,7 +10551,7 @@ function renderCalendarModal() {
   for (let i = firstDay - 1; i >= 0; i--) {
     const day = document.createElement('div');
     day.className = 'calendar-day other-month';
-    day.textContent = daysInPrevMonth - i;
+    day.innerHTML = `<div class="calendar-day-num">${daysInPrevMonth - i}</div>`;
     grid.appendChild(day);
   }
 
@@ -10580,7 +10590,7 @@ function renderCalendarModal() {
   for (let i = 1; i <= remainingCells; i++) {
     const day = document.createElement('div');
     day.className = 'calendar-day other-month';
-    day.textContent = i;
+    day.innerHTML = `<div class="calendar-day-num">${i}</div>`;
     grid.appendChild(day);
   }
 }

@@ -5067,7 +5067,7 @@ def check_meeting_reminders():
 
 
 def check_idle_detection():
-    """Tier 3 — nudge if no task/assignment logged in 3+ hours on a school night."""
+    """Tier 3 — nudge if no task/assignment logged in 24+ hours on a school night."""
     if not _notifications_configured():
         return
     try:
@@ -5079,7 +5079,7 @@ def check_idle_detection():
             return
         conn = get_db()
         cur = conn.cursor()
-        cutoff = now - timedelta(hours=3)
+        cutoff = now - timedelta(hours=24)
         cur.execute(
             "SELECT MAX(completed_at) AS last FROM completions WHERE completed_at > %s",
             (cutoff,),
@@ -5088,11 +5088,11 @@ def check_idle_detection():
         cur.close(); conn.close()
         if row and row["last"]:
             return
-        key = f"idle_{now.strftime('%Y-%m-%d-%H')}"
-        if _ntfy_dedup(key, title="Idle check", max_age_hours=1):
+        key = f"idle_{now.strftime('%Y-%m-%d')}"
+        if _ntfy_dedup(key, title="Idle check", max_age_hours=24):
             send_push_notification(
                 title="Still with me, sir?",
-                message="No tasks logged in over 3 hours. Might be worth making a dent in that list.",
+                message="No tasks logged in over a day. Might be worth making a dent in that list.",
                 priority="default",
                 tags=["sleeping"],
             )
