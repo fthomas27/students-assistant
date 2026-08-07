@@ -760,6 +760,8 @@ def init_db():
         ("skills", "CREATE TABLE IF NOT EXISTS skills (id SERIAL PRIMARY KEY, name TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', focus BOOLEAN NOT NULL DEFAULT FALSE, completed BOOLEAN NOT NULL DEFAULT FALSE, completed_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("people_profiles", "CREATE TABLE IF NOT EXISTS people_profiles (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, relationship TEXT NOT NULL DEFAULT '', facts TEXT NOT NULL DEFAULT '[]', mem0_synced BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("gmail_drafts", "CREATE TABLE IF NOT EXISTS gmail_drafts (id SERIAL PRIMARY KEY, to_addr TEXT NOT NULL, cc_addr TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', conversation_id TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
+        ("reminders", "CREATE TABLE IF NOT EXISTS reminders (id SERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), title TEXT NOT NULL DEFAULT 'Reminder', message TEXT NOT NULL, needs_generation BOOLEAN NOT NULL DEFAULT FALSE, recurrence TEXT NOT NULL DEFAULT 'once', time_of_day TEXT NOT NULL DEFAULT '', day_of_week INT, next_run TIMESTAMPTZ NOT NULL, last_fired_at TIMESTAMPTZ, active BOOLEAN NOT NULL DEFAULT TRUE)"),
+        ("reminders_active_idx", "CREATE INDEX IF NOT EXISTS idx_reminders_active_next_run ON reminders(next_run) WHERE active = TRUE"),
         ("gmail_drafts_conv_idx", "CREATE INDEX IF NOT EXISTS idx_gmail_drafts_conv ON gmail_drafts(conversation_id) WHERE conversation_id != ''"),
         ("notification_log", "CREATE TABLE IF NOT EXISTS notification_log (id SERIAL PRIMARY KEY, notification_key TEXT UNIQUE NOT NULL, title TEXT NOT NULL DEFAULT '', sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"),
         ("notification_log_idx", "CREATE INDEX IF NOT EXISTS idx_notification_log_key_sent ON notification_log(notification_key, sent_at DESC)"),
@@ -5067,7 +5069,7 @@ def check_meeting_reminders():
 
 
 def check_idle_detection():
-    """Tier 3 — nudge if no task/assignment logged in 3+ hours on a school night."""
+    """Tier 3 — nudge if no task/assignment logged in 24+ hours on a school night."""
     if not _notifications_configured():
         return
     try:
@@ -5079,7 +5081,7 @@ def check_idle_detection():
             return
         conn = get_db()
         cur = conn.cursor()
-        cutoff = now - timedelta(hours=3)
+        cutoff = now - timedelta(hours=24)
         cur.execute(
             "SELECT MAX(completed_at) AS last FROM completions WHERE completed_at > %s",
             (cutoff,),
@@ -5088,11 +5090,11 @@ def check_idle_detection():
         cur.close(); conn.close()
         if row and row["last"]:
             return
-        key = f"idle_{now.strftime('%Y-%m-%d-%H')}"
-        if _ntfy_dedup(key, title="Idle check", max_age_hours=1):
+        key = f"idle_{now.strftime('%Y-%m-%d')}"
+        if _ntfy_dedup(key, title="Idle check", max_age_hours=24):
             send_push_notification(
                 title="Still with me, sir?",
-                message="No tasks logged in over 3 hours. Might be worth making a dent in that list.",
+                message="No tasks logged in over a day. Might be worth making a dent in that list.",
                 priority="default",
                 tags=["sleeping"],
             )
@@ -5159,6 +5161,201 @@ def check_weather_warning():
                 )
     except Exception as e:
         log.error("check_weather_warning error: %s", e)
+
+
+def _reminder_compute_next_run(recurrence, time_of_day, day_of_week, remind_at_iso=None, after=None):
+    """Return the next TZ-aware datetime a reminder should fire, strictly after `after`
+    (defaults to now). Raises ValueError on bad/missing input."""
+    now = after or datetime.now(TZ)
+    if recurrence == "once":
+        if not remind_at_iso:
+            raise ValueError("remind_at is required for a one-time reminder")
+        try:
+            dt = datetime.fromisoformat(str(remind_at_iso))
+        except ValueError:
+            raise ValueError("remind_at must be an ISO 8601 datetime, e.g. 2026-08-07T15:00:00")
+        dt = dt.replace(tzinfo=TZ) if dt.tzinfo is None else dt.astimezone(TZ)
+        return dt
+
+    try:
+        hh, mm = (int(x) for x in str(time_of_day).split(":", 1))
+        assert 0 <= hh <= 23 and 0 <= mm <= 59
+    except Exception:
+        raise ValueError("time_of_day must be 24-hour 'HH:MM' for a recurring reminder")
+
+    candidate = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+
+    if recurrence == "weekdays":
+        while candidate.weekday() >= 5:  # Sat=5, Sun=6
+            candidate += timedelta(days=1)
+    elif recurrence == "weekly":
+        if day_of_week is None or str(day_of_week) == "":
+            raise ValueError("day_of_week (0=Monday..6=Sunday) is required for a weekly reminder")
+        try:
+            dow = int(day_of_week)
+            assert 0 <= dow <= 6
+        except Exception:
+            raise ValueError("day_of_week must be an integer 0 (Monday) through 6 (Sunday)")
+        while candidate.weekday() != dow:
+            candidate += timedelta(days=1)
+    elif recurrence != "daily":
+        raise ValueError("recurrence must be one of once/daily/weekdays/weekly")
+
+    return candidate
+
+
+# A reminder generating its own content must not schedule further reminders or fire
+# its own push — the caller already delivers the result exactly once.
+_REMINDER_GEN_EXCLUDED_TOOLS = frozenset({
+    "create_reminder", "list_reminders", "cancel_reminder", "send_notification",
+})
+
+
+def _generate_reminder_content(instruction):
+    """Run a reminder's instruction through Jarvis, with full tool access (including
+    live web search), and return the generated notification text — or None on failure.
+    Used for reminders created with needs_generation=True (news, weather, etc.) where
+    the content has to be produced fresh at fire time rather than sent verbatim."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return None
+    try:
+        now_local = datetime.now(TZ)
+        system_text = (
+            "You are Jarvis, generating the body of a scheduled, automatic push notification "
+            "for the student. This is not a live conversation — there is no one to ask follow-up "
+            "questions, so fulfill the instruction directly using your tools and produce the final "
+            "notification text: concise plain text (no markdown formatting), suitable for a phone "
+            "push notification or text message. A few sentences unless the instruction clearly asks "
+            "for more.\n\n"
+            f"Today is {now_local.strftime('%A, %-m/%-d/%Y')}, current time {now_local.strftime('%-I:%M %p %Z')}."
+        )
+        client = anthropic.Anthropic(api_key=api_key, max_retries=2, timeout=45.0)
+        tools = [t for t in _build_active_tools()
+                 if t.get("name") not in _REMINDER_GEN_EXCLUDED_TOOLS]
+        messages = [{"role": "user", "content": str(instruction)[:2000]}]
+        final_text = ""
+        for _iteration in range(6):
+            response = client.beta.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1200,
+                tools=tools,
+                system=[{"type": "text", "text": system_text}],
+                messages=messages,
+                betas=["web-fetch-2025-09-10"],
+            )
+            try:
+                track_api_usage(response)
+            except Exception:
+                pass
+
+            text_parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
+            if text_parts:
+                final_text = "\n".join(text_parts)
+
+            if response.stop_reason == "pause_turn":
+                messages.append({"role": "assistant", "content": [b.model_dump() for b in response.content]})
+                continue
+            if response.stop_reason != "tool_use":
+                break
+
+            assistant_content = []
+            tool_results = []
+            for block in response.content:
+                btype = getattr(block, "type", None)
+                if btype == "text":
+                    assistant_content.append({"type": "text", "text": block.text})
+                elif btype == "tool_use":
+                    assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+                    result = _execute_jarvis_tool(block.name, block.input or {}, conversation_id="reminders")
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result, default=str)[:8000],
+                    })
+                elif btype in ("server_tool_use", "web_search_tool_result", "web_fetch_tool_result"):
+                    assistant_content.append(block.model_dump())
+            messages.append({"role": "assistant", "content": assistant_content})
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+
+        return _telegram_plainify(final_text).strip() or None
+    except Exception as e:
+        log.error("_generate_reminder_content failed: %s", e)
+        return None
+
+
+def _claim_reminder(r, now):
+    """Advance (or retire) a due reminder BEFORE it is delivered, so it can never be
+    sent twice. The UPDATE is conditional on next_run still holding the value we read,
+    so if anything else already advanced this row we lose the race and skip it.
+    Returns True if this caller won the claim and owns delivery."""
+    if r["recurrence"] == "once":
+        sql = ("UPDATE reminders SET active = FALSE, last_fired_at = %s "
+               "WHERE id = %s AND active = TRUE AND next_run = %s RETURNING id")
+        params = (now, r["id"], r["next_run"])
+    else:
+        try:
+            next_run = _reminder_compute_next_run(
+                r["recurrence"], r["time_of_day"], r["day_of_week"], after=now,
+            )
+        except Exception as e:
+            # A recurring reminder we can no longer schedule would otherwise be
+            # re-selected every tick forever — retire it instead.
+            log.error("Cannot reschedule reminder id=%s, deactivating: %s", r["id"], e)
+            next_run = None
+        if next_run is None:
+            sql = ("UPDATE reminders SET active = FALSE, last_fired_at = %s "
+                   "WHERE id = %s AND active = TRUE AND next_run = %s RETURNING id")
+            params = (now, r["id"], r["next_run"])
+        else:
+            sql = ("UPDATE reminders SET next_run = %s, last_fired_at = %s "
+                   "WHERE id = %s AND active = TRUE AND next_run = %s RETURNING id")
+            params = (next_run, now, r["id"], r["next_run"])
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    won = cur.fetchone() is not None
+    conn.commit(); cur.close(); conn.close()
+    return won
+
+
+def _deliver_reminder(r):
+    """Push one already-claimed reminder. Runs on its own thread: a needs_generation
+    reminder makes Claude calls that can take tens of seconds, and must not hold up
+    delivery of every other reminder."""
+    try:
+        if r["needs_generation"]:
+            content = _generate_reminder_content(r["message"]) or r["message"]
+        else:
+            content = r["message"]
+        send_push_notification(title=r["title"], message=content, priority="default", tags=["alarm_clock"])
+        log.info("Fired reminder id=%s title=%r recurrence=%s", r["id"], r["title"], r["recurrence"])
+    except Exception as e:
+        log.error("_deliver_reminder id=%s failed: %s", r.get("id"), e)
+
+
+def check_scheduled_reminders():
+    """Fire any due reminders created via the create_reminder Jarvis tool."""
+    try:
+        now = datetime.now(TZ)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, title, message, needs_generation, recurrence, time_of_day, day_of_week, next_run "
+            "FROM reminders WHERE active = TRUE AND next_run <= %s",
+            (now,),
+        )
+        due = [dict(r) for r in cur.fetchall()]
+        cur.close(); conn.close()
+        for r in due:
+            if _claim_reminder(r, now):
+                threading.Thread(target=_deliver_reminder, args=(r,), daemon=True).start()
+    except Exception as e:
+        log.error("check_scheduled_reminders error: %s", e)
 
 
 def check_stock_alerts():
@@ -5289,6 +5486,9 @@ def schedule_briefing():
     # Tier 3: weather warnings — every 2 hours
     scheduler.add_job(check_weather_warning, "interval", minutes=120,
                       id="notif_weather", replace_existing=True)
+    # User-created reminders (Jarvis create_reminder tool) — every minute for punctual firing
+    scheduler.add_job(check_scheduled_reminders, "interval", minutes=1,
+                      id="notif_scheduled_reminders", replace_existing=True)
 
     log.info("Briefing scheduled for %02d:%02d Mountain", hour, minute)
     log.info("Evening debrief scheduled for 18:30 Mountain")
@@ -5296,7 +5496,7 @@ def schedule_briefing():
     log.info("Weekly insight scheduled for Sun 08:00 Mountain")
     log.info("Cleanup job scheduled for 02:30 Mountain")
     log.info("Auto daily plan scheduled for 22:00 Mountain")
-    log.info("push notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather)")
+    log.info("push notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather, scheduled_reminders)")
 
 
 # ── Security Functions ──────────────────────────────────────────────────────────
@@ -9544,6 +9744,240 @@ JARVIS_TOOLS = [
             "required": ["title", "message"],
         },
     },
+    {
+        "name": "create_reminder",
+        "description": (
+            "Schedule an automatic reminder or recurring notification that fires on its own and is "
+            "pushed to the student's phone (every push channel they've configured — ntfy and/or "
+            "Telegram) at a specific time. Use this directly whenever the student asks to be reminded "
+            "of something at a time, or wants something delivered automatically on a schedule — do "
+            "NOT ask them to confirm or say anything like 'I'll set up a routine' first, just create "
+            "it and confirm what you scheduled.\n\n"
+            "Two modes, chosen with needs_generation:\n"
+            "- needs_generation=false: a simple reminder. 'message' is sent to the student VERBATIM "
+            "at the scheduled time, e.g. message='Take out the trash'. Use this for reminders about "
+            "a fixed thing to do.\n"
+            "- needs_generation=true: a generated briefing. 'message' is an INSTRUCTION describing "
+            "what to look up or produce, e.g. message='Search for today's top news headlines and "
+            "summarize the 3-4 most important stories in a couple sentences each'. At fire time this "
+            "instruction is run through you again with full tool access (including live web search) "
+            "and the result is what gets pushed to the student. Use this for anything that needs "
+            "fresh/live content generated each time it fires — news, weather, current events, market "
+            "updates, etc.\n\n"
+            "Timing: for a one-time reminder set recurrence='once' and give remind_at (an ISO 8601 "
+            "datetime local to the student's timezone, e.g. '2026-08-07T15:00:00' for 3 PM that day — "
+            "you know today's date and the current time from context). For a recurring reminder set "
+            "recurrence to 'daily', 'weekdays' (Mon-Fri only), or 'weekly', and give time_of_day as "
+            "24-hour 'HH:MM' local time; a 'weekly' reminder also needs day_of_week (0=Monday..6=Sunday)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short notification title, e.g. 'Trash Reminder' or 'Morning News'"},
+                "message": {"type": "string", "description": "Verbatim reminder text (needs_generation=false) or the generation instruction (needs_generation=true) — see description"},
+                "needs_generation": {"type": "boolean", "description": "True if fresh content must be generated at fire time (news, weather, research, etc); false for a static reminder message"},
+                "recurrence": {"type": "string", "enum": ["once", "daily", "weekdays", "weekly"], "description": "How often this fires"},
+                "remind_at": {"type": "string", "description": "ISO 8601 local datetime, required when recurrence='once'"},
+                "time_of_day": {"type": "string", "description": "24-hour 'HH:MM' local time, required when recurrence is daily/weekdays/weekly"},
+                "day_of_week": {"type": "integer", "description": "0=Monday..6=Sunday, required when recurrence='weekly'"},
+            },
+            "required": ["title", "message", "needs_generation", "recurrence"],
+        },
+    },
+    {
+        "name": "list_reminders",
+        "description": "List the student's active scheduled reminders and recurring notifications, with when each will next fire. Use before cancel_reminder if you don't already know the id, or when the student asks what reminders they have set.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "cancel_reminder",
+        "description": "Cancel a scheduled reminder by its id so it never fires again. Use list_reminders first if you don't already know the id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer", "description": "The reminder's id, from list_reminders"}},
+            "required": ["id"],
+        },
+    },
+    # ── Health & fitness (Health dashboard) ───────────────────────────────────
+    {
+        "name": "get_health_metrics",
+        "description": (
+            "Read the student's Health & Fitness dashboard data: per-day recovery score, HRV, resting "
+            "heart rate, sleep hours, sleep performance and strain for recent days, plus personal records "
+            "(longest run, fastest mile, longest swim, highest strain) and current heart rate. "
+            "Use whenever the student asks about their recovery, sleep, strain, HRV, resting heart rate, "
+            "fitness trends, or personal bests — and to factor recovery into pacing/workload advice. "
+            "If sample_data is true the student has not connected WHOOP and the numbers are placeholders; "
+            "say so rather than presenting them as real."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"days": {"type": "integer", "description": "How many recent days of metrics to return (1-14, default 7)"}},
+            "required": [],
+        },
+    },
+    {
+        "name": "get_workouts",
+        "description": "List the student's recent completed workouts with sport, duration, distance, strain and average heart rate. Use for questions about training history, recent activity, or how much they've been working out.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "description": "How many recent workouts to return (1-25, default 10)"}},
+            "required": [],
+        },
+    },
+    {
+        "name": "plan_workout",
+        "description": "Add a workout to the student's workout planner on the Health dashboard. Use when they ask you to plan, schedule, or add a training session — e.g. 'plan a tempo run Thursday morning'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Workout name, e.g. 'Tempo run' or 'Upper body lift'"},
+                "sport": {"type": "string", "description": "running, swimming, cycling, weightlifting, or other"},
+                "planned_date": {"type": "string", "description": "YYYY-MM-DD; defaults to today"},
+                "planned_time": {"type": "string", "description": "Optional 24-hour HH:MM start time"},
+                "duration_min": {"type": "integer", "description": "Planned duration in minutes (5-600, default 45)"},
+                "notes": {"type": "string", "description": "Optional details, e.g. the interval set"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "list_planned_workouts",
+        "description": "List upcoming (and recently completed) planned workouts from the workout planner. Use to see what training is already scheduled, and to find a workout's id before completing it.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "complete_planned_workout",
+        "description": "Mark a planned workout as completed. Use list_planned_workouts first if you don't know the id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer", "description": "The planned workout's id"}},
+            "required": ["id"],
+        },
+    },
+    # ── Personal Improvement lists ────────────────────────────────────────────
+    {
+        "name": "get_growth_lists",
+        "description": (
+            "Read the student's Personal Improvement (Growth) page lists: 'books' (reading list), "
+            "'skills' (skills being developed, one flagged as the active focus), and 'bucket_list'. "
+            "Use whenever they ask what they're reading, what skill they're focused on, or what's on "
+            "their bucket list — and to find an item's id before completing it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"list": {"type": "string", "enum": ["books", "skills", "bucket_list", "all"], "description": "Which list to read (default all)"}},
+            "required": [],
+        },
+    },
+    {
+        "name": "add_growth_item",
+        "description": "Add an item to one of the Personal Improvement lists — a book to the reading list, a skill to the skill tracker, or a bucket-list entry.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "list": {"type": "string", "enum": ["books", "skills", "bucket_list"], "description": "Which list to add to"},
+                "title": {"type": "string", "description": "Book title, skill name, or bucket-list item"},
+                "notes": {"type": "string", "description": "Optional notes"},
+                "extra": {"type": "string", "description": "For books: the author. For bucket_list: a category. Ignored for skills."},
+            },
+            "required": ["list", "title"],
+        },
+    },
+    {
+        "name": "complete_growth_item",
+        "description": "Mark an item on a Personal Improvement list as done — finished a book, completed a skill, ticked off a bucket-list entry. Use get_growth_lists first if you don't know the id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "list": {"type": "string", "enum": ["books", "skills", "bucket_list"], "description": "Which list the item is on"},
+                "id": {"type": "integer", "description": "The item's id"},
+            },
+            "required": ["list", "id"],
+        },
+    },
+    {
+        "name": "set_skill_focus",
+        "description": "Make one skill the student's single active 'Current Skill Focus' (any previous focus is cleared). Use get_growth_lists to find the skill's id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer", "description": "The skill's id"}},
+            "required": ["id"],
+        },
+    },
+    # ── Recurring tasks ───────────────────────────────────────────────────────
+    {
+        "name": "create_recurring_task",
+        "description": (
+            "Create a task that regenerates on a schedule (daily/weekly/biweekly/monthly), and create its "
+            "first instance now. Use this when the student wants a repeating item on their TASK LIST — "
+            "'add a weekly chore to take out the bins'. This is different from create_reminder: a recurring "
+            "task appears as a to-do they check off, whereas a reminder just pushes a notification at a time. "
+            "If they want to be pinged rather than given a task, use create_reminder."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "The recurring task's title"},
+                "notes": {"type": "string", "description": "Optional notes"},
+                "urgency": {"type": "string", "enum": ["low", "medium", "high"], "description": "Urgency (default low)"},
+                "recurrence": {"type": "string", "enum": ["daily", "weekly", "biweekly", "monthly"], "description": "How often it repeats"},
+            },
+            "required": ["title", "recurrence"],
+        },
+    },
+    {
+        "name": "list_recurring_tasks",
+        "description": "List the student's active recurring tasks. Use when asked what repeats, or to find an id before stopping one.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "delete_recurring_task",
+        "description": "Stop a recurring task so it no longer regenerates. Already-created task instances are left alone. Use list_recurring_tasks first if you don't know the id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer", "description": "The recurring task's id"}},
+            "required": ["id"],
+        },
+    },
+    # ── Project tasks & notes ─────────────────────────────────────────────────
+    {
+        "name": "complete_project_task",
+        "description": "Mark an action item inside a project as done. get_projects returns each project task with its task_id — pass that id here.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "integer", "description": "The project task's task_id, from get_projects"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "add_project_note",
+        "description": "Add a note to a project — decisions, blockers, progress updates, or anything the student wants recorded against that project. Use get_projects to find the project_id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "integer", "description": "The project's id, from get_projects"},
+                "content": {"type": "string", "description": "The note text"},
+            },
+            "required": ["project_id", "content"],
+        },
+    },
+    # ── Daily plan & debrief ──────────────────────────────────────────────────
+    {
+        "name": "get_daily_plan",
+        "description": "Read today's generated daily schedule — the time-blocked plan of assignments, tasks and study sessions, each with its time window and completion state. Use when the student asks what their plan for today is, what's next, or how the day is laid out.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "generate_daily_plan",
+        "description": "Build (or rebuild) today's time-blocked daily schedule from the student's assignments, tasks and free calendar windows. Use when they ask you to plan their day, or when get_daily_plan reports no plan exists yet. This replaces any existing plan for today.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_debrief",
+        "description": "Read the most recent evening debrief — the end-of-day summary of what the student accomplished, time spent, and what's still outstanding. Pairs with get_briefing (the morning plan).",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
     # ── Google Calendar write tools ───────────────────────────────────────────
     {
         "name": "create_calendar_event",
@@ -11232,6 +11666,413 @@ WHERE p.status='active' ORDER BY pn.created_at DESC LIMIT 10""")
                 log.info("Jarvis tool: deleted CalDAV event id=%s", event_id)
                 return {"status": "deleted", "event_id": event_id}
 
+        elif name == "create_reminder":
+            title = str(inputs.get("title", "Reminder")).strip()[:100] or "Reminder"
+            message = str(inputs.get("message", "")).strip()[:2000]
+            if not message:
+                return {"error": "message is required"}
+            needs_generation = bool(inputs.get("needs_generation"))
+            recurrence = str(inputs.get("recurrence", "once")).strip().lower()
+            if recurrence not in ("once", "daily", "weekdays", "weekly"):
+                return {"error": "recurrence must be one of once/daily/weekdays/weekly"}
+            time_of_day = str(inputs.get("time_of_day", "")).strip()
+            day_of_week = inputs.get("day_of_week")
+            if day_of_week is not None and str(day_of_week).strip() == "":
+                day_of_week = None
+            try:
+                next_run = _reminder_compute_next_run(
+                    recurrence, time_of_day, day_of_week, remind_at_iso=inputs.get("remind_at"),
+                )
+            except ValueError as e:
+                return {"error": str(e)}
+            if recurrence == "once" and next_run < datetime.now(TZ) - timedelta(minutes=5):
+                return {"error": f"remind_at ({next_run.isoformat()}) is in the past — "
+                                 "confirm the intended date/time with the student"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO reminders (title, message, needs_generation, recurrence, time_of_day, day_of_week, next_run) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (title, message, needs_generation, recurrence, time_of_day,
+                 int(day_of_week) if day_of_week is not None else None, next_run),
+            )
+            new_id = cur.fetchone()["id"]
+            conn.commit(); cur.close(); conn.close()
+            log.info("Jarvis tool create_reminder: id=%s title=%r next_run=%s recurrence=%s",
+                      new_id, title, next_run, recurrence)
+            return {"status": "scheduled", "id": new_id, "title": title,
+                    "next_run": next_run.isoformat(), "recurrence": recurrence}
+
+        elif name == "list_reminders":
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, title, message, needs_generation, recurrence, time_of_day, day_of_week, next_run "
+                "FROM reminders WHERE active = TRUE ORDER BY next_run ASC"
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            for r in rows:
+                if r.get("next_run"):
+                    r["next_run"] = r["next_run"].astimezone(TZ).isoformat()
+            return {"count": len(rows), "reminders": rows}
+
+        elif name == "cancel_reminder":
+            rid = inputs.get("id")
+            if rid is None:
+                return {"error": "id is required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE reminders SET active = FALSE WHERE id = %s AND active = TRUE RETURNING title",
+                (int(rid),),
+            )
+            row = cur.fetchone()
+            conn.commit(); cur.close(); conn.close()
+            if not row:
+                return {"status": "not_found", "id": rid}
+            return {"status": "cancelled", "id": rid, "title": row["title"]}
+
+        # ── Health & fitness ──────────────────────────────────────────────────
+        elif name == "get_health_metrics":
+            days_back = max(1, min(int(inputs.get("days", 7)), 14))
+            summary, summary_mock = fitness_daily_summary(days_back)
+            workouts, workouts_mock = fitness_workouts(limit=25)
+            prs = compute_personal_records(workouts)
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("SELECT record_key, label, value_display, achieved_on FROM personal_records")
+                for pr in cur.fetchall():
+                    prs[pr["record_key"]] = {
+                        "label": pr["label"],
+                        "value_display": pr["value_display"],
+                        "achieved_on": str(pr["achieved_on"]) if pr["achieved_on"] else None,
+                        "manual": True,
+                    }
+                cur.close(); conn.close()
+            except Exception as _e:
+                log.warning("get_health_metrics: PR override lookup failed: %s", _e)
+            for key, label in PR_LABELS.items():
+                prs.setdefault(key, {"label": label, "value_display": "—", "achieved_on": None})
+            hr = fitness_heart_rate()
+            return {
+                "days": summary,
+                "personal_records": prs,
+                "current_heart_rate_bpm": hr.get("current_bpm"),
+                "whoop_connected": _whoop_connected(),
+                "sample_data": bool(summary_mock or workouts_mock),
+            }
+
+        elif name == "get_workouts":
+            limit = max(1, min(int(inputs.get("limit", 10)), 25))
+            workouts, is_mock = fitness_workouts(limit=25)
+            return {"count": len(workouts[:limit]), "workouts": workouts[:limit], "sample_data": is_mock}
+
+        elif name == "plan_workout":
+            title = str(inputs.get("title", "")).strip()[:200]
+            if not title:
+                return {"error": "title is required"}
+            sport = str(inputs.get("sport", "other")).strip().lower()[:40] or "other"
+            raw_date = str(inputs.get("planned_date", "")).strip()
+            try:
+                planned_date = date.fromisoformat(raw_date) if raw_date else datetime.now(TZ).date()
+            except ValueError:
+                return {"error": "planned_date must be YYYY-MM-DD"}
+            planned_time = str(inputs.get("planned_time", "")).strip() or None
+            if planned_time:
+                try:
+                    datetime.strptime(planned_time, "%H:%M")
+                except ValueError:
+                    return {"error": "planned_time must be 24-hour HH:MM"}
+            try:
+                duration_min = max(5, min(int(inputs.get("duration_min", 45)), 600))
+            except (TypeError, ValueError):
+                duration_min = 45
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO planned_workouts (user_id, title, sport, planned_date, planned_time, duration_min, notes) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (_uid(), title, sport, planned_date, planned_time, duration_min,
+                 str(inputs.get("notes", ""))[:1000]),
+            )
+            wid = cur.fetchone()["id"]
+            conn.commit(); cur.close(); conn.close()
+            log.info("Jarvis tool plan_workout: id=%s %r on %s", wid, title, planned_date)
+            return {"status": "planned", "id": wid, "title": title,
+                    "planned_date": str(planned_date), "planned_time": planned_time}
+
+        elif name == "list_planned_workouts":
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, title, sport, planned_date, planned_time, duration_min, notes, completed "
+                "FROM planned_workouts WHERE completed = FALSE OR planned_date >= CURRENT_DATE - 7 "
+                "ORDER BY planned_date ASC, planned_time ASC NULLS LAST"
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            for r in rows:
+                r["planned_date"] = str(r["planned_date"])
+                r["planned_time"] = r["planned_time"].strftime("%H:%M") if r["planned_time"] else None
+            return {"count": len(rows), "planned": rows}
+
+        elif name == "complete_planned_workout":
+            wid = inputs.get("id")
+            if wid is None:
+                return {"error": "id is required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE planned_workouts SET completed = TRUE WHERE id = %s RETURNING title",
+                (int(wid),),
+            )
+            row = cur.fetchone()
+            conn.commit(); cur.close(); conn.close()
+            if not row:
+                return {"status": "not_found", "id": wid}
+            return {"status": "completed", "id": wid, "title": row["title"]}
+
+        # ── Personal Improvement lists (books / skills / bucket list) ─────────
+        elif name in ("get_growth_lists", "add_growth_item", "complete_growth_item"):
+            spec = {
+                "books":       {"table": "books",       "title_col": "title", "extra": "author"},
+                "skills":      {"table": "skills",      "title_col": "name",  "extra": None},
+                "bucket_list": {"table": "bucket_list", "title_col": "title", "extra": "category"},
+            }
+
+            if name == "get_growth_lists":
+                wanted = inputs.get("list") or "all"
+                keys = list(spec) if wanted == "all" else [wanted]
+                if any(k not in spec for k in keys):
+                    return {"error": "list must be one of books/skills/bucket_list/all"}
+                out = {}
+                conn = get_db()
+                cur = conn.cursor()
+                for k in keys:
+                    s = spec[k]
+                    cols = ["id", s["title_col"] + " AS title", "notes", "completed"]
+                    if s["extra"]:
+                        cols.append(s["extra"])
+                    if k == "skills":
+                        cols.append("focus")
+                    cur.execute(
+                        f"SELECT {', '.join(cols)} FROM {s['table']} "
+                        "ORDER BY completed ASC, created_at DESC LIMIT 100"
+                    )
+                    out[k] = [dict(r) for r in cur.fetchall()]
+                cur.close(); conn.close()
+                return out
+
+            list_key = inputs.get("list")
+            if list_key not in spec:
+                return {"error": "list must be one of books/skills/bucket_list"}
+            s = spec[list_key]
+
+            if name == "add_growth_item":
+                title = str(inputs.get("title", "")).strip()[:500]
+                if not title:
+                    return {"error": "title is required"}
+                notes = str(inputs.get("notes", ""))[:2000]
+                extra_val = str(inputs.get("extra", "")).strip()[:200]
+                conn = get_db()
+                cur = conn.cursor()
+                if s["extra"]:
+                    cur.execute(
+                        f"INSERT INTO {s['table']} ({s['title_col']}, notes, {s['extra']}) "
+                        "VALUES (%s, %s, %s) RETURNING id",
+                        (title, notes, extra_val),
+                    )
+                else:
+                    cur.execute(
+                        f"INSERT INTO {s['table']} ({s['title_col']}, notes) VALUES (%s, %s) RETURNING id",
+                        (title, notes),
+                    )
+                new_id = cur.fetchone()["id"]
+                conn.commit(); cur.close(); conn.close()
+                return {"status": "added", "list": list_key, "id": new_id, "title": title}
+
+            # complete_growth_item
+            item_id = inputs.get("id")
+            if item_id is None:
+                return {"error": "id is required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                f"UPDATE {s['table']} SET completed = TRUE, completed_at = NOW() "
+                f"WHERE id = %s RETURNING {s['title_col']} AS title",
+                (int(item_id),),
+            )
+            row = cur.fetchone()
+            conn.commit(); cur.close(); conn.close()
+            if not row:
+                return {"status": "not_found", "list": list_key, "id": item_id}
+            return {"status": "completed", "list": list_key, "id": item_id, "title": row["title"]}
+
+        elif name == "set_skill_focus":
+            skill_id = inputs.get("id")
+            if skill_id is None:
+                return {"error": "id is required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM skills WHERE id = %s", (int(skill_id),))
+            row = cur.fetchone()
+            if not row:
+                cur.close(); conn.close()
+                return {"status": "not_found", "id": skill_id}
+            # Exactly one skill is the active focus.
+            cur.execute("UPDATE skills SET focus = FALSE WHERE focus = TRUE")
+            cur.execute("UPDATE skills SET focus = TRUE WHERE id = %s", (int(skill_id),))
+            conn.commit(); cur.close(); conn.close()
+            return {"status": "focus_set", "id": skill_id, "name": row["name"]}
+
+        # ── Recurring tasks ───────────────────────────────────────────────────
+        elif name == "create_recurring_task":
+            title = str(inputs.get("title", "")).strip()[:200]
+            if not title:
+                return {"error": "title is required"}
+            notes = str(inputs.get("notes", "")).strip()[:2000]
+            urgency = str(inputs.get("urgency", "low")).strip().lower()
+            if urgency not in ("low", "medium", "high"):
+                urgency = "low"
+            recurrence = str(inputs.get("recurrence", "weekly")).strip().lower()
+            if recurrence not in ("daily", "weekly", "biweekly", "monthly"):
+                return {"error": "recurrence must be one of daily/weekly/biweekly/monthly"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO recurring_tasks (title, notes, urgency, recurrence, active) "
+                "VALUES (%s, %s, %s, %s, TRUE) RETURNING id",
+                (title, notes, urgency, recurrence),
+            )
+            rt_id = cur.fetchone()["id"]
+            due_date = _calculate_next_due_date(recurrence)
+            cur.execute(
+                "INSERT INTO tasks (title, notes, urgency, due_date) VALUES (%s, %s, %s, %s)",
+                (title, f"[Recurring: {recurrence}]\n{notes}" if notes else f"[Recurring: {recurrence}]",
+                 urgency, due_date),
+            )
+            cur.execute("UPDATE recurring_tasks SET last_created_at = NOW() WHERE id = %s", (rt_id,))
+            conn.commit(); cur.close(); conn.close()
+            log.info("Jarvis tool create_recurring_task: id=%s %r %s", rt_id, title, recurrence)
+            return {"status": "created", "id": rt_id, "title": title,
+                    "recurrence": recurrence, "first_due": str(due_date)}
+
+        elif name == "list_recurring_tasks":
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, title, notes, urgency, recurrence, last_created_at "
+                "FROM recurring_tasks WHERE active = TRUE ORDER BY created_at DESC"
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            for r in rows:
+                if r.get("last_created_at"):
+                    r["last_created_at"] = r["last_created_at"].astimezone(TZ).isoformat()
+            return {"count": len(rows), "recurring_tasks": rows}
+
+        elif name == "delete_recurring_task":
+            rt_id = inputs.get("id")
+            if rt_id is None:
+                return {"error": "id is required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE recurring_tasks SET active = FALSE WHERE id = %s AND active = TRUE RETURNING title",
+                (int(rt_id),),
+            )
+            row = cur.fetchone()
+            conn.commit(); cur.close(); conn.close()
+            if not row:
+                return {"status": "not_found", "id": rt_id}
+            return {"status": "stopped", "id": rt_id, "title": row["title"]}
+
+        # ── Project tasks & notes ─────────────────────────────────────────────
+        elif name == "complete_project_task":
+            pt_id = inputs.get("task_id")
+            if pt_id is None:
+                return {"error": "task_id is required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE project_tasks SET status = 'done' WHERE id = %s RETURNING title",
+                (int(pt_id),),
+            )
+            row = cur.fetchone()
+            conn.commit(); cur.close(); conn.close()
+            if not row:
+                return {"status": "not_found", "task_id": pt_id}
+            log.info("Jarvis tool complete_project_task: id=%s %r", pt_id, row["title"])
+            return {"status": "completed", "task_id": pt_id, "title": row["title"]}
+
+        elif name == "add_project_note":
+            try:
+                project_id = int(inputs.get("project_id", 0))
+            except (TypeError, ValueError):
+                return {"error": "project_id must be an integer"}
+            content = str(inputs.get("content", "")).strip()[:5000]
+            if not content:
+                return {"error": "content is required"}
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT title FROM projects WHERE id = %s", (project_id,))
+            proj = cur.fetchone()
+            if not proj:
+                cur.close(); conn.close()
+                return {"error": f"project_id {project_id} not found"}
+            cur.execute(
+                "INSERT INTO project_notes (project_id, content) VALUES (%s, %s) RETURNING id",
+                (project_id, content),
+            )
+            note_id = cur.fetchone()["id"]
+            conn.commit(); cur.close(); conn.close()
+            return {"status": "added", "note_id": note_id, "project": proj["title"]}
+
+        # ── Daily plan & debrief ──────────────────────────────────────────────
+        elif name == "get_daily_plan":
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT id, needs_update FROM daily_plans WHERE plan_date = %s",
+                        (datetime.now(TZ).date(),))
+            plan_row = cur.fetchone()
+            if not plan_row:
+                cur.close(); conn.close()
+                return {"plan_exists": False, "items": [],
+                        "hint": "No plan for today yet — call generate_daily_plan to build one."}
+            cur.execute(
+                "SELECT id, item_type, item_title, scheduled_start_time, scheduled_end_time, "
+                "estimated_minutes, completed FROM daily_plan_items WHERE plan_id = %s "
+                "ORDER BY order_index ASC",
+                (plan_row["id"],),
+            )
+            items = [dict(r) for r in cur.fetchall()]
+            cur.close(); conn.close()
+            for it in items:
+                for k in ("scheduled_start_time", "scheduled_end_time"):
+                    v = it.get(k)
+                    it[k] = v if isinstance(v, str) else (v.strftime("%H:%M") if v else None)
+            return {"plan_exists": True, "needs_update": plan_row["needs_update"],
+                    "count": len(items), "items": items}
+
+        elif name == "generate_daily_plan":
+            result = _generate_daily_plan_for_date(datetime.now(TZ).date())
+            return {"status": "generated", "plan_id": result.get("plan_id"),
+                    "items_count": result.get("items_count")}
+
+        elif name == "get_debrief":
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT content, generated_at FROM debrief_cache WHERE id = 1")
+            row = cur.fetchone()
+            cur.close(); conn.close()
+            if not row or not row["content"]:
+                return {"available": False,
+                        "hint": "No evening debrief generated yet — it runs automatically at 6:30 PM."}
+            return {"available": True, "content": row["content"],
+                    "generated_at": row["generated_at"].astimezone(TZ).isoformat() if row["generated_at"] else None}
+
         else:
             return {"error": f"Unknown tool: {name}"}
 
@@ -11433,7 +12274,7 @@ def _build_active_tools() -> list:
             continue
         if name in _CALDAV_TOOL_NAMES and not caldav_on:
             continue
-        if name == "send_notification" and not _notifications_configured():
+        if name in ("send_notification", "create_reminder", "list_reminders", "cancel_reminder") and not _notifications_configured():
             continue
         if name == "get_climate_history" and not NOAA_API_TOKEN:
             continue
@@ -11539,12 +12380,31 @@ def api_chat():
             "Use it proactively when something is genuinely urgent and the student should know *right now* — "
             "an assignment due in under 2 hours, a stock hitting a threshold they cared about, or an insight they'd want acted on immediately. "
             "Keep the message ≤2 sentences, actionable, in Jarvis voice. Don't notify for routine chat responses.\n"
+            "- SCHEDULED REMINDERS: You have create_reminder, list_reminders, and cancel_reminder for things that should fire automatically in the future — "
+            "'remind me to take out the trash at 3pm', 'give me the news every morning', 'text me the weather each day at 7am'. "
+            "Call create_reminder directly the moment the student asks for this — never say you'll 'set up a routine' or ask them to confirm first, just schedule it and tell them what you scheduled. "
+            "Use needs_generation=false for a fixed reminder message sent verbatim; use needs_generation=true when fresh content must be produced at fire time (news, weather, research) — 'message' then becomes the instruction you'll carry out later, with full tool access including web search. "
+            "Use list_reminders when asked what's scheduled, and cancel_reminder to cancel one.\n"
             "- GOOGLE CALENDAR WRITE: You have create_calendar_event, update_calendar_event, delete_calendar_event, and list_google_calendar_events. "
             "Use these when the student asks to add, change, or remove calendar items on their Google Calendar. "
             "Always confirm the event details before deleting. Use list_google_calendar_events to look up event IDs when needed.\n"
             "- APPLE CALENDAR WRITE (CalDAV): You have create_caldav_event, update_caldav_event, delete_caldav_event, and list_caldav_events. "
             "Use these when the student asks to add, change, or remove calendar items on their Apple iCloud Calendar. "
-            "Always confirm the event details before deleting. Use list_caldav_events to look up event IDs when needed."
+            "Always confirm the event details before deleting. Use list_caldav_events to look up event IDs when needed.\n"
+            "- HEALTH & FITNESS: get_health_metrics gives recovery, HRV, resting heart rate, sleep, strain and personal records; "
+            "get_workouts lists recent training. Use them for any recovery/sleep/training question, and factor recovery into how hard you tell the student to push. "
+            "plan_workout, list_planned_workouts and complete_planned_workout manage the workout planner on the Health dashboard. "
+            "If get_health_metrics reports sample_data, WHOOP isn't connected — say the numbers are placeholders rather than treating them as real.\n"
+            "- PERSONAL IMPROVEMENT (Growth page): get_growth_lists reads the reading list, skill tracker and bucket list; "
+            "add_growth_item and complete_growth_item modify them; set_skill_focus sets the single active skill focus. "
+            "Use these when the student mentions a book, a skill they're working on, or a bucket-list item.\n"
+            "- RECURRING TASKS: create_recurring_task, list_recurring_tasks and delete_recurring_task manage tasks that regenerate "
+            "daily/weekly/biweekly/monthly. Use a recurring task when the student wants a repeating item on their to-do list; "
+            "use create_reminder instead when they just want to be pinged at a time.\n"
+            "- PROJECTS: alongside get_projects, create_project and add_project_task, you have complete_project_task "
+            "(mark an action item done — get_projects gives you each task_id) and add_project_note (record decisions, blockers, progress).\n"
+            "- DAILY PLAN & DEBRIEF: get_daily_plan reads today's time-blocked schedule, generate_daily_plan builds or rebuilds it, "
+            "and get_debrief reads the latest evening summary (get_briefing is the morning counterpart)."
         )
 
         system_dynamic = (
@@ -13790,9 +14650,15 @@ def _telegram_run_jarvis(user_text, chat_id):
             "SPEED — prefer answering directly from context. Only call tools when the answer "
             "genuinely requires live data or an action (tasks, grades, calendar, web). "
             "One tool call is usually enough.\n\n"
-            "TOOLS — you have the same tools as the main app: tasks (get/create/complete/delete), "
-            "projects, grades and assignment details, Google Calendar and Apple Calendar events, "
-            "web search/fetch, notifications. Tool results are authoritative — when a tool returns "
+            "TOOLS — you have the same tools as the main app: tasks (get/create/complete/delete) and "
+            "recurring tasks, projects (including completing project action items and adding notes), "
+            "grades and assignment details, Google Calendar and Apple Calendar events, health and fitness "
+            "data (recovery, sleep, strain, resting HR, personal records, recent workouts, workout planner), "
+            "the Growth page lists (reading list, skill focus, bucket list), today's daily plan, the morning "
+            "briefing and evening debrief, web search/fetch, notifications, and scheduled reminders "
+            "(create_reminder for anything the student wants pushed to them later or on a repeating schedule). "
+            "You are texting, so you have NO dashboard in front of you — call the relevant tool rather than "
+            "guessing or saying you can't see something. Tool results are authoritative — when a tool returns "
             "a success status the action HAS BEEN TAKEN; confirm it plainly.\n\n"
             "TEMPORAL FORMATTING — render dates human-readably ('Tuesday at 5 PM'), never raw ISO.\n\n"
             f"AUTHORITATIVE DATE & TIME — Today is {now_chat.strftime('%A, %-m/%-d/%Y')}. "

@@ -87,11 +87,21 @@ This Flask-based web application provides a comprehensive student management sys
 - Jarvis also has a `send_notification` chat tool for proactive, ad-hoc alerts, delivered through the same channels
 - **Telegram two-way chat**: **on by default** once a chat id is connected — the webhook (`/api/webhooks/telegram`, guarded by a per-install secret header derived from `SECRET_KEY`+bot token) auto-registers on the next authenticated page load over https, and immediately after "Detect Chat ID". Settings has an opt-out (`POST /api/telegram/disable-chat` sets `config.telegram_chat_disabled` so auto-enable stays off; `POST /api/telegram/enable-chat` clears it). Texting the bot runs a fast Jarvis turn — no extended thinking, short conversational replies, full tool access — in a background thread; a typing indicator shows immediately and an interim "a moment, sir" message is sent if the turn takes >7s (tool calls, web search). Replies over 4096 chars are chunked. The conversation persists to `chat_messages` under conversation_id `telegram`, so the web chat's memory/summaries see it. Only messages from the configured `telegram_chat_id` are answered; `getUpdates`-based chat-id detection requires two-way chat to be disabled first (webhook conflicts with polling)
 
-### 10. Multi-Dashboard Architecture
+### 10. Scheduled Reminders (AI-created)
+- The student can just say "remind me to take out the trash at 3pm" or "give me the news every morning" in chat (web **or** Telegram) and Jarvis schedules it immediately via the `create_reminder` tool — no confirmation step and no explicit "set a routine" phrasing needed. `list_reminders` / `cancel_reminder` manage them
+- Stored in the `reminders` table; a per-minute APScheduler job (`check_scheduled_reminders`) fires anything due through the same `send_push_notification()` fan-out (ntfy + Telegram)
+- **One-time** (`recurrence='once'` + `remind_at`) or **recurring** (`daily` / `weekdays` / `weekly` + `time_of_day`, plus `day_of_week` for weekly)
+- Two content modes:
+  - `needs_generation=false` — `message` is pushed **verbatim** (a plain reminder)
+  - `needs_generation=true` — `message` is an *instruction* re-run through Claude at fire time with full tool access including live web search, and whatever it produces is pushed. This is what makes "the news every morning" work. Reminder-management and `send_notification` tools are excluded from that turn so it can't schedule more reminders or double-notify
+- Each due reminder is **claimed atomically** (its `next_run` is advanced, or it's deactivated, guarded on the value just read) *before* delivery, so a slow generation can never cause a double-send; delivery then runs on its own thread so one slow reminder doesn't hold up the rest
+- Gated on `_notifications_configured()` — the tools aren't offered when no push channel exists
+
+### 11. Multi-Dashboard Architecture
 The UI is four dense, above-the-fold grid dashboards (each widget scrolls internally; the page itself does not scroll on desktop):
 - **Home** — master aggregated view of *everything*: all calendar items (with category chips), upcoming tasks, health metrics, and project statuses
 - **School** — academics only: active assignments, school tasks, and club/student-org tasks (`tasks.category` = `school` / `club`)
-- **Health & Fitness** — WHOOP metrics (recovery/strain/sleep), recent heart rate, recent workouts, personal records tracker (longest run, fastest mile, longest swim, highest strain), and an interactive workout planner
+- **Health & Fitness** — WHOOP metrics (recovery/strain/sleep/heart rate/resting HR as five stat tiles), recent workouts, personal records tracker (longest run, fastest mile, longest swim, highest strain), and an interactive workout planner
 - **Current Projects** — grid of project cards, each with its granular action items inline (complete/add tasks in place), plus project deadlines/milestones
 - **Personal Improvement** (nav: "Growth") — a widget grid for self-growth tools, built to hold more widgets over time. Current widgets: a **Reading List** book tracker (add books you want to read, check them off as you finish, with a progress bar; `books` table via `/api/books`); a **Current Skill Focus** tracker (list of skills you're developing with exactly one starred as the active focus; `skills` table via `/api/skills`); and a **Daily Verse** card that shows a public-domain (KJV) Bible verse chosen deterministically from the date so a fresh one appears each day (`/api/verse-of-the-day`, no external API).
 
@@ -115,6 +125,7 @@ Key tables include:
 - `daily_plans` - Generated daily schedules
 - `chat_messages` - Persisted chat history (per `conversation_id`)
 - `chat_summaries` - Rolling 2-3 sentence summaries per conversation, used for cross-session recall
+- `reminders` - AI-created scheduled reminders (title, message, needs_generation, recurrence, time_of_day, day_of_week, next_run, last_fired_at, active)
 - `books` - Reading list for the Personal Improvement page (title, author, notes, completed/completed_at)
 - `skills` - Current Skill Focus tracker for the Personal Improvement page (name, notes, focus flag, completed/completed_at); exactly one row is the active `focus`
 
@@ -192,6 +203,25 @@ Key endpoints include:
 - `POST /api/telegram/detect-chat-id` - Look up the chat id from the bot's most recent message (student messages the bot, then calls this)
 - `POST /api/telegram/set-chat-id` - Manually set (or clear) the Telegram chat id
 - `POST /api/telegram/test` - Send a test push notification via Telegram
+
+## Jarvis Tool Surface
+
+All Jarvis tools live in `JARVIS_TOOLS` and are dispatched by `_execute_jarvis_tool()` — a single dispatcher shared by the web chat (`/api/chat`), the Telegram webhook turn, and scheduled reminder generation. `_build_active_tools()` trims the list per request, hiding tools whose integration isn't configured (Google, CalDAV, NOAA, Guardian, push channels).
+
+**This matters for Telegram**: the web chat injects a lot of live state into its system prompt (assignments, tasks, and — in summer mode — bucket list and daily plan), but the Telegram turn builds its own much smaller prompt with none of that. Anything Jarvis should be able to reach *over text* has to exist as a **tool**, not just as injected context. Prefer adding a tool over adding another prompt injection.
+
+Coverage by area:
+- **Tasks**: get/create/complete/delete/update, plus recurring tasks (create/list/delete)
+- **Assignments & grades**: get_assignments, get_assignment_details, get_grades, complete_assignment
+- **Projects**: get_projects, create_project, add_project_task, complete_project_task, add_project_note
+- **Calendars**: Google (create/update/delete/list) and Apple CalDAV (create/update/delete/list)
+- **Health & fitness**: get_health_metrics (recovery/HRV/resting HR/sleep/strain + personal records), get_workouts, plan_workout, list_planned_workouts, complete_planned_workout
+- **Personal Improvement (Growth)**: get_growth_lists, add_growth_item, complete_growth_item, set_skill_focus — one tool set covering the structurally identical `books` / `skills` / `bucket_list` tables, selected by a `list` parameter
+- **Planning & summaries**: get_daily_plan, generate_daily_plan, get_briefing, get_debrief
+- **Notifications**: send_notification (immediate), create_reminder / list_reminders / cancel_reminder (scheduled)
+- **Google Workspace**: Drive, Docs, Sheets, Slides, Forms, Gmail, Classroom
+- **External data**: web_search / web_fetch (Anthropic server tools), get_weather, get_climate_history, get_news, stocks (get_portfolio, log_stock_transaction, save_stock_note), get_activity_suggestion
+- **Memory**: save_memory, remember_person, get_person_profile, list_people
 
 ## Security Features
 
