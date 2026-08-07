@@ -3291,7 +3291,11 @@ align-items: stretch;
 .dashx-main .widget { min-height: 0; overflow: hidden; }
 .dashx-stack { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 .dashx-stack .widget { flex: 1; min-height: 0; }
-.dashx-list { flex: 1; min-height: 0; overflow-y: auto; }
+/* overflow-y:auto makes the horizontal axis clip too (per spec), and rows sit
+   only 2px from that edge — enough to shave the left side off .upnext-dot's
+   8px glow. Push the clip boundary out and pull it back with a matching
+   negative margin, so the halo has room while row content stays put. */
+.dashx-list { flex: 1; min-height: 0; overflow-y: auto; padding-left: 8px; margin-left: -8px; }
 
 /* Category chips for the routing engine */
 .cat-chip {
