@@ -10,6 +10,7 @@ import json
 import ipaddress
 import hashlib
 import secrets
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
@@ -14768,6 +14769,98 @@ def _telegram_history_messages(limit=10):
     return messages
 
 
+# Telegram's Bot API refuses to serve files above 20MB; Anthropic caps a single
+# image at ~5MB of source data. Stay under both with room to spare.
+_TELEGRAM_MAX_DOWNLOAD_BYTES = 18 * 1024 * 1024
+_TELEGRAM_MAX_IMAGE_BYTES = 4 * 1024 * 1024
+_TELEGRAM_MAX_ATTACHMENTS = 5
+_TELEGRAM_IMAGE_MIMES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+_TELEGRAM_TEXT_MIMES = {
+    "text/plain", "text/markdown", "text/csv", "text/html",
+    "text/calendar", "text/xml", "application/json", "application/xml",
+}
+_TELEGRAM_TEXT_EXTS = (".txt", ".md", ".csv", ".json", ".xml", ".log", ".ics", ".html")
+
+
+def _telegram_download_file(file_id):
+    """Resolve a Telegram file_id to bytes via getFile + the file CDN. None on failure."""
+    if not TELEGRAM_BOT_TOKEN or not file_id:
+        return None
+    info = _telegram_api("getFile", {"file_id": file_id}, timeout=15)
+    file_path = ((info or {}).get("result") or {}).get("file_path")
+    if not file_path:
+        return None
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}",
+            timeout=45, stream=True,
+        )
+        if not resp.ok:
+            log.warning("Telegram file download failed: %s", resp.status_code)
+            return None
+        chunks, total = [], 0
+        for chunk in resp.iter_content(65536):
+            total += len(chunk)
+            if total > _TELEGRAM_MAX_DOWNLOAD_BYTES:
+                log.warning("Telegram attachment exceeded the %d byte cap", _TELEGRAM_MAX_DOWNLOAD_BYTES)
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except Exception as e:
+        log.warning("Telegram file download error: %s", e)
+        return None
+
+
+def _telegram_attachment_blocks(attachments):
+    """Download the update's attachments and turn them into Anthropic content blocks.
+
+    Returns (blocks, labels, problems): the content blocks to prepend to the user
+    turn, short human labels for the persisted transcript, and human-readable
+    reasons for anything that could not be read.
+    """
+    blocks, labels, problems = [], [], []
+    for att in (attachments or [])[:_TELEGRAM_MAX_ATTACHMENTS]:
+        name = (att.get("filename") or "").strip() or ("photo.jpg" if att.get("kind") == "photo" else "file")
+        raw = _telegram_download_file(att.get("file_id"))
+        if not raw:
+            problems.append("couldn't download %s" % name)
+            continue
+
+        mime = (att.get("mime") or "").split(";")[0].strip().lower()
+        lower = name.lower()
+        if not mime:
+            if lower.endswith(".pdf"):
+                mime = "application/pdf"
+            elif lower.endswith(_TELEGRAM_TEXT_EXTS):
+                mime = "text/plain"
+            elif att.get("kind") == "photo":
+                mime = "image/jpeg"
+
+        if mime in _TELEGRAM_IMAGE_MIMES:
+            if len(raw) > _TELEGRAM_MAX_IMAGE_BYTES:
+                problems.append("%s is too large for me to read (%.1f MB)" % (name, len(raw) / 1048576.0))
+                continue
+            blocks.append({"type": "image", "source": {
+                "type": "base64", "media_type": mime,
+                "data": base64.standard_b64encode(raw).decode("ascii"),
+            }})
+            labels.append("an image" if att.get("kind") == "photo" else "an image (%s)" % name)
+        elif mime == "application/pdf":
+            blocks.append({"type": "document", "source": {
+                "type": "base64", "media_type": "application/pdf",
+                "data": base64.standard_b64encode(raw).decode("ascii"),
+            }, "title": name[:200]})
+            labels.append("a PDF (%s)" % name)
+        elif mime in _TELEGRAM_TEXT_MIMES or lower.endswith(_TELEGRAM_TEXT_EXTS):
+            text = raw.decode("utf-8", errors="replace")[:20000]
+            blocks.append({"type": "text", "text": "--- Attached file: %s ---\n%s" % (name, text)})
+            labels.append("a file (%s)" % name)
+        else:
+            problems.append("%s is a %s file, which I can't open" % (name, mime or "unrecognised"))
+
+    return blocks, labels, problems
+
+
 _TELEGRAM_INTERIM_LINES = (
     "A moment, sir — this one requires a bit of digging.",
     "Give me just a moment, sir, I'm chasing this one down.",
@@ -14777,8 +14870,13 @@ _TELEGRAM_INTERIM_LINES = (
 )
 
 
-def _telegram_run_jarvis(user_text, chat_id):
-    """Run one fast Jarvis turn for a Telegram message and reply in-chat."""
+def _telegram_run_jarvis(user_text, chat_id, attachments=None):
+    """Run one fast Jarvis turn for a Telegram message and reply in-chat.
+
+    `attachments` are descriptors built by the webhook from photos/documents the
+    student sent; they are downloaded here and passed to the model as vision /
+    document content blocks.
+    """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         _telegram_send_chunked(chat_id, "I'm afraid my language faculties are offline — no API key configured, sir.")
@@ -14820,6 +14918,29 @@ def _telegram_run_jarvis(user_text, chat_id):
             f"Current local time (Utah/Mountain): {now_chat.strftime('%-I:%M %p %Z')}."
         )
 
+        if attachments:
+            system_text += (
+                "\n\nATTACHMENTS — the student has sent you one or more images, screenshots or documents "
+                "in this message. Read them properly and act on what they actually contain; the caption "
+                "(if any) tells you what they want done with it, but if there's no caption, infer it from "
+                "the content rather than asking what it is.\n"
+                "- INVITATIONS, FLYERS, SCHEDULES, TICKETS, SCREENSHOTS OF EVENTS: pull out the title, date, "
+                "start/end time, and location, and put it straight on the calendar with the appropriate tool. "
+                "Don't ask permission first — create it, then confirm in one line with the details you used so "
+                "any mistake is visible. Only ask when something essential is genuinely missing or ambiguous "
+                "(no date at all, or two conflicting times). If the year isn't stated, assume the next "
+                "occurrence of that date from today.\n"
+                "- DEADLINES, ASSIGNMENT SHEETS, SYLLABI, TO-DO LISTS: create the tasks or project with the real "
+                "due dates from the document.\n"
+                "- REFERENCE MATERIAL the student wants kept (a PDF of notes, a policy, a training plan, contact "
+                "details, anything they say to 'save' or 'remember'): call save_memory with the substantive facts "
+                "written out in full — enough that it's genuinely useful later without the original file, since "
+                "the file itself is not retained after this message. Several save_memory calls are fine for a "
+                "dense document. Then say in one line what you kept.\n"
+                "- If they just asked a question about the attachment, answer it and don't create anything.\n"
+                "Always say briefly what you actually saw, so the student knows it came through correctly."
+            )
+
         _google_connected = bool(_google_configured() and get_config().get("google_refresh_token", "").strip())
         _caldav_connected = _caldav_configured()
         system_text += (
@@ -14842,15 +14963,7 @@ def _telegram_run_jarvis(user_text, chat_id):
         except Exception:
             pass
 
-        messages = _telegram_history_messages(limit=10)
-        if messages and messages[-1]["role"] == "user":
-            # Prior turn died before the assistant reply persisted — roles must alternate.
-            messages[-1]["content"] += "\n" + user_text
-        else:
-            messages.append({"role": "user", "content": user_text})
-        _chat_persist_message(_TELEGRAM_CHAT_CONVERSATION_ID, "user", user_text)
-
-        # If the turn runs long (tool calls, web search), tell the student once.
+        # If the turn runs long (downloads, tool calls, web search), tell the student once.
         def _send_interim():
             _telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=5)
             send_telegram_notification("", secrets.choice(_TELEGRAM_INTERIM_LINES), chat_id=chat_id)
@@ -14858,7 +14971,55 @@ def _telegram_run_jarvis(user_text, chat_id):
         interim_timer.daemon = True
         interim_timer.start()
 
-        client = anthropic.Anthropic(api_key=api_key, max_retries=2, timeout=45.0)
+        att_blocks, att_labels, att_problems = [], [], []
+        if attachments:
+            att_blocks, att_labels, att_problems = _telegram_attachment_blocks(attachments)
+            _telegram_api("sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=5)
+
+        if att_problems and not att_blocks and not user_text:
+            # Nothing readable arrived and there's no question to fall back on.
+            interim_timer.cancel()
+            _telegram_send_chunked(
+                chat_id,
+                "I'm afraid %s, sir. Images, PDFs and plain text files I can read." % att_problems[0],
+            )
+            return
+
+        # chat_messages stores text only, so the transcript records what arrived
+        # rather than the bytes themselves.
+        persisted_text = ("[sent %s] %s" % (", ".join(att_labels), user_text or "")).strip() \
+            if att_labels else user_text
+        persisted_text = (persisted_text or "").strip() or "[sent an attachment]"
+
+        turn_text = user_text
+        if att_problems:
+            turn_text = (turn_text + "\n" if turn_text else "") + \
+                "(System note: %s. Tell the student plainly.)" % "; ".join(att_problems)
+        if att_blocks:
+            # Cache through the attachment so the tool-use loop doesn't re-upload
+            # a large PDF on every iteration.
+            user_content = att_blocks + [{
+                "type": "text",
+                "text": turn_text or "(The student sent this with no caption.)",
+                "cache_control": {"type": "ephemeral"},
+            }]
+        else:
+            user_content = turn_text
+
+        messages = _telegram_history_messages(limit=10)
+        if messages and messages[-1]["role"] == "user":
+            # Prior turn died before the assistant reply persisted — roles must alternate.
+            prior = messages.pop()["content"]
+            if isinstance(user_content, str):
+                user_content = prior + "\n" + user_content
+            else:
+                user_content = [{"type": "text", "text": prior}] + user_content
+        messages.append({"role": "user", "content": user_content})
+        _chat_persist_message(_TELEGRAM_CHAT_CONVERSATION_ID, "user", persisted_text)
+
+        # Reading a PDF or a dense screenshot takes noticeably longer than a text turn.
+        client = anthropic.Anthropic(api_key=api_key, max_retries=2,
+                                     timeout=90.0 if att_blocks else 45.0)
         tools = _build_active_tools()
         final_text = ""
 
@@ -14921,7 +15082,12 @@ def _telegram_run_jarvis(user_text, chat_id):
         log.error("Telegram chat turn failed", exc_info=True)
         if interim_timer:
             interim_timer.cancel()
-        _telegram_send_chunked(chat_id, "Something went wrong on my end, sir. Give it another try in a moment.")
+        _telegram_send_chunked(chat_id, (
+            "I couldn't get through that attachment, sir — if it's a very long PDF, "
+            "send the relevant pages or a screenshot instead."
+            if attachments else
+            "Something went wrong on my end, sir. Give it another try in a moment."
+        ))
 
 
 @app.route("/api/webhooks/telegram", methods=["POST"])
@@ -14947,15 +15113,34 @@ def telegram_webhook():
         set_config({"telegram_last_update_id": str(update_id)})
 
     message = update.get("message") or {}
-    text = (message.get("text") or "").strip()
+    # A message carrying a photo/document puts its text in `caption`, not `text`.
+    text = (message.get("text") or message.get("caption") or "").strip()
     from_chat = str(((message.get("chat") or {}).get("id")) or "")
 
+    # Photos arrive as a list of sizes, smallest first — take the largest.
+    attachments = []
+    photo_sizes = message.get("photo") or []
+    if photo_sizes:
+        largest = photo_sizes[-1]
+        attachments.append({
+            "kind": "photo", "file_id": largest.get("file_id"),
+            "mime": "image/jpeg", "filename": "photo.jpg",
+        })
+    document = message.get("document") or {}
+    if document.get("file_id"):
+        attachments.append({
+            "kind": "document", "file_id": document.get("file_id"),
+            "mime": document.get("mime_type") or "",
+            "filename": document.get("file_name") or "document",
+        })
+
     # Only ever talk to the connected student's chat.
-    if not text or not from_chat or from_chat != _telegram_chat_id():
+    if (not text and not attachments) or not from_chat or from_chat != _telegram_chat_id():
         return jsonify({"ok": True})
 
     threading.Thread(
-        target=_telegram_run_jarvis, args=(text[:4000], from_chat), daemon=True
+        target=_telegram_run_jarvis, args=(text[:4000], from_chat),
+        kwargs={"attachments": attachments}, daemon=True,
     ).start()
     return jsonify({"ok": True})
 

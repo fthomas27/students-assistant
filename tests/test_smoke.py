@@ -1041,3 +1041,281 @@ def test_caldav_finds_event_on_other_shared_calendar(client):
     assert "error" not in res, res
     assert _saved_lines(shared, "LOCATION") == ["LOCATION:Andrews House"]
     assert not configured.saved
+
+
+# --- Telegram attachments (photos / PDFs sent to the bot) --------------------
+
+
+def test_telegram_attachment_blocks_builds_image_and_pdf(client):
+    """A photo and a PDF must become vision / document content blocks."""
+    _, flask_app = client
+
+    downloads = {"img": b"\xff\xd8\xffnotreallyajpeg", "pdf": b"%PDF-1.4 fake"}
+    with mock.patch.object(flask_app, "_telegram_download_file",
+                           side_effect=lambda fid: downloads[fid]):
+        blocks, labels, problems = flask_app._telegram_attachment_blocks([
+            {"kind": "photo", "file_id": "img", "mime": "image/jpeg", "filename": "photo.jpg"},
+            {"kind": "document", "file_id": "pdf", "mime": "application/pdf",
+             "filename": "invite.pdf"},
+        ])
+
+    assert problems == []
+    assert [b["type"] for b in blocks] == ["image", "document"]
+    assert blocks[0]["source"]["media_type"] == "image/jpeg"
+    assert blocks[1]["source"]["media_type"] == "application/pdf"
+    # Payloads must be base64, not raw bytes.
+    import base64
+    assert base64.standard_b64decode(blocks[1]["source"]["data"]) == downloads["pdf"]
+    assert labels == ["an image", "a PDF (invite.pdf)"]
+
+
+def test_telegram_attachment_blocks_infers_pdf_from_filename(client):
+    """Telegram sometimes omits mime_type — fall back to the extension."""
+    _, flask_app = client
+    with mock.patch.object(flask_app, "_telegram_download_file", return_value=b"%PDF-1.4"):
+        blocks, _labels, problems = flask_app._telegram_attachment_blocks([
+            {"kind": "document", "file_id": "f", "mime": "", "filename": "Syllabus.PDF"},
+        ])
+    assert problems == []
+    assert blocks[0]["source"]["media_type"] == "application/pdf"
+
+
+def test_telegram_attachment_blocks_inlines_text_file(client):
+    _, flask_app = client
+    with mock.patch.object(flask_app, "_telegram_download_file", return_value=b"practice at 5pm"):
+        blocks, _labels, problems = flask_app._telegram_attachment_blocks([
+            {"kind": "document", "file_id": "f", "mime": "text/plain", "filename": "notes.txt"},
+        ])
+    assert problems == []
+    assert blocks[0]["type"] == "text"
+    assert "practice at 5pm" in blocks[0]["text"]
+
+
+def test_telegram_attachment_blocks_rejects_unsupported_type(client):
+    """An unreadable file yields a problem note, never a malformed block."""
+    _, flask_app = client
+    with mock.patch.object(flask_app, "_telegram_download_file", return_value=b"PK\x03\x04"):
+        blocks, _labels, problems = flask_app._telegram_attachment_blocks([
+            {"kind": "document", "file_id": "f",
+             "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+             "filename": "essay.docx"},
+        ])
+    assert blocks == []
+    assert problems and "essay.docx" in problems[0]
+
+
+def test_telegram_attachment_blocks_rejects_oversized_image(client):
+    _, flask_app = client
+    huge = b"x" * (flask_app._TELEGRAM_MAX_IMAGE_BYTES + 1)
+    with mock.patch.object(flask_app, "_telegram_download_file", return_value=huge):
+        blocks, _labels, problems = flask_app._telegram_attachment_blocks([
+            {"kind": "photo", "file_id": "f", "mime": "image/png", "filename": "big.png"},
+        ])
+    assert blocks == []
+    assert problems and "too large" in problems[0]
+
+
+def _telegram_webhook_post(c, flask_app, message):
+    """POST an update to the webhook with the per-install secret header."""
+    secret = "s" * 32
+    flask_app.get_config = lambda: {
+        "telegram_webhook_secret": secret,
+        "telegram_chat_id": "12345",
+        "telegram_last_update_id": "0",
+    }
+    flask_app.set_config = lambda *_a, **_k: None
+    return c.post(
+        "/api/webhooks/telegram",
+        json={"update_id": 999, "message": message},
+        headers={"X-Telegram-Bot-Api-Secret-Token": secret},
+    )
+
+
+def test_telegram_webhook_forwards_photo_with_caption(client):
+    """A photo message carries its text in `caption`, and the largest size wins."""
+    c, flask_app = client
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            captured["args"] = args
+            captured["kwargs"] = kwargs or {}
+
+        def start(self):
+            pass
+
+    with mock.patch.object(flask_app.threading, "Thread", FakeThread):
+        resp = _telegram_webhook_post(c, flask_app, {
+            "chat": {"id": 12345},
+            "caption": "put this on my calendar",
+            "photo": [
+                {"file_id": "small", "width": 90},
+                {"file_id": "large", "width": 1280},
+            ],
+        })
+
+    assert resp.status_code == 200
+    assert captured["args"][0] == "put this on my calendar"
+    atts = captured["kwargs"]["attachments"]
+    assert len(atts) == 1
+    assert atts[0]["file_id"] == "large"
+    assert atts[0]["kind"] == "photo"
+
+
+def test_telegram_webhook_accepts_document_without_caption(client):
+    """A bare PDF with no caption must still be processed, not dropped."""
+    c, flask_app = client
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            captured["args"] = args
+            captured["kwargs"] = kwargs or {}
+
+        def start(self):
+            pass
+
+    with mock.patch.object(flask_app.threading, "Thread", FakeThread):
+        resp = _telegram_webhook_post(c, flask_app, {
+            "chat": {"id": 12345},
+            "document": {"file_id": "doc1", "mime_type": "application/pdf",
+                         "file_name": "invite.pdf"},
+        })
+
+    assert resp.status_code == 200
+    assert captured["args"][0] == ""
+    atts = captured["kwargs"]["attachments"]
+    assert atts[0]["filename"] == "invite.pdf"
+    assert atts[0]["mime"] == "application/pdf"
+
+
+def test_telegram_webhook_ignores_other_chats(client):
+    """Attachments must not bypass the connected-chat check."""
+    c, flask_app = client
+    started = []
+
+    class FakeThread:
+        def __init__(self, **_kw):
+            started.append(1)
+
+        def start(self):
+            pass
+
+    with mock.patch.object(flask_app.threading, "Thread", FakeThread):
+        resp = _telegram_webhook_post(c, flask_app, {
+            "chat": {"id": 99999},
+            "document": {"file_id": "doc1", "mime_type": "application/pdf",
+                         "file_name": "x.pdf"},
+        })
+
+    assert resp.status_code == 200
+    assert not started
+
+
+class _FakeTextBlock:
+    type = "text"
+
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeResponse:
+    stop_reason = "end_turn"
+
+    def __init__(self, text):
+        self.content = [_FakeTextBlock(text)]
+
+
+def _run_telegram_turn(flask_app, user_text, attachments, history):
+    """Drive one _telegram_run_jarvis turn with the network fully stubbed.
+    Returns (messages_sent_to_api, persisted_rows, replies)."""
+    sent, persisted, replies = {}, [], []
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            sent.update(kwargs)
+            return _FakeResponse("Noted, sir.")
+
+    class FakeClient:
+        def __init__(self, **_kw):
+            self.beta = types.SimpleNamespace(messages=FakeMessages())
+
+    with mock.patch.object(flask_app.anthropic, "Anthropic", FakeClient), \
+         mock.patch.object(flask_app, "_telegram_api", return_value=None), \
+         mock.patch.object(flask_app, "_telegram_history_messages", return_value=history), \
+         mock.patch.object(flask_app, "_chat_recent_summaries", return_value=[]), \
+         mock.patch.object(flask_app, "_build_active_tools", return_value=[]), \
+         mock.patch.object(flask_app, "_google_configured", return_value=False), \
+         mock.patch.object(flask_app, "_caldav_configured", return_value=False), \
+         mock.patch.object(flask_app, "get_config", return_value={}), \
+         mock.patch.object(flask_app, "_telegram_download_file", return_value=b"%PDF-1.4 x"), \
+         mock.patch.object(flask_app, "_chat_persist_message",
+                           side_effect=lambda _c, role, content: persisted.append((role, content))), \
+         mock.patch.object(flask_app, "_telegram_send_chunked",
+                           side_effect=lambda _c, t: replies.append(t)), \
+         mock.patch.dict(flask_app.os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        flask_app._telegram_run_jarvis(user_text, "12345", attachments=attachments)
+
+    return sent.get("messages"), persisted, replies
+
+
+def test_telegram_turn_sends_attachment_blocks_to_model(client):
+    """The PDF must reach the model as a document block alongside the caption."""
+    _, flask_app = client
+    messages, persisted, replies = _run_telegram_turn(
+        flask_app, "schedule this",
+        [{"kind": "document", "file_id": "f", "mime": "application/pdf",
+          "filename": "invite.pdf"}],
+        history=[],
+    )
+
+    assert len(messages) == 1
+    content = messages[0]["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "document"
+    assert content[-1]["text"] == "schedule this"
+    # The transcript records what arrived, since chat_messages holds text only.
+    assert persisted[0] == ("user", "[sent a PDF (invite.pdf)] schedule this")
+    assert replies == ["Noted, sir."]
+
+
+def test_telegram_turn_merges_dangling_user_turn_with_blocks(client):
+    """If a prior turn died before its reply persisted, roles must still
+    alternate — the dangling text becomes a block, not a string concat."""
+    _, flask_app = client
+    messages, _persisted, _replies = _run_telegram_turn(
+        flask_app, "and this one too",
+        [{"kind": "photo", "file_id": "f", "mime": "image/jpeg", "filename": "photo.jpg"}],
+        history=[{"role": "user", "content": "earlier question"}],
+    )
+
+    assert [m["role"] for m in messages] == ["user"]
+    content = messages[0]["content"]
+    assert content[0] == {"type": "text", "text": "earlier question"}
+    assert content[1]["type"] == "image"
+    assert content[-1]["text"] == "and this one too"
+
+
+def test_telegram_turn_without_attachments_still_sends_plain_string(client):
+    """The no-attachment path must be unchanged."""
+    _, flask_app = client
+    messages, persisted, _replies = _run_telegram_turn(
+        flask_app, "what's due tomorrow?", None, history=[],
+    )
+    assert messages == [{"role": "user", "content": "what's due tomorrow?"}]
+    assert persisted[0] == ("user", "what's due tomorrow?")
+
+
+def test_telegram_turn_uncaptioned_attachment_gets_placeholder_text(client):
+    """A bare PDF still needs a trailing text block — a content list of only
+    documents gives the model nothing to respond to."""
+    _, flask_app = client
+    messages, persisted, _replies = _run_telegram_turn(
+        flask_app, "",
+        [{"kind": "document", "file_id": "f", "mime": "application/pdf",
+          "filename": "notes.pdf"}],
+        history=[],
+    )
+    content = messages[0]["content"]
+    assert content[-1]["type"] == "text" and content[-1]["text"].strip()
+    assert persisted[0] == ("user", "[sent a PDF (notes.pdf)]")
