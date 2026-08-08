@@ -858,3 +858,186 @@ def test_caldav_tools_present_without_google(client):
          mock.patch.object(flask_app, "_google_configured", return_value=False):
         names = {t.get("name") for t in flask_app._build_active_tools()}
     assert not (caldav_names & names)
+
+
+# ── CalDAV event write path ───────────────────────────────────────────────────
+# iCloud's event_by_uid() prop-filter REPORT is unreliable (notably on shared
+# family calendars): it reports "not found" for events a plain listing returns
+# fine. These build real caldav.Event objects over a fake calendar that
+# reproduces that behaviour.
+
+UFC_ICS = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:ufc-fight-1234
+SUMMARY:UFC Fight
+DTSTART;TZID=America/Denver:20260810T140000
+DTEND;TZID=America/Denver:20260810T150000
+LOCATION:Old Place
+DTSTAMP:20260808T000000Z
+END:VEVENT
+END:VCALENDAR
+"""
+
+ALLDAY_ICS = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test//EN
+BEGIN:VEVENT
+UID:allday-999
+SUMMARY:Family Trip
+DTSTART;VALUE=DATE:20260812
+DTEND;VALUE=DATE:20260813
+DTSTAMP:20260808T000000Z
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+class FakeCalDAVCalendar:
+    """Stands in for a caldav Calendar. uid_filter_works=False reproduces
+    iCloud: the server-side UID filter finds nothing."""
+
+    client = None
+
+    def __init__(self, name, icals, uid_filter_works=False):
+        caldav = pytest.importorskip("caldav")
+        self.name = name
+        self.url = "https://caldav.icloud.com/%s/" % name
+        self.uid_filter_works = uid_filter_works
+        self.saved = []
+        self.deleted = []
+        self._events = []
+        for i, ical in enumerate(icals):
+            ev = caldav.Event(client=None, data=ical, parent=self,
+                              url="%sev%d.ics" % (self.url, i))
+            ev.save = (lambda _s=ev, _p=self, **kw: _p.saved.append(_s.data))
+            ev.delete = (lambda _s=ev, _p=self: _p.deleted.append(str(_s.url)))
+            self._events.append(ev)
+
+    def event_by_uid(self, uid):
+        from caldav.lib import error as caldav_error
+        if self.uid_filter_works:
+            for ev in self._events:
+                if ev.icalendar_component.get("UID") == uid:
+                    return ev
+        raise caldav_error.NotFoundError("%s not found on server" % uid)
+
+    def events(self):
+        return list(self._events)
+
+    def get_supported_components(self):
+        return ["VEVENT"]
+
+
+def _saved_lines(cal, prefix):
+    return [l for data in cal.saved for l in data.splitlines()
+            if l.startswith(prefix)]
+
+
+def test_caldav_update_survives_broken_uid_filter(client):
+    """Regression: update_caldav_event returned 'Event not found' for events
+    that were plainly visible, because it trusted event_by_uid() alone."""
+    _, flask_app = client
+    pytest.importorskip("caldav")
+    cal = FakeCalDAVCalendar("Family", [UFC_ICS])
+    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal):
+        res = flask_app._caldav_update_event(
+            "ufc-fight-1234", start_dt="2026-08-10T16:30:00",
+            location="Andrews House")
+    assert "error" not in res, res
+    assert res["location"] == "Andrews House"
+    assert len(cal.saved) == 1
+
+
+def test_caldav_update_preserves_duration_when_only_start_moves(client):
+    """Regression: moving a 2-3pm event to 4:30 left DTEND at 3pm, so the
+    event ended 90 minutes before it started."""
+    _, flask_app = client
+    pytest.importorskip("caldav")
+    cal = FakeCalDAVCalendar("Family", [UFC_ICS])
+    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal):
+        res = flask_app._caldav_update_event(
+            "ufc-fight-1234", start_dt="2026-08-10T16:30:00")
+    assert "error" not in res, res
+    assert _saved_lines(cal, "DTSTART;TZID") == [
+        "DTSTART;TZID=America/Denver:20260810T163000"]
+    assert _saved_lines(cal, "DTEND;TZID") == [
+        "DTEND;TZID=America/Denver:20260810T173000"]
+
+
+def test_caldav_update_keeps_olson_tzid(client):
+    """Regression: assigning a ZoneInfo made vobject emit TZID=MST — the
+    standard-time abbreviation, wrong during MDT, which can shift the event an
+    hour. The timezone already on the event must be reused."""
+    _, flask_app = client
+    pytest.importorskip("caldav")
+    cal = FakeCalDAVCalendar("Family", [UFC_ICS])
+    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal):
+        flask_app._caldav_update_event(
+            "ufc-fight-1234", start_dt="2026-08-10T16:30:00")
+    assert not _saved_lines(cal, "DTSTART;TZID=MST")
+    # Asserted positively too, so the test can't pass by saving nothing at all.
+    # (Plain "DTSTART" would also match the generated VTIMEZONE's own lines.)
+    assert _saved_lines(cal, "DTSTART;TZID") == [
+        "DTSTART;TZID=America/Denver:20260810T163000"]
+
+
+def test_caldav_update_allday_event_drops_value_date(client):
+    """Regression: writing a datetime onto an all-day event left VALUE=DATE
+    in place, producing DTSTART;VALUE=DATE:20260812T163000 — malformed."""
+    _, flask_app = client
+    pytest.importorskip("caldav")
+    cal = FakeCalDAVCalendar("Family", [ALLDAY_ICS])
+    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal):
+        res = flask_app._caldav_update_event(
+            "allday-999", start_dt="2026-08-12T16:30:00")
+    assert "error" not in res, res
+    assert _saved_lines(cal, "DTSTART") == ["DTSTART:20260812T223000Z"]
+    assert _saved_lines(cal, "DTEND") == ["DTEND:20260812T233000Z"]
+
+
+def test_caldav_delete_survives_broken_uid_filter(client):
+    _, flask_app = client
+    pytest.importorskip("caldav")
+    cal = FakeCalDAVCalendar("Family", [UFC_ICS])
+    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal):
+        res = flask_app._caldav_delete_event("ufc-fight-1234")
+    assert res == {"status": "deleted", "id": "ufc-fight-1234"}
+    assert len(cal.deleted) == 1
+
+
+def test_caldav_missing_uid_still_reports_not_found(client):
+    """The fallback must not turn a genuinely absent event into a false hit."""
+    _, flask_app = client
+    pytest.importorskip("caldav")
+    cal = FakeCalDAVCalendar("Family", [UFC_ICS])
+    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal), \
+         mock.patch.object(flask_app, "_get_caldav_connection", return_value=None):
+        res = flask_app._caldav_delete_event("no-such-uid")
+    assert "not found" in res["error"]
+    assert not cal.deleted
+
+
+def test_caldav_finds_event_on_other_shared_calendar(client):
+    """With family sharing the event often lives on a calendar other than the
+    one new events are written to; lookup must span the account."""
+    _, flask_app = client
+    pytest.importorskip("caldav")
+    configured = FakeCalDAVCalendar("Home", [])
+    shared = FakeCalDAVCalendar("Shared Family", [UFC_ICS])
+
+    class FakeClient:
+        def principal(self):
+            return self
+
+        def calendars(self):
+            return [configured, shared]
+
+    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=configured), \
+         mock.patch.object(flask_app, "_get_caldav_connection", return_value=FakeClient()):
+        res = flask_app._caldav_update_event(
+            "ufc-fight-1234", location="Andrews House")
+    assert "error" not in res, res
+    assert _saved_lines(shared, "LOCATION") == ["LOCATION:Andrews House"]
+    assert not configured.saved
