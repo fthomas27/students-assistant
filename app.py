@@ -1510,6 +1510,112 @@ def _caldav_set_value(vevent, attr, value):
     line.value = value
 
 
+def _caldav_find_event_by_uid(calendar, uid):
+    """Look up a CalDAV event by iCal UID, tolerating servers that don't
+    support it well.
+
+    calendar.event_by_uid() does a REPORT with a server-side UID prop-filter.
+    iCloud doesn't reliably honor that filter — especially on calendars
+    shared via family sharing — and can report "not found" for an event
+    that shows up fine in a plain listing. Fall back to pulling every event
+    and matching the UID client-side, the same way list_caldav_events reads
+    the calendar."""
+    try:
+        return calendar.event_by_uid(uid)
+    except Exception:
+        pass
+
+    try:
+        for event in calendar.events():
+            try:
+                vevent = event.vobject_instance.vevent
+            except Exception:
+                continue
+            if _vevent_value(vevent, 'uid') == uid:
+                return event
+    except Exception as e:
+        log.warning("CalDAV UID fallback scan failed: %s", e)
+
+    return None
+
+
+def _caldav_locate_event(uid, calendar):
+    """Find an event by UID across the account, or None.
+
+    Checks `calendar` (the one configured in Settings) first, then every other
+    event-capable calendar — with family sharing the event the student means
+    often lives on someone else's shared calendar rather than the one we
+    write new events to."""
+    event = _caldav_find_event_by_uid(calendar, uid)
+    if event is not None:
+        return event
+
+    client = _get_caldav_connection()
+    if not client:
+        return None
+    try:
+        others = _caldav_event_calendars(client)
+    except Exception as e:
+        log.warning("CalDAV: could not enumerate calendars for UID lookup: %s", e)
+        return None
+
+    configured_url = str(getattr(calendar, "url", ""))
+    for cal in others:
+        if str(getattr(cal, "url", "")) == configured_url:
+            continue
+        event = _caldav_find_event_by_uid(cal, uid)
+        if event is not None:
+            log.info("CalDAV: found event %s on calendar %r", uid, _caldav_calendar_label(cal))
+            return event
+
+    return None
+
+
+def _caldav_vobject_utc():
+    """vobject's own UTC tzinfo. It refuses to serialize datetime.timezone.utc
+    ('Unable to guess TZID'), so we must hand it one it recognises."""
+    try:
+        from vobject.icalendar import utc as _utc
+        return _utc
+    except Exception:
+        return None
+
+
+def _caldav_set_datetime(vevent, attr, value, ref_tz=None):
+    """Assign DTSTART/DTEND so vobject serializes valid iCalendar.
+
+    Two traps this avoids:
+    * A ZoneInfo tzinfo makes vobject emit `TZID=MST` — the standard-time
+      abbreviation, wrong half the year and not a real Olson id, so iCloud can
+      land the event an hour off. Reusing the timezone already on the event
+      (vobject parses those into pytz zones) keeps `TZID=America/Denver`.
+    * An all-day event carries `VALUE=DATE`. Writing a datetime without
+      clearing that param yields `DTSTART;VALUE=DATE:20260812T163000`, which
+      is malformed and iCloud rejects."""
+    line = getattr(vevent, attr, None)
+    if line is None:
+        line = vevent.add(attr)
+
+    if isinstance(value, datetime):
+        line.params.pop('VALUE', None)
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=get_tz())
+        if ref_tz is not None:
+            value = value.astimezone(ref_tz)
+        else:
+            # No timezone to inherit — write plain UTC and drop any stale TZID.
+            utc = _caldav_vobject_utc()
+            if utc is not None:
+                line.params.pop('TZID', None)
+                value = value.astimezone(utc)
+    else:
+        # A bare date is an all-day value and must be tagged as such.
+        line.params.pop('TZID', None)
+        line.params['VALUE'] = ['DATE']
+
+    line.value = value
+
+
 def _caldav_update_event(event_id, title=None, start_dt=None, end_dt=None, description=None, location=None):
     """Update an existing CalDAV event (by iCal UID). Return updated event dict or error."""
     try:
@@ -1517,19 +1623,47 @@ def _caldav_update_event(event_id, title=None, start_dt=None, end_dt=None, descr
         if not calendar:
             return {"error": "Could not reach Apple Calendar — the connection failed or the configured calendar was not found. Ask the student to re-check the Apple Calendar connection in Settings."}
 
-        try:
-            event = calendar.event_by_uid(event_id)
-        except Exception:
+        event = _caldav_locate_event(event_id, calendar)
+        if event is None:
             return {"error": f"Event {event_id} not found"}
 
         vevent = event.vobject_instance.vevent
 
+        old_start = vevent.dtstart.value if hasattr(vevent, 'dtstart') else None
+        old_end = vevent.dtend.value if hasattr(vevent, 'dtend') else None
+
+        # vobject parses existing times into pytz zones it can serialize back;
+        # reuse one so we don't rewrite a good TZID into a broken abbreviation.
+        ref_tz = None
+        for candidate in (old_start, old_end):
+            if isinstance(candidate, datetime) and candidate.tzinfo is not None:
+                ref_tz = candidate.tzinfo
+                break
+
+        new_start = _caldav_localize(start_dt) if start_dt else None
+        new_end = _caldav_localize(end_dt) if end_dt else None
+
+        # Moving only the start must carry the end along, or the event ends
+        # before it begins ("move it to 4:30" on a 2–3pm event).
+        if new_start is not None and new_end is None and old_start is not None and old_end is not None:
+            if isinstance(old_start, datetime) != isinstance(new_start, datetime):
+                # Changing an all-day event into a timed one (or vice versa) —
+                # the old span doesn't carry over meaningfully.
+                new_end = new_start + timedelta(hours=1) if isinstance(new_start, datetime) else None
+            else:
+                try:
+                    span = old_end - old_start
+                    if span > timedelta(0):
+                        new_end = new_start + span
+                except TypeError:
+                    pass
+
         if title:
             _caldav_set_value(vevent, 'summary', title)
-        if start_dt:
-            vevent.dtstart.value = _caldav_localize(start_dt)
-        if end_dt:
-            vevent.dtend.value = _caldav_localize(end_dt)
+        if new_start is not None:
+            _caldav_set_datetime(vevent, 'dtstart', new_start, ref_tz)
+        if new_end is not None:
+            _caldav_set_datetime(vevent, 'dtend', new_end, ref_tz)
         if description is not None:
             _caldav_set_value(vevent, 'description', description)
         if location is not None:
@@ -1549,9 +1683,8 @@ def _caldav_delete_event(event_id):
         if not calendar:
             return {"error": "Could not reach Apple Calendar — the connection failed or the configured calendar was not found. Ask the student to re-check the Apple Calendar connection in Settings."}
 
-        try:
-            event = calendar.event_by_uid(event_id)
-        except Exception:
+        event = _caldav_locate_event(event_id, calendar)
+        if event is None:
             return {"error": f"Event {event_id} not found"}
 
         event.delete()
