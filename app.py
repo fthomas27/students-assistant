@@ -1510,6 +1510,35 @@ def _caldav_set_value(vevent, attr, value):
     line.value = value
 
 
+def _caldav_find_event_by_uid(calendar, uid):
+    """Look up a CalDAV event by iCal UID, tolerating servers that don't
+    support it well.
+
+    calendar.event_by_uid() does a REPORT with a server-side UID prop-filter.
+    iCloud doesn't reliably honor that filter — especially on calendars
+    shared via family sharing — and can report "not found" for an event
+    that shows up fine in a plain listing. Fall back to pulling every event
+    and matching the UID client-side, the same way list_caldav_events reads
+    the calendar."""
+    try:
+        return calendar.event_by_uid(uid)
+    except Exception:
+        pass
+
+    try:
+        for event in calendar.events():
+            try:
+                vevent = event.vobject_instance.vevent
+            except Exception:
+                continue
+            if _vevent_value(vevent, 'uid') == uid:
+                return event
+    except Exception as e:
+        log.warning("CalDAV UID fallback scan failed: %s", e)
+
+    return None
+
+
 def _caldav_update_event(event_id, title=None, start_dt=None, end_dt=None, description=None, location=None):
     """Update an existing CalDAV event (by iCal UID). Return updated event dict or error."""
     try:
@@ -1517,9 +1546,8 @@ def _caldav_update_event(event_id, title=None, start_dt=None, end_dt=None, descr
         if not calendar:
             return {"error": "Could not reach Apple Calendar — the connection failed or the configured calendar was not found. Ask the student to re-check the Apple Calendar connection in Settings."}
 
-        try:
-            event = calendar.event_by_uid(event_id)
-        except Exception:
+        event = _caldav_find_event_by_uid(calendar, event_id)
+        if event is None:
             return {"error": f"Event {event_id} not found"}
 
         vevent = event.vobject_instance.vevent
@@ -1549,9 +1577,8 @@ def _caldav_delete_event(event_id):
         if not calendar:
             return {"error": "Could not reach Apple Calendar — the connection failed or the configured calendar was not found. Ask the student to re-check the Apple Calendar connection in Settings."}
 
-        try:
-            event = calendar.event_by_uid(event_id)
-        except Exception:
+        event = _caldav_find_event_by_uid(calendar, event_id)
+        if event is None:
             return {"error": f"Event {event_id} not found"}
 
         event.delete()
