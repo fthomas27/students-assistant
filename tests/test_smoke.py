@@ -6,6 +6,7 @@ auth / CSRF / route wiring can be exercised in isolation.
 
 import os
 import sys
+import time
 import types
 from datetime import datetime
 from unittest import mock
@@ -1319,3 +1320,73 @@ def test_telegram_turn_uncaptioned_attachment_gets_placeholder_text(client):
     content = messages[0]["content"]
     assert content[-1]["type"] == "text" and content[-1]["text"].strip()
     assert persisted[0] == ("user", "[sent a PDF (notes.pdf)]")
+
+
+def test_telegram_album_batches_into_one_turn(client):
+    """Three photos sent together must produce ONE Jarvis turn with all three,
+    not three turns (which would risk three duplicate calendar events)."""
+    c, flask_app = client
+    turns = []
+
+    with mock.patch.object(flask_app, "_telegram_run_jarvis",
+                           side_effect=lambda t, cid, attachments=None: turns.append((t, attachments))), \
+         mock.patch.object(flask_app, "_TELEGRAM_ALBUM_WINDOW_SECONDS", 0.05):
+        for i, fid in enumerate(["a", "b", "c"]):
+            _telegram_webhook_post(c, flask_app, {
+                "chat": {"id": 12345},
+                "media_group_id": "grp1",
+                # Only the first item of an album carries the caption.
+                "caption": "add this to my calendar" if i == 0 else None,
+                "photo": [{"file_id": fid + "_small"}, {"file_id": fid}],
+            })
+        time.sleep(0.6)
+
+    assert len(turns) == 1, turns
+    text, atts = turns[0]
+    assert text == "add this to my calendar"
+    assert [a["file_id"] for a in atts] == ["a", "b", "c"]
+
+
+def test_telegram_album_caps_attachment_count(client):
+    """A large album must not grow the buffer without bound."""
+    c, flask_app = client
+    turns = []
+
+    with mock.patch.object(flask_app, "_telegram_run_jarvis",
+                           side_effect=lambda t, cid, attachments=None: turns.append(attachments)), \
+         mock.patch.object(flask_app, "_TELEGRAM_ALBUM_WINDOW_SECONDS", 0.05):
+        for i in range(9):
+            _telegram_webhook_post(c, flask_app, {
+                "chat": {"id": 12345},
+                "media_group_id": "grp2",
+                "photo": [{"file_id": "p%d" % i}],
+            })
+        time.sleep(0.6)
+
+    assert len(turns) == 1
+    assert len(turns[0]) == flask_app._TELEGRAM_MAX_ATTACHMENTS
+    # The buffer must not leak once flushed.
+    assert "grp2" not in flask_app._telegram_albums
+
+
+def test_telegram_single_photo_still_runs_immediately(client):
+    """A lone photo has no media_group_id and must not wait on the album timer."""
+    c, flask_app = client
+    started = []
+
+    class FakeThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            started.append((args, kwargs or {}))
+
+        def start(self):
+            pass
+
+    with mock.patch.object(flask_app.threading, "Thread", FakeThread):
+        _telegram_webhook_post(c, flask_app, {
+            "chat": {"id": 12345},
+            "caption": "what is this",
+            "photo": [{"file_id": "solo"}],
+        })
+
+    assert len(started) == 1
+    assert started[0][1]["attachments"][0]["file_id"] == "solo"

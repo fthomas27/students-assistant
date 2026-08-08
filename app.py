@@ -15090,6 +15090,52 @@ def _telegram_run_jarvis(user_text, chat_id, attachments=None):
         ))
 
 
+# Telegram splits a multi-photo album into one update per photo, all sharing a
+# media_group_id. Without buffering, sending three photos of one invite fires
+# three independent Jarvis turns — three replies, and potentially three
+# duplicate calendar events. Collect the group, then run a single turn.
+_TELEGRAM_ALBUM_WINDOW_SECONDS = 3.0
+_telegram_albums = {}
+_telegram_album_lock = threading.Lock()
+
+
+def _telegram_queue_album(media_group_id, chat_id, text, new_attachments):
+    """Buffer one item of a Telegram album, (re)arming the flush timer."""
+    with _telegram_album_lock:
+        entry = _telegram_albums.get(media_group_id)
+        if entry is None:
+            entry = {"attachments": [], "text": "", "chat_id": chat_id, "timer": None}
+            _telegram_albums[media_group_id] = entry
+        room = _TELEGRAM_MAX_ATTACHMENTS - len(entry["attachments"])
+        if room > 0:
+            entry["attachments"].extend(new_attachments[:room])
+        # Only one item in an album carries the caption.
+        if text and not entry["text"]:
+            entry["text"] = text
+        if entry["timer"] is not None:
+            entry["timer"].cancel()
+        timer = threading.Timer(
+            _TELEGRAM_ALBUM_WINDOW_SECONDS, _telegram_flush_album, args=(media_group_id,)
+        )
+        timer.daemon = True
+        entry["timer"] = timer
+        timer.start()
+
+
+def _telegram_flush_album(media_group_id):
+    """Run one Jarvis turn for a completed album. Already on a timer thread."""
+    with _telegram_album_lock:
+        entry = _telegram_albums.pop(media_group_id, None)
+    if not entry or not entry["attachments"]:
+        return
+    try:
+        _telegram_run_jarvis(
+            entry["text"][:4000], entry["chat_id"], attachments=entry["attachments"]
+        )
+    except Exception:
+        log.error("Telegram album turn failed", exc_info=True)
+
+
 @app.route("/api/webhooks/telegram", methods=["POST"])
 def telegram_webhook():
     # No session here — Telegram is the caller. The per-install secret header
@@ -15136,6 +15182,12 @@ def telegram_webhook():
 
     # Only ever talk to the connected student's chat.
     if (not text and not attachments) or not from_chat or from_chat != _telegram_chat_id():
+        return jsonify({"ok": True})
+
+    # Several photos sent together arrive as separate updates — batch them.
+    media_group_id = str(message.get("media_group_id") or "")
+    if media_group_id and attachments:
+        _telegram_queue_album(media_group_id, from_chat, text, attachments)
         return jsonify({"ok": True})
 
     threading.Thread(
