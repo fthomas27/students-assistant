@@ -4763,8 +4763,8 @@ def generate_evening_debrief():
 SELECT assignment_title, class_name, duration_minutes, timed
 FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_start,))
         done_today = [dict(r) for r in cur.fetchall()]
-        cur.execute("SELECT title, urgency FROM tasks WHERE completed = FALSE ORDER BY urgency DESC LIMIT 10")
-        pending_tasks = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT title, urgency, due_date FROM tasks WHERE completed = FALSE ORDER BY urgency DESC, due_date ASC NULLS LAST LIMIT 20")
+        pending_tasks_all = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
 
@@ -4789,15 +4789,26 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
         # Metrics section
         metrics_text = "Items completed: %d | Total time: %.1f hours" % (item_count, total_hours)
 
+        today = datetime.now(TZ).date()
+        due_soon_cutoff = today + timedelta(days=2)
+
         cal = fetch_ical(u_canvas_ical())
         remaining_asgn = []
         if cal:
             all_asgn = get_canvas_assignments_with_overdue(cal)
             done_titles = {d["assignment_title"] for d in done_today}
-            remaining_asgn = [a for a in all_asgn if a["title"] not in done_titles]
+            remaining_asgn = [
+                a for a in all_asgn
+                if a["title"] not in done_titles and _assignment_due_date_local(a) <= due_soon_cutoff
+            ]
+
+        pending_tasks = [
+            t for t in pending_tasks_all
+            if t.get("due_date") and t["due_date"] <= due_soon_cutoff
+        ]
 
         remaining_text = "\n".join(["- %s (%s, due %s)" % (a["title"], a["class_name"], a["due_display"]) for a in remaining_asgn[:6]]) or "None."
-        tasks_text = "\n".join(["- [%s] %s" % (t["urgency"], t["title"]) for t in pending_tasks]) or "None."
+        tasks_text = "\n".join(["- [%s] %s (due %s)" % (t["urgency"], t["title"], t["due_date"]) for t in pending_tasks]) or "None."
         now_str = datetime.now(TZ).strftime("%A, %-m/%-d at %-I:%M %p")
 
         whoop_line = None
@@ -4812,15 +4823,19 @@ FROM completions WHERE completed_at >= %s ORDER BY completed_at DESC""", (today_
             "TODAY'S ACCOMPLISHMENTS:\n%s\n\n"
             "PRODUCTIVITY METRICS:\n%s\n\n"
             "TIME BREAKDOWN BY CLASS:\n%s\n\n"
-            "STILL DUE (not completed):\n%s\n\n"
-            "PENDING TASKS:\n%s\n\n"
+            "TIME-SENSITIVE ITEMS (overdue assignments/tasks, or due within the next 48 hours — already filtered, this is the complete list):\n"
+            "Assignments:\n%s\n"
+            "Tasks:\n%s\n\n"
             "RECOVERY SNAPSHOT (WHOOP, optional — never fabricate if absent): %s\n\n"
             "Deliver a sophisticated evening debrief using ONLY bullet points (commence each with •). Structure as follows:\n"
-            "- A concise synthesis of today's accomplishments (reference items and metrics above with analytical perspective)\n"
-            "- Remaining obligations requiring attention\n"
+            "- A concise synthesis of today's accomplishments (reference items and metrics above with analytical perspective). "
+            "Do NOT comment on, judge, or draw attention to how much or how little was completed today — state the facts and move on.\n"
+            "- Time-sensitive items: cover ONLY the assignments/tasks listed under TIME-SENSITIVE ITEMS above (overdue or due within 48h). "
+            "If both lists there are \"None.\", write ONE brief reassuring bullet, e.g. \"Nothing time-sensitive outstanding, sir — the remainder can wait.\" "
+            "Never mention, list, or allude to any other incomplete task or assignment not in that section — a lighter day does not warrant a reminder.\n"
             "- Strategic Outlook for Tomorrow (a measured forecast of forthcoming priorities and opportunities; "
             "if the recovery snapshot is present, you may factor it into the pacing suggestion, e.g. recommending rest if recovery is low)\n\n"
-            "Maintain a refined, insightful tone. Offer constructive observations balanced with professional encouragement. "
+            "Maintain a refined, insightful tone. Offer constructive observations balanced with professional encouragement — never guilt or pressure. "
             "Dispense with introductory pleasantries—proceed directly to substance."
         ) % (name, now_str, done_text, metrics_text, time_breakdown, remaining_text, tasks_text, whoop_line or "No WHOOP data available.")
 
@@ -5205,38 +5220,33 @@ def check_meeting_reminders():
         log.error("check_meeting_reminders error: %s", e)
 
 
-def check_idle_detection():
-    """Tier 3 — nudge if no task/assignment logged in 24+ hours on a school night."""
+def check_task_due_soon():
+    """Tier 1 — push once for tasks due tomorrow (date-only, so this is the closest we get to a 24h heads-up)."""
     if not _notifications_configured():
         return
     try:
-        now = datetime.now(TZ)
-        # Only Sun–Thu, 7 PM–11 PM
-        if now.weekday() >= 4 and now.weekday() != 6:
-            return
-        if not (19 <= now.hour < 23):
-            return
+        today = datetime.now(TZ).date()
+        tomorrow = today + timedelta(days=1)
         conn = get_db()
         cur = conn.cursor()
-        cutoff = now - timedelta(hours=24)
         cur.execute(
-            "SELECT MAX(completed_at) AS last FROM completions WHERE completed_at > %s",
-            (cutoff,),
+            "SELECT id, title, due_date FROM tasks "
+            "WHERE completed = FALSE AND due_date = %s ORDER BY urgency DESC LIMIT 10",
+            (tomorrow,),
         )
-        row = cur.fetchone()
+        due_soon = cur.fetchall()
         cur.close(); conn.close()
-        if row and row["last"]:
-            return
-        key = f"idle_{now.strftime('%Y-%m-%d')}"
-        if _ntfy_dedup(key, title="Idle check", max_age_hours=24):
-            send_push_notification(
-                title="Still with me, sir?",
-                message="No tasks logged in over a day. Might be worth making a dent in that list.",
-                priority="default",
-                tags=["sleeping"],
-            )
+        for task in due_soon:
+            key = f"task_due_soon_{task['id']}_{today}"
+            if _ntfy_dedup(key, title=task["title"], max_age_hours=20):
+                send_push_notification(
+                    title="Task Due Tomorrow",
+                    message=f"{task['title']} — due {task['due_date']}",
+                    priority="default",
+                    tags=["clock3", "warning"],
+                )
     except Exception as e:
-        log.error("check_idle_detection error: %s", e)
+        log.error("check_task_due_soon error: %s", e)
 
 
 def check_trash_recycling_reminder():
@@ -5605,6 +5615,9 @@ def schedule_briefing():
     # Tier 1: overdue tasks — once per hour
     scheduler.add_job(check_overdue_tasks, "interval", minutes=60,
                       id="notif_overdue_tasks", replace_existing=True)
+    # Tier 1: tasks due tomorrow — once per hour
+    scheduler.add_job(check_task_due_soon, "interval", minutes=60,
+                      id="notif_task_due_soon", replace_existing=True)
     # Tier 2: AP test countdown — daily at 7:05 AM
     scheduler.add_job(check_ap_test_countdown, "cron", hour=7, minute=5,
                       id="notif_ap_countdown", replace_existing=True)
@@ -5614,9 +5627,6 @@ def schedule_briefing():
     # Tier 2: stock movement alerts — every 15 min
     scheduler.add_job(check_stock_alerts, "interval", minutes=15,
                       id="notif_stock_alerts", replace_existing=True)
-    # Tier 3: idle detection — every 30 min (self-guards with hour+day check)
-    scheduler.add_job(check_idle_detection, "interval", minutes=30,
-                      id="notif_idle", replace_existing=True)
     # Tier 3: trash/recycling — every 10 min (self-guards to 7–8 PM window)
     scheduler.add_job(check_trash_recycling_reminder, "interval", minutes=10,
                       id="notif_trash", replace_existing=True)
@@ -5633,7 +5643,7 @@ def schedule_briefing():
     log.info("Weekly insight scheduled for Sun 08:00 Mountain")
     log.info("Cleanup job scheduled for 02:30 Mountain")
     log.info("Auto daily plan scheduled for 22:00 Mountain")
-    log.info("push notification jobs registered (assignment_due, overdue_tasks, ap_countdown, meetings, stocks, idle, trash, weather, scheduled_reminders)")
+    log.info("push notification jobs registered (assignment_due, overdue_tasks, task_due_soon, ap_countdown, meetings, stocks, trash, weather, scheduled_reminders)")
 
 
 # ── Security Functions ──────────────────────────────────────────────────────────
