@@ -1418,8 +1418,8 @@ def _vevent_value(vevent, attr, default=""):
     return str(line.value) if line is not None else default
 
 
-def _caldav_event_dict(vevent):
-    return {
+def _caldav_event_dict(vevent, calendar_label=None):
+    d = {
         "id": _vevent_value(vevent, 'uid'),
         "title": _vevent_value(vevent, 'summary', "Untitled"),
         "start": str(vevent.dtstart.value) if hasattr(vevent, 'dtstart') else "",
@@ -1427,31 +1427,51 @@ def _caldav_event_dict(vevent):
         "description": _vevent_value(vevent, 'description'),
         "location": _vevent_value(vevent, 'location'),
     }
+    if calendar_label is not None:
+        d["calendar"] = calendar_label
+    return d
 
 
 def _caldav_list_events(days_ahead=7):
-    """List CalDAV events for the next N days. Return list of dicts or empty list."""
+    """List CalDAV events for the next N days across every event-capable
+    calendar on the account (read visibility isn't limited to the calendar
+    selected in Settings — the student may want to see shared family
+    calendars too). Each event dict is tagged with its source calendar so
+    Jarvis and the UI can tell them apart. New events always still go to the
+    calendar configured in Settings (see _caldav_create_event). Return list
+    of dicts or empty list."""
     try:
-        calendar = _get_caldav_calendar()
-        if not calendar:
+        client = _get_caldav_connection()
+        if not client:
+            return []
+
+        calendars = _caldav_event_calendars(client)
+        if not calendars:
             return []
 
         now = datetime.now(get_tz())
-        events = calendar.search(
-            start=now,
-            end=now + timedelta(days=days_ahead),
-            event=True,
-            expand=True,
-        )
-
         result = []
-        for event in events:
+        for calendar in calendars:
+            label = _caldav_calendar_label(calendar)
             try:
-                result.append(_caldav_event_dict(event.vobject_instance.vevent))
+                events = calendar.search(
+                    start=now,
+                    end=now + timedelta(days=days_ahead),
+                    event=True,
+                    expand=True,
+                )
             except Exception as e:
-                log.debug("Error parsing CalDAV event: %s", e)
+                log.warning("CalDAV list_events failed for calendar %r: %s", label, e)
                 continue
 
+            for event in events:
+                try:
+                    result.append(_caldav_event_dict(event.vobject_instance.vevent, calendar_label=label))
+                except Exception as e:
+                    log.debug("Error parsing CalDAV event: %s", e)
+                    continue
+
+        result.sort(key=lambda e: e.get("start") or "")
         return result
     except Exception as e:
         log.warning("CalDAV list_events failed: %s", e)
@@ -10203,9 +10223,13 @@ JARVIS_TOOLS = [
     {
         "name": "list_caldav_events",
         "description": (
-            "List upcoming events from the student's Apple iCloud Calendar (via CalDAV). "
-            "Returns event IDs, titles, start/end times, descriptions, and locations. "
-            "Use this to find event IDs before calling update_caldav_event or delete_caldav_event."
+            "List upcoming events from ALL of the student's Apple iCloud calendars (via CalDAV) — "
+            "including any calendars shared with them (e.g. a family member's calendar), not just "
+            "the one selected in Settings. Returns event IDs, titles, start/end times, descriptions, "
+            "locations, and which calendar each event lives on ('calendar' field). "
+            "Use this to find event IDs before calling update_caldav_event or delete_caldav_event. "
+            "Note: create_caldav_event only ever schedules NEW events on the single calendar "
+            "selected in Settings, regardless of what this returns."
         ),
         "input_schema": {
             "type": "object",
@@ -10218,7 +10242,9 @@ JARVIS_TOOLS = [
     {
         "name": "create_caldav_event",
         "description": (
-            "Create a new event in the student's Apple iCloud Calendar. "
+            "Create a new event on the student's Apple iCloud Calendar — specifically the single "
+            "calendar selected in Settings, even though list_caldav_events can see events from "
+            "other shared calendars too. "
             "Use when the student asks to add something to their calendar, block time, "
             "or schedule a study session, appointment, or reminder. "
             "Returns the created event ID."
@@ -12541,6 +12567,9 @@ def api_chat():
             "Always confirm the event details before deleting. Use list_google_calendar_events to look up event IDs when needed.\n"
             "- APPLE CALENDAR WRITE (CalDAV): You have create_caldav_event, update_caldav_event, delete_caldav_event, and list_caldav_events. "
             "Use these when the student asks to add, change, or remove calendar items on their Apple iCloud Calendar. "
+            "list_caldav_events shows events from EVERY calendar on the account, including ones shared with the student (e.g. a parent's calendar) — "
+            "each event's 'calendar' field says which one it's on. New events from create_caldav_event always land on the single calendar "
+            "selected in Settings, never on another shared calendar, so don't imply otherwise. "
             "Always confirm the event details before deleting. Use list_caldav_events to look up event IDs when needed.\n"
             "- HEALTH & FITNESS: get_health_metrics gives recovery, HRV, resting heart rate, sleep, strain and personal records; "
             "get_workouts lists recent training. Use them for any recovery/sleep/training question, and factor recovery into how hard you tell the student to push. "
@@ -12578,7 +12607,7 @@ def api_chat():
         ) % (
             "CONNECTED" if _google_connected else "not connected",
             "CONNECTED" if _caldav_connected else "not connected",
-            (" Apple events go to the calendar named '%s'." % _caldav_target) if (_caldav_connected and _caldav_target) else "",
+            (" New Apple events are created on the calendar named '%s' (list_caldav_events still shows all of the student's Apple calendars)." % _caldav_target) if (_caldav_connected and _caldav_target) else "",
         )
 
         # Mode-aware context
