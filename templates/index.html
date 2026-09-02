@@ -9793,14 +9793,31 @@ async function completeTask(event, taskId) {
   if (event) {
     event.stopPropagation();
   }
+
+  // Look up source/project from tasksCache (not the DOM) so this works from
+  // any surface that calls completeTask, including ones whose row markup
+  // has no data-task-id (School dashboard rows, the chat "Complete" button).
+  const task = tasksCache.find(t => t.id === taskId);
+  const source = task ? (task.source || 'task') : 'task';
+  const projectId = task ? (task.project_id || '') : '';
+  const wasCompleted = task ? task.completed : undefined;
+
+  triggerHaptic('success');
+  const taskElement = document.querySelector(`[data-task-id="${taskId}"]`);
+  if (taskElement) celebrateCompletion(taskElement);
+
+  // Optimistic update: flip it locally and re-render just the tasks list
+  // immediately, rather than awaiting a full loadSidebarData() reload.
+  // loadSidebarData() blanks assignmentsList/tasksList to skeleton loaders
+  // synchronously on every call — with multiple rapid clicks, the list kept
+  // getting nuked and rebuilt out from under the next click, which is what
+  // made the app feel like it froze when marking several tasks done quickly.
+  if (task) {
+    task.completed = true;
+    renderTasks();
+  }
+
   try {
-    triggerHaptic('success');
-
-    // Read source/project from data attributes so project tasks hit the right endpoint
-    const taskElement = document.querySelector(`[data-task-id="${taskId}"]`);
-    const source = taskElement ? taskElement.dataset.source : 'task';
-    const projectId = taskElement ? taskElement.dataset.projectId : '';
-
     let url, body;
     if (source === 'project_task' && projectId) {
       url = `/api/projects/${projectId}/tasks/${taskId}`;
@@ -9816,38 +9833,32 @@ async function completeTask(event, taskId) {
       body
     });
 
-    if (response.ok) {
-      if (taskElement) {
-        celebrateCompletion(taskElement);
-      }
+    if (!response.ok) throw new Error('HTTP ' + response.status);
 
-      await loadSidebarData();
-      // Refresh whichever dashboard is showing this task
-      bustDashCache();
-      var schoolPage = document.getElementById('page-school');
-      if (schoolPage && schoolPage.classList.contains('active')) loadSchoolPage();
-      var homePage2 = document.getElementById('page-home');
-      if (homePage2 && homePage2.classList.contains('active') && _currentAppMode !== 'summer') loadHomePage();
-      const task = tasksCache.find(t => t.id === taskId);
-      if (task) {
-        task.completed = true;
-      }
+    // Refresh whichever dashboard is showing this task (each of these has
+    // its own request de-duping, so rapid clicks don't pile up fetches)
+    bustDashCache();
+    var schoolPage = document.getElementById('page-school');
+    if (schoolPage && schoolPage.classList.contains('active')) loadSchoolPage();
+    var homePage2 = document.getElementById('page-home');
+    if (homePage2 && homePage2.classList.contains('active') && _currentAppMode !== 'summer') loadHomePage();
 
-      const messagesDiv = document.getElementById('chatMessages');
-      const bubble = document.createElement('div');
-      bubble.className = 'message assistant';
-      bubble.innerHTML = `<div class="message-bubble">✓ Task completed! Excellent work.</div>`;
-      messagesDiv.appendChild(bubble);
-      renderMessageWithDelay(bubble, 100);
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    const messagesDiv = document.getElementById('chatMessages');
+    const bubble = document.createElement('div');
+    bubble.className = 'message assistant';
+    bubble.innerHTML = `<div class="message-bubble">✓ Task completed! Excellent work.</div>`;
+    messagesDiv.appendChild(bubble);
+    renderMessageWithDelay(bubble, 100);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
-      showToast('Task completed! Keep it up! 🎯', 'success', 2000);
-    } else {
-      showToast('Failed to complete task', 'error');
-    }
+    showToast('Task completed! Keep it up! 🎯', 'success', 2000);
   } catch (e) {
     console.error('Error completing task:', e);
     showToast('Error completing task', 'error');
+    if (task) {
+      task.completed = wasCompleted;
+      renderTasks();
+    }
   }
 }
 
