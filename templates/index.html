@@ -1622,7 +1622,50 @@ background: var(--accent2);
 transform: scale(0.96);
 }
 
-/* Calendar Modal Styles */
+/* Themed due-date picker (replaces the plain browser type="date" field) */
+.dp-field-btn {
+width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border);
+border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;
+display: flex; align-items: center; justify-content: space-between; gap: 8px;
+cursor: pointer; font-family: inherit; text-align: left; transition: border-color 0.15s;
+}
+.dp-field-btn:hover { border-color: var(--border2); }
+.dp-field-btn .dp-placeholder { color: var(--text3); }
+
+.dp-popup {
+position: fixed;
+z-index: 10000;
+background: var(--surface);
+border: 1px solid var(--border2);
+border-radius: var(--r);
+box-shadow: 0 20px 50px rgba(0,0,0,0.45);
+padding: 12px;
+width: 260px;
+display: none;
+}
+.dp-popup.visible { display: block; animation: modalSlideIn 0.15s ease-out; }
+.dp-popup-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.dp-popup-month { font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--text2); }
+.dp-popup-nav-btn {
+width: 26px; height: 26px; border: 1px solid var(--border); background: var(--surface2);
+border-radius: 50%; display: flex; align-items: center; justify-content: center;
+cursor: pointer; color: var(--text); font-size: 12px;
+}
+.dp-popup-nav-btn:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.dp-popup-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.dp-popup-day-header { font-size: 9px; text-align: center; color: var(--text3); font-weight: 600; text-transform: uppercase; padding: 2px 0; }
+.dp-popup-day { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; font-size: 12px; border-radius: 6px; cursor: pointer; color: var(--text); }
+.dp-popup-day:hover { background: var(--surface3); }
+.dp-popup-day.other-month { color: var(--text3); opacity: 0.5; cursor: default; pointer-events: none; }
+.dp-popup-day.today { box-shadow: inset 0 0 0 1.5px var(--accent); font-weight: 700; }
+.dp-popup-day.selected { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.dp-popup-clear {
+margin-top: 8px; width: 100%; padding: 6px; background: var(--surface2); border: 1px solid var(--border);
+border-radius: var(--r-sm); color: var(--text2); font-size: 12px; cursor: pointer;
+}
+.dp-popup-clear:hover { color: var(--text); border-color: var(--border2); }
+
+/* Generic popup-modal styles (project details, workout detail, event detail) */
 .calendar-modal-backdrop {
 display: none;
 position: fixed;
@@ -1857,63 +1900,22 @@ font-size: 12px;
 margin-top: 4px;
 }
 
-.calendar-modal-body { display: block; }
-
-/* Desktop: calendar takes the full viewport with calendar-left / schedule-right.
-   Mobile (≤639px) keeps the centered popup defined above. */
-@media (min-width: 640px) {
-  #calendarBackdrop.visible {
-    background: var(--bg);
-  }
-  #calendarBackdrop {
-    inset: var(--header-h) 0 0 0;
-  }
-  #calendarModal {
-    top: var(--header-h);
-    left: 0;
-    transform: none;
-    width: 100vw;
-    height: calc(100vh - var(--header-h));
-    max-width: none;
-    max-height: none;
-    border: none;
-    border-radius: 0;
-    box-shadow: none;
-    display: none;
-    flex-direction: column;
-    background: var(--bg);
-  }
-  #calendarModal.visible {
-    display: flex;
-    animation: calendarFadeIn 0.2s ease-out;
-  }
-  #calendarModal .calendar-modal-body {
-    flex: 1;
-    min-height: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
-  }
-  #calendarModal .calendar-grid {
-    min-height: 0;
-    align-content: start;
-    overflow: auto;
-  }
-  #calendarModal .calendar-events-list {
-    border-top: none;
-    border-left: 1px solid var(--border);
-    max-height: none;
-    overflow-y: auto;
-  }
+/* Calendar page (a normal dashx page like Home/School/Health, not a popup) */
+#page-calendar .calendar-nav { flex-shrink: 0; }
+#page-calendar .calendar-grid {
+  padding: 0;
+  flex: 1;
+  min-height: 0;
+  align-content: start;
+  overflow-y: auto;
 }
-
-@keyframes calendarFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes calendarFadeOut {
-  from { opacity: 1; }
-  to { opacity: 0; }
+#page-calendar .calendar-events-list {
+  padding: 0;
+  border-top: none;
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
 }
 
 /* Event Detail Modal */
@@ -3671,7 +3673,7 @@ margin: 8px 2px 10px;
     <button class="circle-btn"            data-page="projects" onclick="navigateTo('projects')" title="Projects"><span class="nav-pill-icon">&#9707;</span><span class="nav-pill-label">Projects</span><span class="circle-btn-badge" data-badge="projects"></span></button>
     <button class="circle-btn"            data-page="growth"   onclick="navigateTo('growth')"   title="Personal Improvement"><span class="nav-pill-icon">&#127793;</span><span class="nav-pill-label">Growth</span></button>
     <button class="circle-btn"            data-page="tasks"    onclick="navigateTo('tasks')"    title="Tasks"><span class="nav-pill-icon">&#10003;</span><span class="nav-pill-label">Tasks</span><span class="circle-btn-badge" data-badge="tasks"></span></button>
-    <button class="circle-btn"            id="calendarNavBtn"  onclick="openCalendarModal()"    title="Calendar"><span class="nav-pill-icon">&#9634;</span><span class="nav-pill-label">Calendar</span></button>
+    <button class="circle-btn"            data-page="calendar" onclick="navigateTo('calendar')" title="Calendar"><span class="nav-pill-icon">&#9634;</span><span class="nav-pill-label">Calendar</span></button>
     <!-- Summer-only -->
     <button class="circle-btn summer-nav" data-page="summer-bucket"  onclick="navigateTo('summer-bucket')" title="Bucket List" style="display:none;"><span class="nav-pill-icon">&#9728;</span><span class="nav-pill-label">Bucket List</span></button>
   </nav>
@@ -3694,7 +3696,7 @@ margin: 8px 2px 10px;
       <!-- Summer-only -->
       <button class="nav-menu-item summer-nav" data-page="summer-bucket" onclick="navigateTo('summer-bucket'); closeNavMenu();" role="menuitem" style="display:none;"><span class="nav-menu-item-icon">&#127774;</span>Bucket List</button>
       <div class="nav-menu-divider"></div>
-      <button class="nav-menu-item" onclick="openCalendarModal(); closeNavMenu();"                               role="menuitem"><span class="nav-menu-item-icon">&#128197;</span>Calendar</button>
+      <button class="nav-menu-item" data-page="calendar" onclick="navigateTo('calendar'); closeNavMenu();"       role="menuitem"><span class="nav-menu-item-icon">&#128197;</span>Calendar</button>
       <button class="nav-menu-item" onclick="document.getElementById('pomodoroOpen').click(); closeNavMenu();"  role="menuitem"><span class="nav-menu-item-icon">&#9201;</span>Focus Timer</button>
       <button class="nav-menu-item" onclick="openChatHistory(); closeNavMenu();"                                role="menuitem"><span class="nav-menu-item-icon">&#128336;</span>History</button>
       <button class="nav-menu-item" onclick="openSettings(); closeNavMenu();"                                   role="menuitem"><span class="nav-menu-item-icon">&#9881;</span>Settings</button>
@@ -3907,23 +3909,6 @@ margin: 8px 2px 10px;
   <div class="event-detail-body" id="eventDetailBody"></div>
 </div>
 
-<!-- Calendar Modal -->
-<div class="calendar-modal-backdrop" id="calendarBackdrop" onclick="closeCalendarModal()"></div>
-<div class="calendar-modal" id="calendarModal">
-  <div class="calendar-modal-header">
-    <h2>Calendar</h2>
-    <div class="calendar-nav">
-      <button class="calendar-nav-btn" onclick="previousMonth()" title="Previous month">←</button>
-      <div class="calendar-month-year" id="calendarMonthYear"></div>
-      <button class="calendar-nav-btn" onclick="nextMonth()" title="Next month">→</button>
-    </div>
-  </div>
-  <div class="calendar-modal-body">
-    <div class="calendar-grid" id="calendarGrid"></div>
-    <div class="calendar-events-list" id="calendarEventsList"></div>
-  </div>
-</div>
-
 <!-- Project Details Modal -->
 <div class="calendar-modal-backdrop" id="projectDetailsBackdrop" onclick="closeProjectDetailsModal()"></div>
 <div class="calendar-modal" id="projectDetailsModal">
@@ -4063,6 +4048,37 @@ margin: 8px 2px 10px;
     <div class="sidebar-section" id="jobScheduleSection" style="display:none;">
       <h2 class="section-title sidebar-section-title" style="padding:10px 0 0;">&#128198; Work Schedule</h2>
       <div id="jobScheduleList"><p style="color:var(--text3);font-size:13px;">Loading...</p></div>
+    </div>
+  </div>
+</div>
+
+<div class="page dash-fit" id="page-calendar">
+  <div class="dashx">
+    <div class="dashx-head">
+      <div>
+        <span class="dash-eyebrow">Calendar</span>
+        <h1 class="dashx-greeting">All Events</h1>
+      </div>
+      <div class="dash-sub">Every event across your connected calendars.</div>
+    </div>
+
+    <div class="dashx-main">
+      <section class="widget dashx-span9">
+        <div class="widget-head">
+          <span class="calendar-month-year" id="calendarMonthYear">&nbsp;</span>
+          <div class="calendar-nav">
+            <button class="calendar-nav-btn" onclick="previousMonth()" title="Previous month">←</button>
+            <button class="calendar-nav-btn" onclick="calendarJumpToday()" title="Jump to today">&#8226;</button>
+            <button class="calendar-nav-btn" onclick="nextMonth()" title="Next month">→</button>
+          </div>
+        </div>
+        <div class="calendar-grid" id="calendarGrid"></div>
+      </section>
+
+      <section class="widget dashx-span3">
+        <div class="widget-head"><span class="widget-title">Events</span></div>
+        <div class="calendar-events-list" id="calendarEventsList"></div>
+      </section>
     </div>
   </div>
 </div>
@@ -4603,7 +4619,6 @@ document.addEventListener('click', function(e) {
 });
 
 function navigateTo(pageName) {
-  closeCalendarModal();
   document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
   document.querySelectorAll('.circle-btn').forEach(function(b) { b.classList.remove('active'); });
   var page = document.getElementById('page-' + pageName);
@@ -4623,6 +4638,7 @@ function navigateTo(pageName) {
   else if (pageName === 'assignments') loadAssignments();
   else if (pageName === 'projects') loadProjectsPage().catch(function(e) { console.error('Projects dashboard load failed:', e); });
   else if (pageName === 'growth') { loadBooks(); loadSkills(); loadVerseOfDay(); }
+  else if (pageName === 'calendar') loadCalendarPage();
   else if (pageName === 'summer-bucket') loadBucketList();
   else if (pageName === 'chat') {
     var msgs = document.getElementById('chatMessages');
@@ -6704,6 +6720,7 @@ async function loadSidebarData() {
         calendarCache = data.events || [];
         buildEventsByDate();
         renderCalendar();
+        if (document.getElementById('page-calendar')?.classList.contains('active')) loadCalendarPage();
       }
     }
   };
@@ -7251,7 +7268,11 @@ function openProjectTaskModal(projectId, existing) {
     </div>
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Due Date</label>
-      <input id="projectTaskDueDate" type="date" value="${dueDate}" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+      <input type="hidden" id="projectTaskDueDate" value="${dueDate}">
+      <button type="button" class="dp-field-btn" onclick="toggleDatePicker('projectTaskDueDate', this)">
+        <span class="dp-display-text${dueDate ? '' : ' dp-placeholder'}">${dueDate ? formatDateMDY(dueDate) : 'Select date'}</span>
+        <span aria-hidden="true">&#128197;</span>
+      </button>
     </div>
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Status</label>
@@ -7278,6 +7299,7 @@ function openProjectTaskModal(projectId, existing) {
 }
 
 function closeProjectTaskModal() {
+  _dpClosePicker();
   const modal = document.getElementById('projectTaskModal');
   if (modal) modal.remove();
 }
@@ -7482,7 +7504,11 @@ function editTask(taskId) {
     </div>
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Due Date</label>
-      <input id="editDueDate" type="date" value="${task.due_date || ''}" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+      <input type="hidden" id="editDueDate" value="${task.due_date || ''}">
+      <button type="button" class="dp-field-btn" onclick="toggleDatePicker('editDueDate', this)">
+        <span class="dp-display-text${task.due_date ? '' : ' dp-placeholder'}">${task.due_date ? formatDateMDY(task.due_date) : 'Select date'}</span>
+        <span aria-hidden="true">&#128197;</span>
+      </button>
     </div>
     <div style="margin-bottom: 16px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Notes</label>
@@ -7501,6 +7527,7 @@ function editTask(taskId) {
 }
 
 function closeEditModal() {
+  _dpClosePicker();
   const modal = document.getElementById('editTaskModal');
   if (modal) {
     modal.style.animation = 'fadeOutBackdrop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
@@ -9682,7 +9709,11 @@ function openAddTaskModal() {
     </div>
     <div style="margin-bottom: 12px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Due Date (optional)</label>
-      <input id="newTaskDueDate" type="date" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font-size: 14px; box-sizing: border-box;">
+      <input type="hidden" id="newTaskDueDate" value="">
+      <button type="button" class="dp-field-btn" onclick="toggleDatePicker('newTaskDueDate', this)">
+        <span class="dp-display-text dp-placeholder">Select date</span>
+        <span aria-hidden="true">&#128197;</span>
+      </button>
     </div>
     <div style="margin-bottom: 16px;">
       <label style="display: block; color: var(--text2); font-size: 12px; margin-bottom: 4px;">Notes (optional)</label>
@@ -9703,6 +9734,7 @@ function openAddTaskModal() {
 }
 
 function closeAddTaskModal() {
+  _dpClosePicker();
   const modal = document.getElementById('addTaskModal');
   if (modal) {
     modal.style.opacity = '0';
@@ -10437,83 +10469,188 @@ async function deleteRecurringTaskConfirm(taskId) {
   }
 }
 
-// Calendar functionality
+// Calendar page — a normal nav page (like Home/School/Health), not a popup.
 let calendarCurrentDate = new Date();
 let calendarEventsByDate = {};
 let currentDayEvents = [];
 let calendarSelectedKey = null;
-let _calendarPrevActiveBtn = null; // circle-btn that was active before calendar opened
+let _calendarJumpKey = null; // set by openCalendarModalOnDate to select a specific day on next load
 
-function _openCalendarShared() {
-  // Deactivate whichever page button is currently lit and remember it
-  _calendarPrevActiveBtn = document.querySelector('.circle-btn.active:not(#calendarNavBtn)') || null;
-  document.querySelectorAll('.circle-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('calendarNavBtn')?.classList.add('active');
-  const modal = document.getElementById('calendarModal');
-  const backdrop = document.getElementById('calendarBackdrop');
-  modal.style.animation = '';
-  backdrop.style.transition = '';
-  backdrop.style.background = '';
-  modal.classList.add('visible');
-  backdrop.classList.add('visible');
-}
-
+// Kept as the entry point for the several "Calendar ↗" shortcuts around the
+// app (dashboard tiles, keyboard shortcuts) — just navigates to the page now.
 function openCalendarModal() {
-  closeProjectDetailsModal();
-  calendarCurrentDate = new Date(); // Reset to today for consistency
-  _openCalendarShared();
-  renderCalendarModal();
-
-  const dateKey = `${calendarCurrentDate.getFullYear()}-${calendarCurrentDate.getMonth()}-${calendarCurrentDate.getDate()}`;
-  const todayEvents = calendarEventsByDate[dateKey] || [];
-  showCalendarEvents(calendarCurrentDate.getDate(), calendarCurrentDate.getMonth(), calendarCurrentDate.getFullYear(), todayEvents);
+  calendarCurrentDate = new Date();
+  _calendarJumpKey = null;
+  navigateTo('calendar');
 }
 
 function openCalendarModalOnDate(year, month, day) {
-  closeProjectDetailsModal();
   calendarCurrentDate = new Date(year, month, day);
-  _openCalendarShared();
-  renderCalendarModal();
-  const dateKey = `${year}-${month}-${day}`;
+  _calendarJumpKey = `${year}-${month}-${day}`;
+  navigateTo('calendar');
+}
+
+function loadCalendarPage() {
+  renderCalendarPage();
+  const dateKey = _calendarJumpKey
+    || `${calendarCurrentDate.getFullYear()}-${calendarCurrentDate.getMonth()}-${calendarCurrentDate.getDate()}`;
+  _calendarJumpKey = null;
+  const [year, month, day] = dateKey.split('-').map(Number);
   showCalendarEvents(day, month, year, calendarEventsByDate[dateKey] || []);
 }
 
-function closeCalendarModal() {
-  const modal = document.getElementById('calendarModal');
-  const backdrop = document.getElementById('calendarBackdrop');
-  if (!modal.classList.contains('visible')) return;
-  document.getElementById('calendarNavBtn')?.classList.remove('active');
-  // Restore whichever page was active before the calendar opened
-  if (_calendarPrevActiveBtn) {
-    _calendarPrevActiveBtn.classList.add('active');
-    _calendarPrevActiveBtn = null;
-  }
-  const isDesktop = window.matchMedia('(min-width: 640px)').matches;
-  modal.style.animation = isDesktop
-    ? 'calendarFadeOut 0.2s ease-out forwards'
-    : 'modalSlideOutScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards';
-  backdrop.style.transition = 'background 0.2s ease-out';
-  backdrop.style.background = 'rgba(0,0,0,0)';
-  const duration = isDesktop ? 200 : 300;
-  setTimeout(() => {
-    modal.classList.remove('visible');
-    backdrop.classList.remove('visible');
-    modal.style.animation = '';
-    backdrop.style.transition = '';
-    backdrop.style.background = '';
-  }, duration);
+function calendarJumpToday() {
+  calendarCurrentDate = new Date();
+  calendarSelectedKey = null;
+  loadCalendarPage();
 }
 
 function previousMonth() {
   calendarCurrentDate.setMonth(calendarCurrentDate.getMonth() - 1);
   calendarSelectedKey = null;
-  renderCalendarModal();
+  renderCalendarPage();
 }
 
 function nextMonth() {
   calendarCurrentDate.setMonth(calendarCurrentDate.getMonth() + 1);
   calendarSelectedKey = null;
-  renderCalendarModal();
+  renderCalendarPage();
+}
+
+// Themed due-date picker — a small floating calendar that replaces the plain
+// browser type="date" field for task/assignment due dates. Each field is a
+// hidden <input> (still read by its id elsewhere as an ISO "YYYY-MM-DD"
+// string) paired with a clickable .dp-field-btn that opens this shared popup.
+let _dpTargetInputId = null;
+let _dpAnchorEl = null;
+let _dpViewDate = new Date();
+
+function _dpFormatIso(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function _dpEnsurePopup() {
+  let popup = document.getElementById('dpPopup');
+  if (popup) return popup;
+  popup = document.createElement('div');
+  popup.id = 'dpPopup';
+  popup.className = 'dp-popup';
+  popup.innerHTML = `
+    <div class="dp-popup-head">
+      <button type="button" class="dp-popup-nav-btn" onclick="_dpShiftMonth(-1)" title="Previous month">&larr;</button>
+      <span class="dp-popup-month" id="dpPopupMonth"></span>
+      <button type="button" class="dp-popup-nav-btn" onclick="_dpShiftMonth(1)" title="Next month">&rarr;</button>
+    </div>
+    <div class="dp-popup-grid" id="dpPopupGrid"></div>
+    <button type="button" class="dp-popup-clear" onclick="_dpSelectDate('')">Clear date</button>
+  `;
+  document.body.appendChild(popup);
+  popup.addEventListener('click', e => e.stopPropagation());
+  return popup;
+}
+
+function toggleDatePicker(inputId, anchorEl) {
+  const popup = _dpEnsurePopup();
+  if (_dpTargetInputId === inputId && popup.classList.contains('visible')) {
+    _dpClosePicker();
+    return;
+  }
+  _dpTargetInputId = inputId;
+  _dpAnchorEl = anchorEl;
+  const input = document.getElementById(inputId);
+  const existing = input && input.value ? new Date(input.value + 'T00:00:00') : new Date();
+  _dpViewDate = isNaN(existing.getTime()) ? new Date() : existing;
+  _dpRenderPopup();
+  popup.classList.add('visible');
+  const rect = anchorEl.getBoundingClientRect();
+  const popupHeight = popup.offsetHeight || 280;
+  const popupWidth = popup.offsetWidth || 260;
+  popup.style.top = Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - popupHeight - 8)) + 'px';
+  popup.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - popupWidth - 8)) + 'px';
+  setTimeout(() => document.addEventListener('click', _dpOutsideClick), 0);
+}
+
+function _dpOutsideClick(e) {
+  const popup = document.getElementById('dpPopup');
+  if (popup && !popup.contains(e.target) && e.target !== _dpAnchorEl && !_dpAnchorEl?.contains(e.target)) {
+    _dpClosePicker();
+  }
+}
+
+function _dpClosePicker() {
+  const popup = document.getElementById('dpPopup');
+  if (popup) popup.classList.remove('visible');
+  document.removeEventListener('click', _dpOutsideClick);
+  _dpTargetInputId = null;
+  _dpAnchorEl = null;
+}
+
+function _dpShiftMonth(delta) {
+  _dpViewDate.setMonth(_dpViewDate.getMonth() + delta);
+  _dpRenderPopup();
+}
+
+function _dpRenderPopup() {
+  const year = _dpViewDate.getFullYear();
+  const month = _dpViewDate.getMonth();
+  document.getElementById('dpPopupMonth').textContent =
+    new Date(year, month).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  const grid = document.getElementById('dpPopupGrid');
+  grid.innerHTML = '';
+  ['S', 'M', 'T', 'W', 'T', 'F', 'S'].forEach(d => {
+    const header = document.createElement('div');
+    header.className = 'dp-popup-day-header';
+    header.textContent = d;
+    grid.appendChild(header);
+  });
+
+  const input = document.getElementById(_dpTargetInputId);
+  const selectedIso = input ? input.value : '';
+  const todayIso = _dpFormatIso(new Date());
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const daysInPrevMonth = new Date(year, month, 0).getDate();
+
+  for (let i = firstDay - 1; i >= 0; i--) {
+    const cell = document.createElement('div');
+    cell.className = 'dp-popup-day other-month';
+    cell.textContent = daysInPrevMonth - i;
+    grid.appendChild(cell);
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const iso = _dpFormatIso(new Date(year, month, d));
+    const cell = document.createElement('div');
+    cell.className = 'dp-popup-day';
+    if (iso === todayIso) cell.classList.add('today');
+    if (iso === selectedIso) cell.classList.add('selected');
+    cell.textContent = d;
+    cell.onclick = () => _dpSelectDate(iso);
+    grid.appendChild(cell);
+  }
+  const totalCells = grid.children.length - 7;
+  const remaining = (Math.ceil(totalCells / 7) * 7) - totalCells;
+  for (let i = 1; i <= remaining; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'dp-popup-day other-month';
+    cell.textContent = i;
+    grid.appendChild(cell);
+  }
+}
+
+function _dpSelectDate(iso) {
+  const input = document.getElementById(_dpTargetInputId);
+  const anchor = _dpAnchorEl;
+  if (input) {
+    input.value = iso;
+    input.dispatchEvent(new Event('change'));
+  }
+  const textEl = anchor?.querySelector('.dp-display-text');
+  if (textEl) {
+    textEl.textContent = iso ? formatDateMDY(iso) : 'Select date';
+    textEl.classList.toggle('dp-placeholder', !iso);
+  }
+  _dpClosePicker();
 }
 
 function buildEventsByDate() {
@@ -10528,7 +10665,7 @@ function buildEventsByDate() {
   });
 }
 
-function renderCalendarModal() {
+function renderCalendarPage() {
   const year = calendarCurrentDate.getFullYear();
   const month = calendarCurrentDate.getMonth();
 
@@ -11118,7 +11255,6 @@ document.addEventListener('keydown', (e) => {
     closeProjectDetailsModal();
     closeSettingsModal();
     closeChatHistory();
-    closeCalendarModal();
   }
 });
 

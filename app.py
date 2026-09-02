@@ -2141,6 +2141,18 @@ WHOOP_CACHE_TTL = 900  # 15 minutes
 # it explicitly so reconnects still take effect immediately.
 WHOOP_FAIL_TTL = 120  # 2 minutes
 
+# WHOOP issues a single-use, rotating refresh token: each refresh call both
+# consumes the current refresh token and returns a new one, and WHOOP treats
+# reuse of an already-consumed refresh token as a replay and revokes the
+# whole token family. The Health & Fitness dashboard fires several requests
+# in parallel (status, summary, workouts, heart-rate, PRs) that can all see
+# an expired access token at once; without serialization each one refreshes
+# with the same stale refresh token, only the first succeeds, and the losers'
+# reuse attempts can get the account booted off WHOOP entirely — surfacing to
+# the student as "WHOOP keeps disconnecting." This lock makes the
+# check-and-refresh atomic so concurrent callers share one refresh.
+_whoop_token_lock = threading.Lock()
+
 
 def _whoop_clear_cache():
     """Drop cached WHOOP records (and remembered failures) so a fresh
@@ -2161,47 +2173,52 @@ def _whoop_connected():
 
 
 def _get_whoop_access_token():
-    """Return a valid WHOOP access token, refreshing it if expired. None if not connected."""
+    """Return a valid WHOOP access token, refreshing it if expired. None if not connected.
+
+    Serialized by _whoop_token_lock: WHOOP's refresh token rotates on every
+    use, so two concurrent refreshes racing on the same stale refresh token
+    would cost the account its connection (see comment on WHOOP_FAIL_TTL)."""
     if not _whoop_configured():
         return None
-    cfg = get_config()
-    refresh_token = cfg.get("whoop_refresh_token", "").strip()
-    if not refresh_token:
-        return None
-    access_token = cfg.get("whoop_access_token", "").strip()
-    try:
-        expires_at = float(cfg.get("whoop_token_expires_at", "0") or 0)
-    except ValueError:
-        expires_at = 0
-    if access_token and expires_at - 60 > time.time():
-        return access_token
-    if _cache_get("whoop:token_fail", WHOOP_FAIL_TTL):
-        return None
-    try:
-        # Refresh grants may only request scopes from the original consent, so
-        # ask for "offline" (needed for the rotating refresh token) rather than
-        # WHOOP_SCOPES — tokens granted before a scope was added to that list
-        # would otherwise fail every refresh until the user reconnects.
-        resp = requests.post(WHOOP_TOKEN_URL, data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": WHOOP_CLIENT_ID,
-            "client_secret": WHOOP_CLIENT_SECRET,
-            "scope": "offline",
-        }, timeout=12)
-        resp.raise_for_status()
-        data = resp.json()
-        new_access = data.get("access_token", "")
-        set_config({
-            "whoop_access_token": new_access,
-            "whoop_refresh_token": data.get("refresh_token") or refresh_token,
-            "whoop_token_expires_at": str(time.time() + float(data.get("expires_in", 3600))),
-        })
-        return new_access or None
-    except Exception as e:
-        log.warning("WHOOP token refresh failed: %s", e)
-        _cache_set("whoop:token_fail", True)
-        return None
+    with _whoop_token_lock:
+        cfg = get_config()
+        refresh_token = cfg.get("whoop_refresh_token", "").strip()
+        if not refresh_token:
+            return None
+        access_token = cfg.get("whoop_access_token", "").strip()
+        try:
+            expires_at = float(cfg.get("whoop_token_expires_at", "0") or 0)
+        except ValueError:
+            expires_at = 0
+        if access_token and expires_at - 60 > time.time():
+            return access_token
+        if _cache_get("whoop:token_fail", WHOOP_FAIL_TTL):
+            return None
+        try:
+            # Refresh grants may only request scopes from the original consent, so
+            # ask for "offline" (needed for the rotating refresh token) rather than
+            # WHOOP_SCOPES — tokens granted before a scope was added to that list
+            # would otherwise fail every refresh until the user reconnects.
+            resp = requests.post(WHOOP_TOKEN_URL, data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": WHOOP_CLIENT_ID,
+                "client_secret": WHOOP_CLIENT_SECRET,
+                "scope": "offline",
+            }, timeout=12)
+            resp.raise_for_status()
+            data = resp.json()
+            new_access = data.get("access_token", "")
+            set_config({
+                "whoop_access_token": new_access,
+                "whoop_refresh_token": data.get("refresh_token") or refresh_token,
+                "whoop_token_expires_at": str(time.time() + float(data.get("expires_in", 3600))),
+            })
+            return new_access or None
+        except Exception as e:
+            log.warning("WHOOP token refresh failed: %s", e)
+            _cache_set("whoop:token_fail", True)
+            return None
 
 
 def _whoop_get(path, params=None, timeout=12):
