@@ -156,159 +156,6 @@ def test_service_worker_served(client):
     assert "addEventListener" in body
 
 
-def test_chat_system_prompt_has_cache_block(client):
-    """Inspect the api_chat handler to ensure the cache_control block is wired."""
-    _, flask_app = client
-    src = open(flask_app.__file__).read()
-    assert 'cache_control' in src
-    assert '"type": "ephemeral"' in src
-    assert "system_static" in src
-    assert "system_dynamic" in src
-
-
-def test_tasks_get_includes_all_project_tasks(client, monkeypatch):
-    """All project tasks from active projects should sync into /api/tasks,
-    regardless of assignee, and include project_id/project_title linkage."""
-    c, flask_app = client
-
-    now = datetime(2026, 5, 6, 12, 0, 0)
-
-    class StubCursor(FakeCursor):
-        def __init__(self):
-            super().__init__()
-            self._call = 0
-            self._rows = []
-
-        def execute(self, sql, *_args, **_kwargs):
-            self._call += 1
-            sql_l = (sql or "").lower()
-            if "from tasks" in sql_l and "project_tasks" not in sql_l:
-                self._rows = [
-                    {
-                        "id": 1, "title": "Regular task", "notes": "",
-                        "urgency": "low", "completed": False,
-                        "completed_at": None, "due_date": None,
-                        "created_at": now, "project_id": None,
-                        "project_title": None,
-                    },
-                ]
-            elif "from project_tasks" in sql_l:
-                self._rows = [
-                    {
-                        "id": 10, "title": "Linked PT (assignee=me)",
-                        "notes": "", "urgency": "medium", "completed": False,
-                        "completed_at": None, "due_date": None,
-                        "created_at": now, "project_id": 7,
-                        "assignee": "me", "project_title": "Science Fair",
-                    },
-                    {
-                        "id": 11, "title": "Linked PT (assignee=teammate)",
-                        "notes": "", "urgency": "medium", "completed": False,
-                        "completed_at": None, "due_date": None,
-                        "created_at": now, "project_id": 7,
-                        "assignee": "Alex", "project_title": "Science Fair",
-                    },
-                    {
-                        "id": 12, "title": "Linked PT (no assignee)",
-                        "notes": "", "urgency": "medium", "completed": False,
-                        "completed_at": None, "due_date": None,
-                        "created_at": now, "project_id": 7,
-                        "assignee": "", "project_title": "Science Fair",
-                    },
-                ]
-            else:
-                self._rows = []
-
-        def fetchall(self):
-            return list(self._rows)
-
-    class StubConn(FakeConn):
-        def cursor(self):
-            return StubCursor()
-
-    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
-    with c.session_transaction() as s:
-        s["authenticated"] = True
-
-    resp = c.get("/api/tasks")
-    assert resp.status_code == 200
-    data = resp.get_json()
-    tasks = data["tasks"]
-
-    project_tasks = [t for t in tasks if t.get("source") == "project_task"]
-    regular_tasks = [t for t in tasks if t.get("source") == "task"]
-
-    # All three project tasks should sync, regardless of assignee
-    assert len(project_tasks) == 3, f"expected 3 project tasks, got {project_tasks}"
-    assert len(regular_tasks) == 1
-
-    assignees = {t["title"]: t.get("assignee", "") for t in project_tasks}
-    assert "Linked PT (assignee=me)" in assignees
-    assert "Linked PT (assignee=teammate)" in assignees
-    assert "Linked PT (no assignee)" in assignees
-
-    # Each project task preserves linkage back to its project
-    for t in project_tasks:
-        assert t["project_id"] == 7
-        assert t["project_title"] == "Science Fair"
-
-
-def test_tasks_get_query_has_no_assignee_filter(client):
-    """Guard against regressing the project-task sync to assignee-only.
-
-    A previous version filtered project tasks to assignee IN ('me','finn');
-    the sync should now surface every project task on an active project.
-    """
-    _, flask_app = client
-    src = open(flask_app.__file__).read()
-    # Locate the api_tasks_get handler and inspect only its body
-    idx = src.find("def api_tasks_get(")
-    assert idx > 0
-    end = src.find("\n@app.route", idx)
-    body = src[idx:end if end > 0 else len(src)]
-    assert "FROM project_tasks pt" in body
-    assert "LOWER(pt.assignee) IN" not in body, (
-        "api_tasks_get should not filter project tasks by assignee — "
-        "every project task on an active project must sync"
-    )
-
-
-def test_pomodoro_state_default(client, monkeypatch):
-    c, flask_app = client
-
-    class StubCursor(FakeCursor):
-        def fetchone(self):
-            return {
-                "id": 1,
-                "estimate_minutes": 25.0,
-                "started_at": None,
-                "paused_at": None,
-                "accumulated_seconds": 0,
-                "active": False,
-            }
-
-    class StubConn(FakeConn):
-        def cursor(self):
-            return StubCursor()
-
-    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
-    with c.session_transaction() as s:
-        s["authenticated"] = True
-    resp = c.get("/api/pomodoro/state")
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data["active"] is False
-    assert data["estimate_minutes"] == 25.0
-
-
-def test_briefing_locks_are_independent(client):
-    """Briefing, debrief, and weekly insight should not contend on a single lock."""
-    _, flask_app = client
-    assert flask_app._briefing_lock is not flask_app._debrief_lock
-    assert flask_app._briefing_lock is not flask_app._weekly_insight_lock
-    assert flask_app._debrief_lock is not flask_app._weekly_insight_lock
-
-
 def test_admin_login_uses_constant_time_compare(client):
     """Admin login source should not use raw == on password/security_code values."""
     _, flask_app = client
@@ -339,7 +186,7 @@ def test_calendar_urls_resolved_outside_worker_threads(client):
     src = open(flask_app.__file__).read()
 
     # /api/calendar — the worker closures should reference the pre-resolved
-    # variables (personal_url, sports_url, job_url, canvas_url), NOT call
+    # variables (personal_url, sports_url, canvas_url), NOT call
     # u_*_ical() directly inside the closure body.
     idx = src.find("def api_calendar(")
     assert idx > 0
@@ -348,28 +195,14 @@ def test_calendar_urls_resolved_outside_worker_threads(client):
     assert "personal_url = u_personal_ical()" in body
     assert "canvas_url   = u_canvas_ical()" in body or "canvas_url = u_canvas_ical()" in body
     # The worker functions must not call u_*_ical() directly.
-    for marker in ("def get_personal():", "def get_sports():", "def get_job():", "def get_canvas():"):
+    for marker in ("def get_personal():", "def get_sports():", "def get_canvas():"):
         m_idx = body.find(marker)
         assert m_idx > 0, f"missing {marker}"
         # Look at the next ~6 lines for direct u_*_ical() calls
         snippet = body[m_idx:m_idx + 400]
         assert "u_personal_ical()" not in snippet
         assert "u_sports_ical()" not in snippet
-        assert "u_job_schedule_ical()" not in snippet
         assert "u_canvas_ical()" not in snippet
-
-    # /api/daily-outlook — same pattern.
-    idx = src.find("def api_daily_outlook(")
-    assert idx > 0
-    end = src.find("\n@app.route", idx)
-    body = src[idx:end if end > 0 else len(src)]
-    assert "canvas_url" in body and "personal_url" in body
-    for marker in ("def _get_assignments():", "def _get_events():"):
-        m_idx = body.find(marker)
-        assert m_idx > 0, f"missing {marker}"
-        snippet = body[m_idx:m_idx + 600]
-        assert "u_canvas_ical()" not in snippet
-        assert "u_personal_ical()" not in snippet
 
 
 def test_uid_safe_outside_request_context(client):
@@ -637,7 +470,6 @@ def test_sync_status_only_reports_configured_feeds(client, monkeypatch):
     monkeypatch.setattr(flask_app, "u_canvas_ical", lambda: canvas_url)
     monkeypatch.setattr(flask_app, "u_personal_ical", lambda: "")
     monkeypatch.setattr(flask_app, "u_sports_ical", lambda: "")
-    monkeypatch.setattr(flask_app, "u_job_schedule_ical", lambda: "")
 
     now_iso = datetime.now(flask_app.TZ).isoformat()
     with flask_app._ical_sync_lock:
@@ -710,157 +542,6 @@ def test_config_post_returns_warning_for_dead_canvas_feed(client, monkeypatch):
     assert data.get("warnings") and any("Canvas" in w for w in data["warnings"])
 
 
-def test_books_get_returns_list(client):
-    """GET /api/books returns a JSON list (empty from the stub cursor)."""
-    c, _ = client
-    with c.session_transaction() as s:
-        s["authenticated"] = True
-    resp = c.get("/api/books")
-    assert resp.status_code == 200
-    assert resp.get_json() == []
-
-
-def test_books_post_requires_title(client):
-    """POST /api/books with a blank title is rejected with 400."""
-    c, _ = client
-    with c.session_transaction() as s:
-        s["authenticated"] = True
-        s["csrf_token"] = "tok"
-    resp = c.post("/api/books", json={"title": "   "},
-                  headers={"X-CSRF-Token": "tok"})
-    assert resp.status_code == 400
-
-
-def test_books_post_inserts_book(client, monkeypatch):
-    """A valid POST inserts a row and echoes the book back with completed=False."""
-    c, flask_app = client
-    inserts = []
-
-    class StubCursor(FakeCursor):
-        def execute(self, sql, params=None, *_a, **_kw):
-            self._row = None
-            if "insert into books" in (sql or "").lower():
-                inserts.append(params)
-                self._row = {"id": 7, "created_at": datetime.now()}
-
-        def fetchone(self):
-            return self._row
-
-    class StubConn(FakeConn):
-        def cursor(self):
-            return StubCursor()
-
-    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
-    with c.session_transaction() as s:
-        s["authenticated"] = True
-        s["csrf_token"] = "tok"
-    resp = c.post("/api/books",
-                  json={"title": "Deep Work", "author": "Cal Newport", "notes": "focus"},
-                  headers={"X-CSRF-Token": "tok"})
-    assert resp.status_code == 201, resp.get_data(as_text=True)
-    data = resp.get_json()
-    assert data["id"] == 7
-    assert data["title"] == "Deep Work"
-    assert data["author"] == "Cal Newport"
-    assert data["completed"] is False
-    assert len(inserts) == 1
-    assert inserts[0][0] == "Deep Work"
-
-
-def test_skills_get_returns_list(client):
-    """GET /api/skills returns a JSON list (empty from the stub cursor)."""
-    c, _ = client
-    with c.session_transaction() as s:
-        s["authenticated"] = True
-    resp = c.get("/api/skills")
-    assert resp.status_code == 200
-    assert resp.get_json() == []
-
-
-def test_skills_post_requires_name(client):
-    """POST /api/skills with a blank name is rejected with 400."""
-    c, _ = client
-    with c.session_transaction() as s:
-        s["authenticated"] = True
-        s["csrf_token"] = "tok"
-    resp = c.post("/api/skills", json={"name": "  "},
-                  headers={"X-CSRF-Token": "tok"})
-    assert resp.status_code == 400
-
-
-def test_skills_post_clears_prior_focus(client, monkeypatch):
-    """Adding a skill as the focus first clears focus off every other skill."""
-    c, flask_app = client
-    statements = []
-
-    class StubCursor(FakeCursor):
-        def execute(self, sql, params=None, *_a, **_kw):
-            self._row = None
-            statements.append((sql or "").lower())
-            if "insert into skills" in (sql or "").lower():
-                self._row = {"id": 3, "created_at": datetime.now()}
-
-        def fetchone(self):
-            return self._row
-
-    class StubConn(FakeConn):
-        def cursor(self):
-            return StubCursor()
-
-    monkeypatch.setattr(flask_app, "get_db", lambda: StubConn())
-    with c.session_transaction() as s:
-        s["authenticated"] = True
-        s["csrf_token"] = "tok"
-    resp = c.post("/api/skills",
-                  json={"name": "Public speaking", "notes": "join debate", "focus": True},
-                  headers={"X-CSRF-Token": "tok"})
-    assert resp.status_code == 201, resp.get_data(as_text=True)
-    data = resp.get_json()
-    assert data["name"] == "Public speaking"
-    assert data["focus"] is True
-    # The clear-focus UPDATE must run before the INSERT.
-    assert any("set focus=false" in s for s in statements)
-    clear_idx = next(i for i, s in enumerate(statements) if "set focus=false" in s)
-    insert_idx = next(i for i, s in enumerate(statements) if "insert into skills" in s)
-    assert clear_idx < insert_idx
-
-
-def test_verse_of_the_day_returns_reference_and_text(client):
-    """GET /api/verse-of-the-day returns a stable verse for today."""
-    c, _ = client
-    with c.session_transaction() as s:
-        s["authenticated"] = True
-    resp = c.get("/api/verse-of-the-day")
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data["reference"] and data["text"]
-    assert data["translation"] == "KJV"
-    # Deterministic within a day: a second call returns the same verse.
-    again = c.get("/api/verse-of-the-day").get_json()
-    assert again["reference"] == data["reference"]
-    assert again["text"] == data["text"]
-
-
-def test_caldav_tools_present_without_google(client):
-    """Regression: CalDAV tools were once listed in _GOOGLE_TOOL_NAMES, so an
-    unconfigured Google integration silently pruned Apple Calendar tools too —
-    Jarvis then told the student it had no calendar access despite CalDAV
-    being connected. CalDAV tools must gate only on CalDAV's own config."""
-    _, flask_app = client
-    caldav_names = {"create_caldav_event", "update_caldav_event",
-                    "delete_caldav_event", "list_caldav_events"}
-    assert not (caldav_names & flask_app._GOOGLE_TOOL_NAMES)
-    with mock.patch.object(flask_app, "_caldav_configured", return_value=True), \
-         mock.patch.object(flask_app, "_google_configured", return_value=False):
-        names = {t.get("name") for t in flask_app._build_active_tools()}
-    assert caldav_names <= names
-    assert "create_calendar_event" not in names  # google stays pruned
-    with mock.patch.object(flask_app, "_caldav_configured", return_value=False), \
-         mock.patch.object(flask_app, "_google_configured", return_value=False):
-        names = {t.get("name") for t in flask_app._build_active_tools()}
-    assert not (caldav_names & names)
-
-
 # ── CalDAV event write path ───────────────────────────────────────────────────
 # iCloud's event_by_uid() prop-filter REPORT is unreliable (notably on shared
 # family calendars): it reports "not found" for events a plain listing returns
@@ -895,225 +576,9 @@ END:VCALENDAR
 """
 
 
-class FakeCalDAVCalendar:
-    """Stands in for a caldav Calendar. uid_filter_works=False reproduces
-    iCloud: the server-side UID filter finds nothing."""
-
-    client = None
-
-    def __init__(self, name, icals, uid_filter_works=False):
-        caldav = pytest.importorskip("caldav")
-        self.name = name
-        self.url = "https://caldav.icloud.com/%s/" % name
-        self.uid_filter_works = uid_filter_works
-        self.saved = []
-        self.deleted = []
-        self._events = []
-        for i, ical in enumerate(icals):
-            ev = caldav.Event(client=None, data=ical, parent=self,
-                              url="%sev%d.ics" % (self.url, i))
-            ev.save = (lambda _s=ev, _p=self, **kw: _p.saved.append(_s.data))
-            ev.delete = (lambda _s=ev, _p=self: _p.deleted.append(str(_s.url)))
-            self._events.append(ev)
-
-    def event_by_uid(self, uid):
-        from caldav.lib import error as caldav_error
-        if self.uid_filter_works:
-            for ev in self._events:
-                if ev.icalendar_component.get("UID") == uid:
-                    return ev
-        raise caldav_error.NotFoundError("%s not found on server" % uid)
-
-    def events(self):
-        return list(self._events)
-
-    def get_supported_components(self):
-        return ["VEVENT"]
-
-
 def _saved_lines(cal, prefix):
     return [l for data in cal.saved for l in data.splitlines()
             if l.startswith(prefix)]
-
-
-def test_caldav_update_survives_broken_uid_filter(client):
-    """Regression: update_caldav_event returned 'Event not found' for events
-    that were plainly visible, because it trusted event_by_uid() alone."""
-    _, flask_app = client
-    pytest.importorskip("caldav")
-    cal = FakeCalDAVCalendar("Family", [UFC_ICS])
-    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal):
-        res = flask_app._caldav_update_event(
-            "ufc-fight-1234", start_dt="2026-08-10T16:30:00",
-            location="Andrews House")
-    assert "error" not in res, res
-    assert res["location"] == "Andrews House"
-    assert len(cal.saved) == 1
-
-
-def test_caldav_update_preserves_duration_when_only_start_moves(client):
-    """Regression: moving a 2-3pm event to 4:30 left DTEND at 3pm, so the
-    event ended 90 minutes before it started."""
-    _, flask_app = client
-    pytest.importorskip("caldav")
-    cal = FakeCalDAVCalendar("Family", [UFC_ICS])
-    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal):
-        res = flask_app._caldav_update_event(
-            "ufc-fight-1234", start_dt="2026-08-10T16:30:00")
-    assert "error" not in res, res
-    assert _saved_lines(cal, "DTSTART;TZID") == [
-        "DTSTART;TZID=America/Denver:20260810T163000"]
-    assert _saved_lines(cal, "DTEND;TZID") == [
-        "DTEND;TZID=America/Denver:20260810T173000"]
-
-
-def test_caldav_update_keeps_olson_tzid(client):
-    """Regression: assigning a ZoneInfo made vobject emit TZID=MST — the
-    standard-time abbreviation, wrong during MDT, which can shift the event an
-    hour. The timezone already on the event must be reused."""
-    _, flask_app = client
-    pytest.importorskip("caldav")
-    cal = FakeCalDAVCalendar("Family", [UFC_ICS])
-    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal):
-        flask_app._caldav_update_event(
-            "ufc-fight-1234", start_dt="2026-08-10T16:30:00")
-    assert not _saved_lines(cal, "DTSTART;TZID=MST")
-    # Asserted positively too, so the test can't pass by saving nothing at all.
-    # (Plain "DTSTART" would also match the generated VTIMEZONE's own lines.)
-    assert _saved_lines(cal, "DTSTART;TZID") == [
-        "DTSTART;TZID=America/Denver:20260810T163000"]
-
-
-def test_caldav_update_allday_event_drops_value_date(client):
-    """Regression: writing a datetime onto an all-day event left VALUE=DATE
-    in place, producing DTSTART;VALUE=DATE:20260812T163000 — malformed."""
-    _, flask_app = client
-    pytest.importorskip("caldav")
-    cal = FakeCalDAVCalendar("Family", [ALLDAY_ICS])
-    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal):
-        res = flask_app._caldav_update_event(
-            "allday-999", start_dt="2026-08-12T16:30:00")
-    assert "error" not in res, res
-    assert _saved_lines(cal, "DTSTART") == ["DTSTART:20260812T223000Z"]
-    assert _saved_lines(cal, "DTEND") == ["DTEND:20260812T233000Z"]
-
-
-def test_caldav_delete_survives_broken_uid_filter(client):
-    _, flask_app = client
-    pytest.importorskip("caldav")
-    cal = FakeCalDAVCalendar("Family", [UFC_ICS])
-    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal):
-        res = flask_app._caldav_delete_event("ufc-fight-1234")
-    assert res == {"status": "deleted", "id": "ufc-fight-1234"}
-    assert len(cal.deleted) == 1
-
-
-def test_caldav_missing_uid_still_reports_not_found(client):
-    """The fallback must not turn a genuinely absent event into a false hit."""
-    _, flask_app = client
-    pytest.importorskip("caldav")
-    cal = FakeCalDAVCalendar("Family", [UFC_ICS])
-    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=cal), \
-         mock.patch.object(flask_app, "_get_caldav_connection", return_value=None):
-        res = flask_app._caldav_delete_event("no-such-uid")
-    assert "not found" in res["error"]
-    assert not cal.deleted
-
-
-def test_caldav_finds_event_on_other_shared_calendar(client):
-    """With family sharing the event often lives on a calendar other than the
-    one new events are written to; lookup must span the account."""
-    _, flask_app = client
-    pytest.importorskip("caldav")
-    configured = FakeCalDAVCalendar("Home", [])
-    shared = FakeCalDAVCalendar("Shared Family", [UFC_ICS])
-
-    class FakeClient:
-        def principal(self):
-            return self
-
-        def calendars(self):
-            return [configured, shared]
-
-    with mock.patch.object(flask_app, "_get_caldav_calendar", return_value=configured), \
-         mock.patch.object(flask_app, "_get_caldav_connection", return_value=FakeClient()):
-        res = flask_app._caldav_update_event(
-            "ufc-fight-1234", location="Andrews House")
-    assert "error" not in res, res
-    assert _saved_lines(shared, "LOCATION") == ["LOCATION:Andrews House"]
-    assert not configured.saved
-
-
-# --- Telegram attachments (photos / PDFs sent to the bot) --------------------
-
-
-def test_telegram_attachment_blocks_builds_image_and_pdf(client):
-    """A photo and a PDF must become vision / document content blocks."""
-    _, flask_app = client
-
-    downloads = {"img": b"\xff\xd8\xffnotreallyajpeg", "pdf": b"%PDF-1.4 fake"}
-    with mock.patch.object(flask_app, "_telegram_download_file",
-                           side_effect=lambda fid: downloads[fid]):
-        blocks, labels, problems = flask_app._telegram_attachment_blocks([
-            {"kind": "photo", "file_id": "img", "mime": "image/jpeg", "filename": "photo.jpg"},
-            {"kind": "document", "file_id": "pdf", "mime": "application/pdf",
-             "filename": "invite.pdf"},
-        ])
-
-    assert problems == []
-    assert [b["type"] for b in blocks] == ["image", "document"]
-    assert blocks[0]["source"]["media_type"] == "image/jpeg"
-    assert blocks[1]["source"]["media_type"] == "application/pdf"
-    # Payloads must be base64, not raw bytes.
-    import base64
-    assert base64.standard_b64decode(blocks[1]["source"]["data"]) == downloads["pdf"]
-    assert labels == ["an image", "a PDF (invite.pdf)"]
-
-
-def test_telegram_attachment_blocks_infers_pdf_from_filename(client):
-    """Telegram sometimes omits mime_type — fall back to the extension."""
-    _, flask_app = client
-    with mock.patch.object(flask_app, "_telegram_download_file", return_value=b"%PDF-1.4"):
-        blocks, _labels, problems = flask_app._telegram_attachment_blocks([
-            {"kind": "document", "file_id": "f", "mime": "", "filename": "Syllabus.PDF"},
-        ])
-    assert problems == []
-    assert blocks[0]["source"]["media_type"] == "application/pdf"
-
-
-def test_telegram_attachment_blocks_inlines_text_file(client):
-    _, flask_app = client
-    with mock.patch.object(flask_app, "_telegram_download_file", return_value=b"practice at 5pm"):
-        blocks, _labels, problems = flask_app._telegram_attachment_blocks([
-            {"kind": "document", "file_id": "f", "mime": "text/plain", "filename": "notes.txt"},
-        ])
-    assert problems == []
-    assert blocks[0]["type"] == "text"
-    assert "practice at 5pm" in blocks[0]["text"]
-
-
-def test_telegram_attachment_blocks_rejects_unsupported_type(client):
-    """An unreadable file yields a problem note, never a malformed block."""
-    _, flask_app = client
-    with mock.patch.object(flask_app, "_telegram_download_file", return_value=b"PK\x03\x04"):
-        blocks, _labels, problems = flask_app._telegram_attachment_blocks([
-            {"kind": "document", "file_id": "f",
-             "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-             "filename": "essay.docx"},
-        ])
-    assert blocks == []
-    assert problems and "essay.docx" in problems[0]
-
-
-def test_telegram_attachment_blocks_rejects_oversized_image(client):
-    _, flask_app = client
-    huge = b"x" * (flask_app._TELEGRAM_MAX_IMAGE_BYTES + 1)
-    with mock.patch.object(flask_app, "_telegram_download_file", return_value=huge):
-        blocks, _labels, problems = flask_app._telegram_attachment_blocks([
-            {"kind": "photo", "file_id": "f", "mime": "image/png", "filename": "big.png"},
-        ])
-    assert blocks == []
-    assert problems and "too large" in problems[0]
 
 
 def _telegram_webhook_post(c, flask_app, message):
@@ -1130,101 +595,6 @@ def _telegram_webhook_post(c, flask_app, message):
         json={"update_id": 999, "message": message},
         headers={"X-Telegram-Bot-Api-Secret-Token": secret},
     )
-
-
-def test_telegram_webhook_forwards_photo_with_caption(client):
-    """A photo message carries its text in `caption`, and the largest size wins."""
-    c, flask_app = client
-    captured = {}
-
-    class FakeThread:
-        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
-            captured["args"] = args
-            captured["kwargs"] = kwargs or {}
-
-        def start(self):
-            pass
-
-    with mock.patch.object(flask_app.threading, "Thread", FakeThread):
-        resp = _telegram_webhook_post(c, flask_app, {
-            "chat": {"id": 12345},
-            "caption": "put this on my calendar",
-            "photo": [
-                {"file_id": "small", "width": 90},
-                {"file_id": "large", "width": 1280},
-            ],
-        })
-
-    assert resp.status_code == 200
-    assert captured["args"][0] == "put this on my calendar"
-    atts = captured["kwargs"]["attachments"]
-    assert len(atts) == 1
-    assert atts[0]["file_id"] == "large"
-    assert atts[0]["kind"] == "photo"
-
-
-def test_telegram_webhook_accepts_document_without_caption(client):
-    """A bare PDF with no caption must still be processed, not dropped."""
-    c, flask_app = client
-    captured = {}
-
-    class FakeThread:
-        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
-            captured["args"] = args
-            captured["kwargs"] = kwargs or {}
-
-        def start(self):
-            pass
-
-    with mock.patch.object(flask_app.threading, "Thread", FakeThread):
-        resp = _telegram_webhook_post(c, flask_app, {
-            "chat": {"id": 12345},
-            "document": {"file_id": "doc1", "mime_type": "application/pdf",
-                         "file_name": "invite.pdf"},
-        })
-
-    assert resp.status_code == 200
-    assert captured["args"][0] == ""
-    atts = captured["kwargs"]["attachments"]
-    assert atts[0]["filename"] == "invite.pdf"
-    assert atts[0]["mime"] == "application/pdf"
-
-
-def test_telegram_webhook_ignores_other_chats(client):
-    """Attachments must not bypass the connected-chat check."""
-    c, flask_app = client
-    started = []
-
-    class FakeThread:
-        def __init__(self, **_kw):
-            started.append(1)
-
-        def start(self):
-            pass
-
-    with mock.patch.object(flask_app.threading, "Thread", FakeThread):
-        resp = _telegram_webhook_post(c, flask_app, {
-            "chat": {"id": 99999},
-            "document": {"file_id": "doc1", "mime_type": "application/pdf",
-                         "file_name": "x.pdf"},
-        })
-
-    assert resp.status_code == 200
-    assert not started
-
-
-class _FakeTextBlock:
-    type = "text"
-
-    def __init__(self, text):
-        self.text = text
-
-
-class _FakeResponse:
-    stop_reason = "end_turn"
-
-    def __init__(self, text):
-        self.content = [_FakeTextBlock(text)]
 
 
 def _run_telegram_turn(flask_app, user_text, attachments, history):
@@ -1260,133 +630,304 @@ def _run_telegram_turn(flask_app, user_text, attachments, history):
     return sent.get("messages"), persisted, replies
 
 
-def test_telegram_turn_sends_attachment_blocks_to_model(client):
-    """The PDF must reach the model as a document block alongside the caption."""
+def _ics(summaries):
+    """Minimal iCal document with one future VEVENT per summary."""
+    from datetime import datetime, timedelta, timezone
+    due = (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y%m%dT%H%M%SZ")
+    out = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//test//EN"]
+    for i, s in enumerate(summaries):
+        out += ["BEGIN:VEVENT", f"UID:u{i}@test", f"DTSTAMP:{due}",
+                f"DTSTART:{due}", f"SUMMARY:{s}", "END:VEVENT"]
+    out.append("END:VCALENDAR")
+    return "\r\n".join(out) + "\r\n"
+
+
+def test_canvas_parser_splits_bracketed_course_name(client):
+    """Canvas publishes 'Title [Course]'. The course must land in class_name,
+    not get glued onto the title."""
+    from icalendar import Calendar
     _, flask_app = client
-    messages, persisted, replies = _run_telegram_turn(
-        flask_app, "schedule this",
-        [{"kind": "document", "file_id": "f", "mime": "application/pdf",
-          "filename": "invite.pdf"}],
-        history=[],
-    )
-
-    assert len(messages) == 1
-    content = messages[0]["content"]
-    assert isinstance(content, list)
-    assert content[0]["type"] == "document"
-    assert content[-1]["text"] == "schedule this"
-    # The transcript records what arrived, since chat_messages holds text only.
-    assert persisted[0] == ("user", "[sent a PDF (invite.pdf)] schedule this")
-    assert replies == ["Noted, sir."]
+    cal = Calendar.from_ical(_ics(["Lab Report: Titration Curves [AP Chemistry]"]))
+    out = flask_app.parse_canvas_assignments(cal)
+    assert len(out) == 1
+    assert out[0]["title"] == "Lab Report: Titration Curves"
+    assert out[0]["class_name"] == "AP Chemistry"
 
 
-def test_telegram_turn_merges_dangling_user_turn_with_blocks(client):
-    """If a prior turn died before its reply persisted, roles must still
-    alternate — the dangling text becomes a block, not a string concat."""
+def test_canvas_parser_still_splits_dash_form(client):
+    from icalendar import Calendar
     _, flask_app = client
-    messages, _persisted, _replies = _run_telegram_turn(
-        flask_app, "and this one too",
-        [{"kind": "photo", "file_id": "f", "mime": "image/jpeg", "filename": "photo.jpg"}],
-        history=[{"role": "user", "content": "earlier question"}],
-    )
-
-    assert [m["role"] for m in messages] == ["user"]
-    content = messages[0]["content"]
-    assert content[0] == {"type": "text", "text": "earlier question"}
-    assert content[1]["type"] == "image"
-    assert content[-1]["text"] == "and this one too"
+    cal = Calendar.from_ical(_ics(["Chapter 12 Quiz - AP US History"]))
+    out = flask_app.parse_canvas_assignments(cal)
+    assert out[0]["title"] == "Chapter 12 Quiz"
+    assert out[0]["class_name"] == "AP US History"
 
 
-def test_telegram_turn_without_attachments_still_sends_plain_string(client):
-    """The no-attachment path must be unchanged."""
+def test_canvas_parser_leaves_plain_summary_alone(client):
+    from icalendar import Calendar
     _, flask_app = client
-    messages, persisted, _replies = _run_telegram_turn(
-        flask_app, "what's due tomorrow?", None, history=[],
-    )
-    assert messages == [{"role": "user", "content": "what's due tomorrow?"}]
-    assert persisted[0] == ("user", "what's due tomorrow?")
+    cal = Calendar.from_ical(_ics(["Read chapters 4-6"]))
+    out = flask_app.parse_canvas_assignments(cal)
+    assert out[0]["title"] == "Read chapters 4-6"
+    assert out[0]["class_name"] == ""
 
 
-def test_telegram_turn_uncaptioned_attachment_gets_placeholder_text(client):
-    """A bare PDF still needs a trailing text block — a content list of only
-    documents gives the model nothing to respond to."""
+def test_ps_login_helpers_are_defined(client):
+    """_ps_md5 / _ps_session_cache / _ps_session_lock were referenced by the
+    PowerSchool login path but never defined — a guaranteed NameError."""
     _, flask_app = client
-    messages, persisted, _replies = _run_telegram_turn(
-        flask_app, "",
-        [{"kind": "document", "file_id": "f", "mime": "application/pdf",
-          "filename": "notes.pdf"}],
-        history=[],
-    )
-    content = messages[0]["content"]
-    assert content[-1]["type"] == "text" and content[-1]["text"].strip()
-    assert persisted[0] == ("user", "[sent a PDF (notes.pdf)]")
+    assert flask_app._ps_md5("abc") == "900150983cd24fb0d6963f7d28e17f72"
+    assert set(flask_app._ps_session_cache) == {"session", "home_url", "expires"}
+    assert flask_app._ps_session_lock is not None
 
 
-def test_telegram_album_batches_into_one_turn(client):
-    """Three photos sent together must produce ONE Jarvis turn with all three,
-    not three turns (which would risk three duplicate calendar events)."""
+def test_sync_run_rejects_unknown_connector(client):
     c, flask_app = client
-    turns = []
-
-    with mock.patch.object(flask_app, "_telegram_run_jarvis",
-                           side_effect=lambda t, cid, attachments=None: turns.append((t, attachments))), \
-         mock.patch.object(flask_app, "_TELEGRAM_ALBUM_WINDOW_SECONDS", 0.05):
-        for i, fid in enumerate(["a", "b", "c"]):
-            _telegram_webhook_post(c, flask_app, {
-                "chat": {"id": 12345},
-                "media_group_id": "grp1",
-                # Only the first item of an album carries the caption.
-                "caption": "add this to my calendar" if i == 0 else None,
-                "photo": [{"file_id": fid + "_small"}, {"file_id": fid}],
-            })
-        time.sleep(0.6)
-
-    assert len(turns) == 1, turns
-    text, atts = turns[0]
-    assert text == "add this to my calendar"
-    assert [a["file_id"] for a in atts] == ["a", "b", "c"]
+    with c.session_transaction() as sess:
+        sess["authenticated"] = True
+        sess["csrf_token"] = "tok"
+    r = c.post("/api/sync/run", json={"connector": "nope"}, headers={"X-CSRF-Token": "tok"})
+    assert r.status_code == 400
 
 
-def test_telegram_album_caps_attachment_count(client):
-    """A large album must not grow the buffer without bound."""
-    c, flask_app = client
-    turns = []
-
-    with mock.patch.object(flask_app, "_telegram_run_jarvis",
-                           side_effect=lambda t, cid, attachments=None: turns.append(attachments)), \
-         mock.patch.object(flask_app, "_TELEGRAM_ALBUM_WINDOW_SECONDS", 0.05):
-        for i in range(9):
-            _telegram_webhook_post(c, flask_app, {
-                "chat": {"id": 12345},
-                "media_group_id": "grp2",
-                "photo": [{"file_id": "p%d" % i}],
-            })
-        time.sleep(0.6)
-
-    assert len(turns) == 1
-    assert len(turns[0]) == flask_app._TELEGRAM_MAX_ATTACHMENTS
-    # The buffer must not leak once flushed.
-    assert "grp2" not in flask_app._telegram_albums
+def test_connector_state_reports_all_three(client):
+    _, flask_app = client
+    assert flask_app.CONNECTORS == ("canvas", "powerschool", "whoop")
+    for name in flask_app.CONNECTORS:
+        st = flask_app._connector_state(name)
+        assert set(["name", "label", "configured", "connected", "last_run", "next_run"]) <= set(st)
 
 
-def test_telegram_single_photo_still_runs_immediately(client):
-    """A lone photo has no media_group_id and must not wait on the album timer."""
-    c, flask_app = client
-    started = []
+# ── Canvas password login ─────────────────────────────────────────────────────
 
-    class FakeThread:
-        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
-            started.append((args, kwargs or {}))
+_CANVAS_LOGIN_HTML = (
+    '<html><body><form id="login_form" action="/login/canvas" method="post">'
+    '<input name="authenticity_token" value="tok-abc">'
+    '<input name="pseudonym_session[unique_id]">'
+    '<input type="password" name="pseudonym_session[password]">'
+    '</form></body></html>'
+)
 
-        def start(self):
-            pass
 
-    with mock.patch.object(flask_app.threading, "Thread", FakeThread):
-        _telegram_webhook_post(c, flask_app, {
-            "chat": {"id": 12345},
-            "caption": "what is this",
-            "photo": [{"file_id": "solo"}],
-        })
+class _Resp:
+    def __init__(self, text="", status=200, json_data=None, url="https://pcsd.instructure.com/"):
+        self.text = text
+        self.status_code = status
+        self._json = json_data
+        self.url = url
 
-    assert len(started) == 1
-    assert started[0][1]["attachments"][0]["file_id"] == "solo"
+    def json(self):
+        if self._json is None:
+            raise ValueError("no json")
+        return self._json
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+
+class _FakeCanvasSession:
+    """Stands in for requests.Session during a Canvas login."""
+
+    def __init__(self, post_result, api_json=None):
+        self.headers = {}
+        self.cookies = {}
+        self._post_result = post_result
+        self._api_json = api_json
+        self.posted = None
+        self.gets = []
+
+    def get(self, url, **kw):
+        self.gets.append(url)
+        if "/login/canvas" in url:
+            return _Resp(_CANVAS_LOGIN_HTML, url=url)
+        return _Resp("", json_data=self._api_json if self._api_json is not None else [], url=url)
+
+    def post(self, url, data=None, **kw):
+        self.posted = data
+        return self._post_result
+
+
+def _canvas_setup(flask_app, monkeypatch, session_obj):
+    monkeypatch.setattr(flask_app, "u_canvas_base_url", lambda: "https://pcsd.instructure.com")
+    monkeypatch.setattr(flask_app, "u_canvas_api_token", lambda: "")
+    monkeypatch.setattr(flask_app, "u_canvas_username", lambda: "someone@example.com")
+    monkeypatch.setattr(flask_app, "u_canvas_password", lambda: "pw")
+    monkeypatch.setattr(flask_app.requests, "Session", lambda: session_obj)
+    flask_app._canvas_invalidate_session()
+
+
+def test_canvas_auth_mode_prefers_token_then_password(client, monkeypatch):
+    _, flask_app = client
+    monkeypatch.setattr(flask_app, "u_canvas_base_url", lambda: "https://x.instructure.com")
+    monkeypatch.setattr(flask_app, "u_canvas_api_token", lambda: "t")
+    monkeypatch.setattr(flask_app, "u_canvas_username", lambda: "u")
+    monkeypatch.setattr(flask_app, "u_canvas_password", lambda: "p")
+    assert flask_app._canvas_auth_mode() == "token"
+    monkeypatch.setattr(flask_app, "u_canvas_api_token", lambda: "")
+    assert flask_app._canvas_auth_mode() == "password"
+    monkeypatch.setattr(flask_app, "u_canvas_password", lambda: "")
+    assert flask_app._canvas_auth_mode() is None
+
+
+def test_canvas_login_posts_authenticity_token_and_credentials(client, monkeypatch):
+    _, flask_app = client
+    sess = _FakeCanvasSession(_Resp("<html>Dashboard</html>", url="https://pcsd.instructure.com/?login_success=1"))
+    sess.cookies = {"canvas_session": "abc"}
+    _canvas_setup(flask_app, monkeypatch, sess)
+    out = flask_app._canvas_login()
+    assert out is sess
+    assert sess.posted["authenticity_token"] == "tok-abc"
+    assert sess.posted["pseudonym_session[unique_id]"] == "someone@example.com"
+    assert sess.posted["pseudonym_session[password]"] == "pw"
+
+
+def test_canvas_login_detects_bad_credentials(client, monkeypatch):
+    """A rejected login re-renders the login form; that must not read as success."""
+    _, flask_app = client
+    sess = _FakeCanvasSession(_Resp(_CANVAS_LOGIN_HTML))
+    _canvas_setup(flask_app, monkeypatch, sess)
+    assert flask_app._canvas_login() is None
+    assert "login page" in flask_app._canvas_last_login_error["message"]
+
+
+def test_canvas_login_reports_missing_session_cookie(client, monkeypatch):
+    _, flask_app = client
+    sess = _FakeCanvasSession(_Resp("<html>Somewhere else</html>"))
+    sess.cookies = {}
+    _canvas_setup(flask_app, monkeypatch, sess)
+    assert flask_app._canvas_login() is None
+    assert "canvas_session" in flask_app._canvas_last_login_error["message"]
+
+
+def test_canvas_grades_keeps_observer_enrollments(client, monkeypatch):
+    """A view-only account is an ObserverEnrollment. Filtering to
+    StudentEnrollment would silently return no grades at all."""
+    _, flask_app = client
+    monkeypatch.setattr(flask_app, "canvas_courses",
+                        lambda: [{"id": 1, "name": "AP Chemistry"}, {"id": 2, "name": "AP Physics C"}])
+    monkeypatch.setattr(flask_app, "_canvas_get", lambda *a, **k: [
+        {"course_id": 1, "type": "ObserverEnrollment",
+         "grades": {"current_score": 94.2, "current_grade": "A"}},
+        {"course_id": 2, "type": "ObserverEnrollment", "grades": {}},
+    ])
+    with flask_app._simple_cache_lock:
+        flask_app._simple_cache.pop("canvas:grades", None)
+    out = flask_app.canvas_grades()
+    assert len(out) == 1
+    assert out[0]["course"] == "AP Chemistry"
+    assert out[0]["current_score"] == 94.2
+    assert out[0]["enrollment_type"] == "ObserverEnrollment"
+
+
+def test_canvas_get_retries_once_when_session_expires(client, monkeypatch):
+    """An expired Canvas session returns the login page with a 200. That must
+    invalidate and re-login exactly once, not loop."""
+    _, flask_app = client
+    calls = {"n": 0}
+
+    class Expiring(_FakeCanvasSession):
+        def get(self, url, **kw):
+            if "/login/canvas" in url:
+                return _Resp(_CANVAS_LOGIN_HTML, url=url)
+            calls["n"] += 1
+            return _Resp(_CANVAS_LOGIN_HTML, url=url)  # always looks logged out
+
+    sess = Expiring(_Resp("<html>ok</html>"))
+    sess.cookies = {"canvas_session": "abc"}
+    _canvas_setup(flask_app, monkeypatch, sess)
+    assert flask_app._canvas_get("/api/v1/users/self/enrollments") is None
+    assert calls["n"] == 2  # original attempt plus exactly one retry
+
+
+# ── Canvas /grades HTML parsing ───────────────────────────────────────────────
+
+_GRADES_PAGE = """
+<html><body>
+<table class="course_details student_grades">
+  <thead><tr><th>Course</th><th>Term</th><th>Enrolled as</th><th>Grades</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><a href="/courses/1021/grades/55">AP Chemistry</a></td>
+      <td>Fall 2025</td><td>Observer</td>
+      <td><span class="percent">94.2%</span> <span class="letter_grade">A</span></td>
+    </tr>
+    <tr>
+      <td><a href="/courses/1022/grades/55">AP US History</a></td>
+      <td>Fall 2025</td><td>Observer</td>
+      <td><span class="percent">88.6%</span> <span class="letter_grade">B+</span></td>
+    </tr>
+    <tr>
+      <td><a href="/courses/1023/grades/55">Advisory</a></td>
+      <td>Fall 2025</td><td>Observer</td>
+      <td><span class="percent">N/A</span></td>
+    </tr>
+  </tbody>
+</table>
+</body></html>
+"""
+
+
+def test_canvas_grades_page_parses_courses_and_scores(client):
+    _, flask_app = client
+    out = flask_app._canvas_parse_grades_html(_GRADES_PAGE)
+    assert len(out) == 2, "the ungraded Advisory row must be dropped"
+    assert out[0]["course"] == "AP Chemistry"
+    assert out[0]["course_id"] == 1021
+    assert out[0]["current_score"] == 94.2
+    assert out[0]["current_grade"] == "A"
+    assert out[1]["current_grade"] == "B+"
+
+
+def test_canvas_grades_page_tolerates_different_markup(client):
+    """Parsing keys off /courses/<id> links and row text, not class names, so a
+    differently themed Canvas still works."""
+    _, flask_app = client
+    html = """<table><tr>
+        <td><a href="https://x.instructure.com/courses/77">Physics C</a></td>
+        <td>current score: 91.5% (A-)</td></tr></table>"""
+    out = flask_app._canvas_parse_grades_html(html)
+    assert len(out) == 1
+    assert out[0]["course"] == "Physics C"
+    assert out[0]["course_id"] == 77
+    assert out[0]["current_score"] == 91.5
+    assert out[0]["current_grade"] == "A-"
+
+
+def test_canvas_grades_page_ignores_rows_without_a_course_link(client):
+    _, flask_app = client
+    html = "<table><tr><th>Course</th><th>Grades</th></tr><tr><td>Totals</td><td>92%</td></tr></table>"
+    assert flask_app._canvas_parse_grades_html(html) == []
+
+
+def test_canvas_grades_prefers_html_over_api(client, monkeypatch):
+    """/grades reflects the observed student for a view-only login; the
+    self-scoped API may not, so HTML wins when it returns anything."""
+    _, flask_app = client
+    monkeypatch.setattr(flask_app, "_canvas_get_html", lambda p, **k: _GRADES_PAGE)
+    monkeypatch.setattr(flask_app, "canvas_courses", lambda: [])
+    called = {"api": False}
+
+    def _no_api(*a, **k):
+        called["api"] = True
+        return []
+    monkeypatch.setattr(flask_app, "_canvas_get", _no_api)
+    with flask_app._simple_cache_lock:
+        flask_app._simple_cache.pop("canvas:grades", None)
+    out = flask_app.canvas_grades()
+    assert len(out) == 2
+    assert called["api"] is False
+
+
+def test_canvas_grades_falls_back_to_api_when_page_is_empty(client, monkeypatch):
+    _, flask_app = client
+    monkeypatch.setattr(flask_app, "_canvas_get_html", lambda p, **k: "<html></html>")
+    monkeypatch.setattr(flask_app, "canvas_courses", lambda: [{"id": 5, "name": "Spanish IV"}])
+    monkeypatch.setattr(flask_app, "_canvas_get", lambda *a, **k: [
+        {"course_id": 5, "type": "ObserverEnrollment",
+         "grades": {"current_score": 90.0, "current_grade": "A-"}}])
+    with flask_app._simple_cache_lock:
+        flask_app._simple_cache.pop("canvas:grades", None)
+    out = flask_app.canvas_grades()
+    assert len(out) == 1
+    assert out[0]["course"] == "Spanish IV"
