@@ -628,3 +628,71 @@ def _run_telegram_turn(flask_app, user_text, attachments, history):
         flask_app._telegram_run_jarvis(user_text, "12345", attachments=attachments)
 
     return sent.get("messages"), persisted, replies
+
+
+def _ics(summaries):
+    """Minimal iCal document with one future VEVENT per summary."""
+    from datetime import datetime, timedelta, timezone
+    due = (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y%m%dT%H%M%SZ")
+    out = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//test//EN"]
+    for i, s in enumerate(summaries):
+        out += ["BEGIN:VEVENT", f"UID:u{i}@test", f"DTSTAMP:{due}",
+                f"DTSTART:{due}", f"SUMMARY:{s}", "END:VEVENT"]
+    out.append("END:VCALENDAR")
+    return "\r\n".join(out) + "\r\n"
+
+
+def test_canvas_parser_splits_bracketed_course_name(client):
+    """Canvas publishes 'Title [Course]'. The course must land in class_name,
+    not get glued onto the title."""
+    from icalendar import Calendar
+    _, flask_app = client
+    cal = Calendar.from_ical(_ics(["Lab Report: Titration Curves [AP Chemistry]"]))
+    out = flask_app.parse_canvas_assignments(cal)
+    assert len(out) == 1
+    assert out[0]["title"] == "Lab Report: Titration Curves"
+    assert out[0]["class_name"] == "AP Chemistry"
+
+
+def test_canvas_parser_still_splits_dash_form(client):
+    from icalendar import Calendar
+    _, flask_app = client
+    cal = Calendar.from_ical(_ics(["Chapter 12 Quiz - AP US History"]))
+    out = flask_app.parse_canvas_assignments(cal)
+    assert out[0]["title"] == "Chapter 12 Quiz"
+    assert out[0]["class_name"] == "AP US History"
+
+
+def test_canvas_parser_leaves_plain_summary_alone(client):
+    from icalendar import Calendar
+    _, flask_app = client
+    cal = Calendar.from_ical(_ics(["Read chapters 4-6"]))
+    out = flask_app.parse_canvas_assignments(cal)
+    assert out[0]["title"] == "Read chapters 4-6"
+    assert out[0]["class_name"] == ""
+
+
+def test_ps_login_helpers_are_defined(client):
+    """_ps_md5 / _ps_session_cache / _ps_session_lock were referenced by the
+    PowerSchool login path but never defined — a guaranteed NameError."""
+    _, flask_app = client
+    assert flask_app._ps_md5("abc") == "900150983cd24fb0d6963f7d28e17f72"
+    assert set(flask_app._ps_session_cache) == {"session", "home_url", "expires"}
+    assert flask_app._ps_session_lock is not None
+
+
+def test_sync_run_rejects_unknown_connector(client):
+    c, flask_app = client
+    with c.session_transaction() as sess:
+        sess["authenticated"] = True
+        sess["csrf_token"] = "tok"
+    r = c.post("/api/sync/run", json={"connector": "nope"}, headers={"X-CSRF-Token": "tok"})
+    assert r.status_code == 400
+
+
+def test_connector_state_reports_all_three(client):
+    _, flask_app = client
+    assert flask_app.CONNECTORS == ("canvas", "powerschool", "whoop")
+    for name in flask_app.CONNECTORS:
+        st = flask_app._connector_state(name)
+        assert set(["name", "label", "configured", "connected", "last_run", "next_run"]) <= set(st)

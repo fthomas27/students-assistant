@@ -2400,12 +2400,19 @@ def parse_canvas_assignments(cal):
             due_val = due_val.replace(tzinfo=ZoneInfo("UTC"))
         if due_val < now_utc or due_val > cutoff:
             continue
+        # Canvas publishes "Assignment title [Course Name]". Some feeds (and
+        # hand-rolled ones) use "Assignment title - Course Name" instead, so
+        # accept both rather than leaving every class name blank.
         class_name = ""
-        title = summary
-        if " - " in summary:
-            parts = summary.rsplit(" - ", 1)
-            title = parts[0].strip()
-            class_name = parts[1].strip()
+        title = summary.strip()
+        bracket = re.match(r"^(.*?)\s*\[([^\[\]]+)\]\s*$", title)
+        if bracket:
+            title = bracket.group(1).strip()
+            class_name = bracket.group(2).strip()
+        elif " - " in title:
+            head, _, tail = title.rpartition(" - ")
+            title = head.strip()
+            class_name = tail.strip()
         delta = due_val - now_utc
         if delta.total_seconds() < 86400:
             urgency = "high"
@@ -4068,11 +4075,24 @@ def api_calendar():
     return jsonify({"events": events})
 
 
+@app.route("/api/canvas/grades")
+def api_canvas_grades():
+    """Live Canvas course grades. Needs CANVAS_API_TOKEN; the iCal feed alone
+    carries titles and due dates but no grades."""
+    if not _canvas_configured():
+        return jsonify({"configured": False, "grades": []})
+    try:
+        return jsonify({"configured": True, "grades": canvas_grades()})
+    except Exception as e:
+        log.warning("/api/canvas/grades failed: %s", e)
+        return jsonify({"configured": True, "grades": [], "error": str(e)[:200]})
+
+
 @app.route("/api/powerschool/grades")
 def api_powerschool_grades():
     """Return cached PowerSchool grades. Scrapes live if cache is cold."""
     if not _ps_configured():
-        return jsonify({"error": "PowerSchool credentials not configured (POWER_USERN / POWER_PASS)"}), 503
+        return jsonify({"configured": False, "grades": [], "count": 0})
     grades = ps_grades()
     return jsonify({"grades": grades, "count": len(grades), "configured": True})
 
@@ -4081,7 +4101,7 @@ def api_powerschool_grades():
 def api_powerschool_attendance():
     """Return cached PowerSchool attendance summary."""
     if not _ps_configured():
-        return jsonify({"error": "PowerSchool credentials not configured"}), 503
+        return jsonify({"configured": False, "attendance": {}})
     att = ps_attendance()
     return jsonify({"attendance": att, "configured": True})
 
