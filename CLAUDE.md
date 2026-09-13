@@ -168,34 +168,31 @@ an observer**, and the self-scoped API returns the observer's own enrollments �
 which is an empty list — while `/grades` renders the observed student's actual
 grades. Trusting the API alone gives you zero grades and no error.
 
-`_canvas_parse_grades_html()` is deliberately tolerant: it walks table rows,
-takes the course from whatever `/courses/<id>` link the row contains, and pulls
-the percentage and letter out of the row's text. It does **not** bind to Canvas
-class names, which vary by version and theme. Keep it that way — and keep the
-API fallback, which covers a real student login.
+`_canvas_parse_grades_html()` is deliberately tolerant. It does **not** bind to
+Canvas class names, which vary by version and theme — keep it that way, and keep
+the API fallback, which covers a real student login.
 
-If parsing ever returns nothing, `GET /api/canvas/debug` reports the byte count
-and hands back the first table's markup so the parser can be fixed against the
-real page.
+What the live page actually looks like, and what the parser must handle:
 
-Two more things that will bite you:
-
+- **It is a list of course links, not a table.** Each link is followed by its
+  grade. The parser finds every `/courses/<id>` link and reads the grade from
+  its enclosing table row when there is one, or from the text up to the next
+  course link when there isn't. Do not narrow it to tables.
+- **Most courses publish a letter and no percentage.** A row with a letter and
+  no percent is kept; the UI leads with the letter and shows no progress bar.
+  Dropping those rows is what once hid a course sitting at an F.
+- **Never derive a letter from a percentage.** Park City's scale is not the
+  standard 10-point one — 71.61% is a B- there — so derivation disagreed with
+  Canvas on 3 of 4 courses when it was tried. Letters come from the page or not
+  at all.
+- **Letter extraction is layered**: an element Canvas labels as the letter
+  grade, else a standalone letter in the percentage's own cell, else anywhere
+  in the row. Unicode minus and en/em dashes normalise to ASCII first.
+- **"no grade" and `N/A` rows are dropped.** Note `N/A` ends in a standalone A,
+  which a naive letter match reads as an A grade — strip it before matching.
 - **An expired session comes back as a 200 containing the login page**, not a
   401. Both `_canvas_get()` and `_canvas_get_html()` sniff for that, re-log in,
   and retry exactly once.
-- A course with no grade posted yet appears on `/grades` with `N/A`; those rows
-  are dropped rather than shown as 0%.
-- **The page is a list of links, not a table.** Each course link is followed by
-  its grade. `_canvas_parse_grades_html()` therefore finds every
-  `/courses/<id>` link and reads the grade from its table row *or*, when there
-  is no row, the text up to the next course link. Do not narrow it to tables.
-- **Most courses publish a letter and no percentage.** A row with a letter and
-  no percent is kept; the UI leads with the letter and shows no progress bar.
-- **Never derive a letter from a percentage.** Park City's scale is not the
-  standard 10-point one — 71.61% is a B- there — so derivation was wrong on 3
-  of 4 courses when it was tried. Letters come from the page or not at all.
-- **"no grade" rows are dropped**, as are `N/A` ones. Note `N/A` ends in a
-  standalone A, which a naive letter match reads as an A grade.
 
 `GET /api/canvas/debug?raw=1` dumps the first table's markup even when parsing
 succeeded, which is how to fix what it got *wrong* rather than what it missed.
