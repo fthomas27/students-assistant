@@ -931,3 +931,97 @@ def test_canvas_grades_falls_back_to_api_when_page_is_empty(client, monkeypatch)
     out = flask_app.canvas_grades()
     assert len(out) == 1
     assert out[0]["course"] == "Spanish IV"
+
+
+def test_sync_whoop_reads_the_day_list_not_a_dict(client, monkeypatch):
+    """whoop_daily_summary returns a LIST of day dicts. Treating it as a dict
+    made every WHOOP sync raise AttributeError and show as a connector error,
+    while the Readiness page kept working off a different code path."""
+    _, flask_app = client
+    monkeypatch.setattr(flask_app, "_whoop_connected", lambda: True)
+    monkeypatch.setattr(flask_app, "_whoop_clear_cache", lambda: None)
+    monkeypatch.setattr(flask_app, "whoop_daily_summary", lambda days=7: [
+        {"date": "2026-09-13", "recovery_score": 67, "hrv_ms": 68, "rhr": 55},
+    ])
+    recorded = {}
+    monkeypatch.setattr(flask_app, "record_sync_event",
+                        lambda c, e, status, detail="", duration_ms=0:
+                            recorded.update(status=status, detail=detail))
+    assert flask_app.sync_whoop() is True
+    assert recorded["status"] == "200 OK"
+    assert "hrv=68" in recorded["detail"]
+    assert "score=67" in recorded["detail"]
+
+
+def test_sync_whoop_handles_an_empty_history(client, monkeypatch):
+    _, flask_app = client
+    monkeypatch.setattr(flask_app, "_whoop_connected", lambda: True)
+    monkeypatch.setattr(flask_app, "_whoop_clear_cache", lambda: None)
+    monkeypatch.setattr(flask_app, "whoop_daily_summary", lambda days=7: [])
+    recorded = {}
+    monkeypatch.setattr(flask_app, "record_sync_event",
+                        lambda c, e, status, detail="", duration_ms=0:
+                            recorded.update(status=status, detail=detail))
+    assert flask_app.sync_whoop() is True
+    assert recorded["status"] == "200 OK"
+
+
+_OBSERVER_GRADES_PAGE = """
+<table class="course_details student_grades">
+ <tr><td><a href="/courses/1/grades/9">Finley Thomas, SOCS AP US GOVERNMENT - Andres - YR ^</a></td>
+     <td><span class="percent">82.59%</span></td></tr>
+ <tr><td><a href="/courses/2/grades/9">Finley Thomas, AP STATISTICS (Monson) ^</a></td>
+     <td><span class="percent">79.65%</span></td></tr>
+ <tr><td><a href="/courses/3/grades/9">Finley Thomas, LANG SPANISH 3117 CE - Fernandez - YR</a></td>
+     <td><span class="percent">75%</span></td></tr>
+</table>
+"""
+
+
+def test_observer_page_strips_the_repeated_student_name(client):
+    """An observer's /grades page prefixes every row with the observed
+    student's name. That is not part of the course title."""
+    _, flask_app = client
+    out = flask_app._canvas_parse_grades_html(_OBSERVER_GRADES_PAGE)
+    assert [r["course"] for r in out] == [
+        "SOCS AP US GOVERNMENT - Andres - YR",
+        "AP STATISTICS (Monson)",
+        "LANG SPANISH 3117 CE - Fernandez - YR",
+    ]
+
+
+def test_letter_grade_derived_when_canvas_publishes_none(client):
+    """Canvas only prints a letter when the course has a grading scheme. Derive
+    one from the percentage, but flag it as derived."""
+    _, flask_app = client
+    out = flask_app._canvas_parse_grades_html(_OBSERVER_GRADES_PAGE)
+    assert [(r["current_score"], r["current_grade"], r["grade_derived"]) for r in out] == [
+        (82.59, "B-", True), (79.65, "C+", True), (75.0, "C", True),
+    ]
+
+
+def test_canvas_letter_wins_over_the_derived_one(client):
+    _, flask_app = client
+    html = ('<table><tr><td><a href="/courses/4">Chem</a></td>'
+            '<td>91.0% A-</td></tr></table>')
+    out = flask_app._canvas_parse_grades_html(html)
+    assert out[0]["current_grade"] == "A-"
+    assert out[0]["grade_derived"] is False
+
+
+def test_letter_scale_boundaries(client):
+    _, flask_app = client
+    f = flask_app._letter_for_score
+    assert (f(93), f(92.9), f(90), f(89.9)) == ("A", "A-", "A-", "B+")
+    assert (f(60), f(59.9), f(0)) == ("D-", "F", "F")
+    assert f(None) == ""
+
+
+def test_single_row_page_keeps_its_course_name(client):
+    """The shared-prefix rule needs 2+ rows to be safe; one row must not have
+    its first comma-separated chunk eaten."""
+    _, flask_app = client
+    html = ('<table><tr><td><a href="/courses/9">Smith, John AP Chem</a></td>'
+            '<td>88%</td></tr></table>')
+    out = flask_app._canvas_parse_grades_html(html)
+    assert out[0]["course"] == "Smith, John AP Chem"

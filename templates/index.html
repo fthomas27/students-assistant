@@ -621,7 +621,7 @@ LOADERS.register = async function () {
     if (!g.course) return;
     byName.set(g.course.toLowerCase(), {
       course: g.course, teacher: "", pct: g.current_score,
-      letter: g.current_grade || "", src: "Canvas",
+      letter: g.current_grade || "", derived: !!g.grade_derived, src: "Canvas",
     });
   });
   (ps.grades || []).forEach(g => {
@@ -631,6 +631,7 @@ LOADERS.register = async function () {
       course: g.course, teacher: g.teacher || prev.teacher || "",
       pct: g.grade_pct != null ? g.grade_pct : prev.pct,
       letter: g.grade_letter || prev.letter || "",
+      derived: g.grade_letter ? false : !!prev.derived,
       absences: g.absences, src: prev.src ? "Both" : "PowerSchool",
     });
   });
@@ -660,7 +661,11 @@ LOADERS.register = async function () {
   $("#dayChip").className = "chip " + (day.is_school_day ? "ok" : "");
 
 
-  const srcs = new Set(courses.map(c => c.src));
+  const srcs = new Set();
+  courses.forEach(c => {
+    if (c.src === "Both") { srcs.add("Canvas"); srcs.add("PowerSchool"); }
+    else if (c.src) srcs.add(c.src);
+  });
   $("#gradeSrc").textContent = srcs.size ? [...srcs].join(" + ") : "No source";
 
   $("#courseList").innerHTML = courses.length ? courses.map(c => {
@@ -672,7 +677,9 @@ LOADERS.register = async function () {
       (pct != null ? '<div class="gradebar"><i style="width:' + Math.max(0, Math.min(100, pct)) + '%"></i></div>' : '') +
       '</div><div style="text-align:right;flex:none">' +
       '<div class="num" style="font-size:15px">' + (pct != null ? pct + "%" : "—") + '</div>' +
-      (c.letter ? '<div class="label">' + esc(c.letter) + '</div>' : '') +
+      (c.letter ? '<div class="label"' + (c.derived
+          ? ' title="Derived from the percentage — this course publishes no letter grade in Canvas"'
+          : '') + '>' + (c.derived ? '~' : '') + esc(c.letter) + '</div>' : '') +
       '</div></div>';
   }).join("") : emptyState(canvas.configured || (ps.grades || []).length
       ? "No course grades reported yet." : "Connect Canvas or PowerSchool on Sync & Feeds to see grades.");

@@ -1497,6 +1497,37 @@ def _canvas_get_html(path, timeout=20):
 
 
 _GRADE_PCT_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
+# Canvas only prints a letter when the course has a grading scheme enabled, so
+# derive one when it doesn't. Standard 10-point scale; adjust if the school's
+# differs. Derived letters are marked in the UI so they aren't mistaken for
+# Canvas' own.
+_LETTER_SCALE = [
+    (93, "A"), (90, "A-"), (87, "B+"), (83, "B"), (80, "B-"),
+    (77, "C+"), (73, "C"), (70, "C-"), (67, "D+"), (63, "D"), (60, "D-"),
+]
+
+
+def _letter_for_score(score):
+    if score is None:
+        return ""
+    for cutoff, letter in _LETTER_SCALE:
+        if score >= cutoff:
+            return letter
+    return "F"
+
+
+def _clean_course_name(name, drop_prefix=""):
+    """Tidy a course title taken from the /grades page.
+
+    An observer's page prefixes every row with the observed student's name
+    ("Finley Thomas, AP STATISTICS ..."), and Canvas appends sort/indicator
+    glyphs. Neither belongs in the course title.
+    """
+    out = (name or "").strip()
+    if drop_prefix and out.startswith(drop_prefix):
+        out = out[len(drop_prefix):].strip()
+    out = re.sub(r"[\s\^\*\u25b2\u25bc]+$", "", out)      # trailing carets/arrows
+    return re.sub(r"\s{2,}", " ", out).strip(" ,-")
 _GRADE_LETTER_RE = re.compile(r"^([A-F][+-]?|N/A)$", re.I)
 _COURSE_HREF_RE = re.compile(r"/courses/(\d+)")
 
@@ -1539,7 +1570,7 @@ def _canvas_parse_grades_html(html):
 
         letter = ""
         for tok in rest.replace(",", " ").split():
-            tok = tok.strip("()")
+            tok = tok.strip("()[]")
             if _GRADE_LETTER_RE.match(tok) and tok.upper() != "N/A":
                 letter = tok.upper()
                 break
@@ -1551,11 +1582,24 @@ def _canvas_parse_grades_html(html):
             "course_id": course_id,
             "course": course,
             "enrollment_type": "",
-            "current_grade": letter or None,
+            "current_grade": letter or _letter_for_score(score) or None,
+            "grade_derived": not letter and score is not None,
             "current_score": score,
             "final_grade": None,
             "final_score": None,
         })
+
+    # An observer page repeats the student's name on every row. Detect that
+    # shared "Name, " prefix from the data rather than hardcoding a name.
+    prefix = ""
+    if len(out) > 1:
+        first = out[0]["course"]
+        if "," in first:
+            cand = first.split(",", 1)[0].strip() + ","
+            if all(r["course"].startswith(cand) for r in out):
+                prefix = cand
+    for r in out:
+        r["course"] = _clean_course_name(r["course"], prefix)
     return out
 
 
@@ -3113,10 +3157,11 @@ def sync_whoop():
         if not _whoop_connected():
             return "Skipped", "WHOOP not connected"
         _whoop_clear_cache()
-        summary = whoop_daily_summary(days=1)
-        today = (summary or {}).get("today") or {}
+        # whoop_daily_summary returns a list of day dicts, newest first.
+        days = whoop_daily_summary(days=1) or []
+        today = days[0] if days else {}
         bits = []
-        for key, label in (("hrv", "hrv"), ("resting_hr", "rhr"), ("recovery", "score")):
+        for key, label in (("hrv_ms", "hrv"), ("rhr", "rhr"), ("recovery_score", "score")):
             if today.get(key) is not None:
                 bits.append(f"{label}={today[key]}")
         return "200 OK", " · ".join(bits) or "Snapshot refreshed"
@@ -4473,9 +4518,11 @@ def api_canvas_debug():
         "detail": (f"{len(html)} bytes, parsed {len(parsed)} graded row(s)"
                    if html else "no HTML returned"),
     })
+    out["parsed"] = parsed
     # With nothing parsed we are flying blind on markup we cannot see from
-    # here, so hand back the table skeleton to debug against.
-    if html and not parsed:
+    # here, so hand back the table skeleton to debug against. ?raw=1 forces the
+    # dump even when parsing succeeded, for fixing what it got *wrong*.
+    if html and (not parsed or request.args.get("raw") == "1"):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
         tables = soup.find_all("table")

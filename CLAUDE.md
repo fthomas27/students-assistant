@@ -185,6 +185,19 @@ Two more things that will bite you:
   and retry exactly once.
 - A course with no grade posted yet appears on `/grades` with `N/A`; those rows
   are dropped rather than shown as 0%.
+- **Canvas only prints a letter when the course has a grading scheme enabled**,
+  and Park City's courses mostly do not. `_letter_for_score()` derives one from
+  the percentage on a standard 10-point scale, sets `grade_derived: true`, and
+  the UI prefixes it with `~` plus a tooltip. A letter Canvas *does* publish
+  always wins. If the school's scale differs, edit `_LETTER_SCALE` — do not
+  silently present a derived letter as the official one.
+- **An observer's page repeats the student's name on every row**
+  ("Finley Thomas, AP STATISTICS ..."). `_clean_course_name()` strips the shared
+  prefix, detected from the data rather than hardcoded, and only when 2+ rows
+  agree on it — a single row keeps its name intact.
+
+`GET /api/canvas/debug?raw=1` dumps the first table's markup even when parsing
+succeeded, which is how to fix what it got *wrong* rather than what it missed.
 
 Everything here is read-only: only GETs are issued after the login POST.
 
