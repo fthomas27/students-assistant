@@ -1470,30 +1470,138 @@ def canvas_courses():
     return courses
 
 
+def _canvas_get_html(path, timeout=20):
+    """Fetch an HTML page over the logged-in browser session."""
+    if _canvas_auth_mode() != "password":
+        return ""
+    sess = _canvas_get_session()
+    if sess is None:
+        return ""
+    url = u_canvas_base_url() + (path if path.startswith("/") else "/" + path)
+    try:
+        resp = sess.get(url, timeout=timeout)
+        if _canvas_looks_like_login_page(resp.text):
+            _canvas_invalidate_session()
+            sess = _canvas_get_session()
+            if sess is None:
+                return ""
+            resp = sess.get(url, timeout=timeout)
+            if _canvas_looks_like_login_page(resp.text):
+                _canvas_login_error_set("session rejected twice fetching " + path)
+                return ""
+        resp.raise_for_status()
+        return resp.text
+    except Exception as e:
+        log.warning("Canvas HTML GET %s failed: %s", path, e)
+        return ""
+
+
+_GRADE_PCT_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
+_GRADE_LETTER_RE = re.compile(r"^([A-F][+-]?|N/A)$", re.I)
+_COURSE_HREF_RE = re.compile(r"/courses/(\d+)")
+
+
+def _canvas_parse_grades_html(html):
+    """Parse Canvas' own /grades summary page.
+
+    Deliberately tolerant: Canvas markup differs by version and theme, so rather
+    than binding to specific class names this walks table rows, takes the course
+    from whatever /courses/<id> link the row contains, and picks the percentage
+    and letter out of the row's text. That survives a redesign; a class-name
+    parser would not.
+    """
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html or "", "html.parser")
+    out, seen = [], set()
+
+    for row in soup.find_all("tr"):
+        link = None
+        for a in row.find_all("a", href=True):
+            if _COURSE_HREF_RE.search(a["href"]):
+                link = a
+                break
+        if link is None:
+            continue
+        course = link.get_text(" ", strip=True)
+        if not course:
+            continue
+        m = _COURSE_HREF_RE.search(link["href"])
+        course_id = int(m.group(1)) if m else None
+        if course_id in seen:
+            continue
+
+        # Score and letter come from the cells that are not the course cell.
+        cells = row.find_all(["td", "th"])
+        rest = " ".join(c.get_text(" ", strip=True) for c in cells
+                        if link not in c.find_all("a"))
+        pct = _GRADE_PCT_RE.search(rest)
+        score = float(pct.group(1)) if pct else None
+
+        letter = ""
+        for tok in rest.replace(",", " ").split():
+            tok = tok.strip("()")
+            if _GRADE_LETTER_RE.match(tok) and tok.upper() != "N/A":
+                letter = tok.upper()
+                break
+
+        if score is None and not letter:
+            continue          # a course row with no grade posted yet
+        seen.add(course_id)
+        out.append({
+            "course_id": course_id,
+            "course": course,
+            "enrollment_type": "",
+            "current_grade": letter or None,
+            "current_score": score,
+            "final_grade": None,
+            "final_score": None,
+        })
+    return out
+
+
+def _canvas_grades_from_html():
+    return _canvas_parse_grades_html(_canvas_get_html("/grades"))
+
+
 def canvas_grades():
     """Course grades for whoever we are signed in as.
 
-    A view-only/observer account carries ObserverEnrollment rather than
-    StudentEnrollment, so filtering by type would return nothing. Ask for all
-    active enrollments and keep whichever ones actually carry a grade.
+    Two sources, tried in order:
+
+    1. Canvas' own /grades summary page. This is what the account actually sees
+       in a browser, and for a view-only/observer login it reflects the observed
+       student — which the self-scoped API below may not.
+    2. The /api/v1 enrollments endpoint, used when /grades yields nothing (or
+       when we authenticate with a token, where there is no browser session).
+
+    A view-only account carries ObserverEnrollment rather than
+    StudentEnrollment, so the API branch must not filter on enrollment type.
     """
     cached = _cache_get("canvas:grades", CANVAS_GRADES_TTL)
     if cached is not None:
         return cached
+
+    grades = _canvas_grades_from_html()
+    if grades:
+        # Fill in any course names the summary page left blank.
+        names = {c["id"]: c["name"] for c in canvas_courses()}
+        for g in grades:
+            if not g["course"]:
+                g["course"] = names.get(g["course_id"], "")
+        _cache_set("canvas:grades", grades)
+        return grades
+
     courses = canvas_courses()
     course_name = {c["id"]: c["name"] for c in courses}
     data = _canvas_get(
         "/api/v1/users/self/enrollments",
         params={"state[]": "active", "per_page": 100},
     )
-    grades = []
     if isinstance(data, list):
         for e in data:
             if not isinstance(e, dict):
                 continue
             g = e.get("grades") or {}
-            # Observer rows for a course the observed student isn't graded in
-            # come back with an empty grades object; drop those, keep the rest.
             if not any(g.get(k) is not None for k in
                        ("current_grade", "current_score", "final_grade", "final_score")):
                 continue
@@ -4357,6 +4465,23 @@ def api_canvas_debug():
         })
         if sess is None:
             return jsonify(out)
+
+    html = _canvas_get_html("/grades")
+    parsed = _canvas_parse_grades_html(html)
+    out["steps"].append({
+        "step": "GET /grades", "ok": bool(html),
+        "detail": (f"{len(html)} bytes, parsed {len(parsed)} graded row(s)"
+                   if html else "no HTML returned"),
+    })
+    # With nothing parsed we are flying blind on markup we cannot see from
+    # here, so hand back the table skeleton to debug against.
+    if html and not parsed:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        tables = soup.find_all("table")
+        out["grades_page_tables"] = len(tables)
+        out["grades_page_sample"] = (
+            str(tables[0])[:1500] if tables else soup.get_text(" ", strip=True)[:1000])
 
     enr = _canvas_get("/api/v1/users/self/enrollments", params={"state[]": "active", "per_page": 100})
     out["steps"].append({

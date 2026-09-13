@@ -130,7 +130,7 @@ env var.
 - `GET /api/canvas/status` - which auth mode is active, and the last login error
 - `POST /api/canvas/configure` - save credentials and immediately test the sign-in
 - `POST /api/canvas/disconnect` - clear stored Canvas credentials
-- `GET /api/canvas/debug` - step-by-step login/enrollment/grade diagnostics
+- `GET /api/canvas/debug` - step-by-step login / `/grades` / API / parse trace
 - `GET /api/powerschool/grades` / `/api/powerschool/attendance` - scraped data
 - `POST /api/powerschool/refresh` - bust the scrape cache
 - `GET /api/whoop/summary` / `/workouts` / `/heart-rate` / `/bedtime` / `/status`
@@ -156,20 +156,35 @@ there are two auth modes and `_canvas_auth_mode()` picks between them:
   the login form at `/login/canvas` (carrying the page's `authenticity_token`)
   and keeps the resulting `canvas_session` cookie for 25 minutes.
 
-The important part: **Canvas accepts its own `/api/v1` JSON endpoints with a
-plain session cookie.** So the password mode reuses the same JSON code path as
-the token mode — there is no HTML gradebook scraping, and `_canvas_get()` is the
-only place that knows which mode is in play. Keep it that way; do not add an
-HTML parser for grades.
+Grades themselves come from two sources, tried in order by `canvas_grades()`:
 
-Two things that will bite you:
+1. **`GET /grades`**, Canvas' own summary page, fetched over the logged-in
+   session. This is the primary source.
+2. **`/api/v1/users/self/enrollments`**, used only when the page yields nothing
+   (and always in token mode, where there is no browser session).
 
-- **The account is view-only, i.e. an observer.** Observer rows are
-  `ObserverEnrollment`, not `StudentEnrollment`, so `canvas_grades()` must not
-  filter by enrollment type — it asks for all active enrollments and keeps the
-  ones carrying a grade. Narrowing that filter silently returns zero grades.
+The page wins because of *who the account is*. This login is **view-only, i.e.
+an observer**, and the self-scoped API returns the observer's own enrollments —
+which is an empty list — while `/grades` renders the observed student's actual
+grades. Trusting the API alone gives you zero grades and no error.
+
+`_canvas_parse_grades_html()` is deliberately tolerant: it walks table rows,
+takes the course from whatever `/courses/<id>` link the row contains, and pulls
+the percentage and letter out of the row's text. It does **not** bind to Canvas
+class names, which vary by version and theme. Keep it that way — and keep the
+API fallback, which covers a real student login.
+
+If parsing ever returns nothing, `GET /api/canvas/debug` reports the byte count
+and hands back the first table's markup so the parser can be fixed against the
+real page.
+
+Two more things that will bite you:
+
 - **An expired session comes back as a 200 containing the login page**, not a
-  401. `_canvas_get()` sniffs for that, re-logs in, and retries exactly once.
+  401. Both `_canvas_get()` and `_canvas_get_html()` sniff for that, re-log in,
+  and retry exactly once.
+- A course with no grade posted yet appears on `/grades` with `N/A`; those rows
+  are dropped rather than shown as 0%.
 
 Everything here is read-only: only GETs are issued after the login POST.
 

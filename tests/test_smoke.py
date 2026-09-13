@@ -838,3 +838,96 @@ def test_canvas_get_retries_once_when_session_expires(client, monkeypatch):
     _canvas_setup(flask_app, monkeypatch, sess)
     assert flask_app._canvas_get("/api/v1/users/self/enrollments") is None
     assert calls["n"] == 2  # original attempt plus exactly one retry
+
+
+# ── Canvas /grades HTML parsing ───────────────────────────────────────────────
+
+_GRADES_PAGE = """
+<html><body>
+<table class="course_details student_grades">
+  <thead><tr><th>Course</th><th>Term</th><th>Enrolled as</th><th>Grades</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><a href="/courses/1021/grades/55">AP Chemistry</a></td>
+      <td>Fall 2025</td><td>Observer</td>
+      <td><span class="percent">94.2%</span> <span class="letter_grade">A</span></td>
+    </tr>
+    <tr>
+      <td><a href="/courses/1022/grades/55">AP US History</a></td>
+      <td>Fall 2025</td><td>Observer</td>
+      <td><span class="percent">88.6%</span> <span class="letter_grade">B+</span></td>
+    </tr>
+    <tr>
+      <td><a href="/courses/1023/grades/55">Advisory</a></td>
+      <td>Fall 2025</td><td>Observer</td>
+      <td><span class="percent">N/A</span></td>
+    </tr>
+  </tbody>
+</table>
+</body></html>
+"""
+
+
+def test_canvas_grades_page_parses_courses_and_scores(client):
+    _, flask_app = client
+    out = flask_app._canvas_parse_grades_html(_GRADES_PAGE)
+    assert len(out) == 2, "the ungraded Advisory row must be dropped"
+    assert out[0]["course"] == "AP Chemistry"
+    assert out[0]["course_id"] == 1021
+    assert out[0]["current_score"] == 94.2
+    assert out[0]["current_grade"] == "A"
+    assert out[1]["current_grade"] == "B+"
+
+
+def test_canvas_grades_page_tolerates_different_markup(client):
+    """Parsing keys off /courses/<id> links and row text, not class names, so a
+    differently themed Canvas still works."""
+    _, flask_app = client
+    html = """<table><tr>
+        <td><a href="https://x.instructure.com/courses/77">Physics C</a></td>
+        <td>current score: 91.5% (A-)</td></tr></table>"""
+    out = flask_app._canvas_parse_grades_html(html)
+    assert len(out) == 1
+    assert out[0]["course"] == "Physics C"
+    assert out[0]["course_id"] == 77
+    assert out[0]["current_score"] == 91.5
+    assert out[0]["current_grade"] == "A-"
+
+
+def test_canvas_grades_page_ignores_rows_without_a_course_link(client):
+    _, flask_app = client
+    html = "<table><tr><th>Course</th><th>Grades</th></tr><tr><td>Totals</td><td>92%</td></tr></table>"
+    assert flask_app._canvas_parse_grades_html(html) == []
+
+
+def test_canvas_grades_prefers_html_over_api(client, monkeypatch):
+    """/grades reflects the observed student for a view-only login; the
+    self-scoped API may not, so HTML wins when it returns anything."""
+    _, flask_app = client
+    monkeypatch.setattr(flask_app, "_canvas_get_html", lambda p, **k: _GRADES_PAGE)
+    monkeypatch.setattr(flask_app, "canvas_courses", lambda: [])
+    called = {"api": False}
+
+    def _no_api(*a, **k):
+        called["api"] = True
+        return []
+    monkeypatch.setattr(flask_app, "_canvas_get", _no_api)
+    with flask_app._simple_cache_lock:
+        flask_app._simple_cache.pop("canvas:grades", None)
+    out = flask_app.canvas_grades()
+    assert len(out) == 2
+    assert called["api"] is False
+
+
+def test_canvas_grades_falls_back_to_api_when_page_is_empty(client, monkeypatch):
+    _, flask_app = client
+    monkeypatch.setattr(flask_app, "_canvas_get_html", lambda p, **k: "<html></html>")
+    monkeypatch.setattr(flask_app, "canvas_courses", lambda: [{"id": 5, "name": "Spanish IV"}])
+    monkeypatch.setattr(flask_app, "_canvas_get", lambda *a, **k: [
+        {"course_id": 5, "type": "ObserverEnrollment",
+         "grades": {"current_score": 90.0, "current_grade": "A-"}}])
+    with flask_app._simple_cache_lock:
+        flask_app._simple_cache.pop("canvas:grades", None)
+    out = flask_app.canvas_grades()
+    assert len(out) == 1
+    assert out[0]["course"] == "Spanish IV"
