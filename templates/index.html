@@ -83,7 +83,7 @@ a { color: inherit; }
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* ── Frame ───────────────────────────────────────────────────────────────── */
-.app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
+.app { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 100vh; }
 
 .topbar {
   grid-column: 1 / -1; display: flex; align-items: center; gap: 20px;
@@ -123,32 +123,6 @@ a { color: inherit; }
   color: var(--ink-2); font-size: 13px;
 }
 .iconbtn:hover { color: var(--ink); border-color: var(--ink-3); }
-
-.sidebar {
-  background: var(--surface); border-right: 1px solid var(--rule);
-  padding: 22px 14px 14px; display: flex; flex-direction: column; gap: 20px;
-  position: sticky; top: 60px; height: calc(100vh - 60px);
-}
-.ledger { padding: 0 8px; }
-.ledger b { display: block; font-family: var(--mono); font-size: 9.5px;
-  letter-spacing: .13em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
-.ledger span { display: block; margin-top: 5px; font-size: 12.5px; color: var(--ink-2); }
-.sidenav { display: flex; flex-direction: column; gap: 2px; }
-.sidenav button {
-  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
-  background: none; border: 0; padding: 9px 10px; border-radius: 8px;
-  font-size: 13px; color: var(--ink-2); cursor: pointer;
-}
-.sidenav button:hover { background: var(--surface-2); color: var(--ink); }
-.sidenav button[aria-current="page"] { background: var(--dark); color: var(--on-dark); }
-.sidenav svg { flex: none; opacity: .85; }
-
-.readiness { margin-top: auto; padding: 12px 8px 4px; border-top: 1px solid var(--rule-soft); }
-.readiness .row { display: flex; flex-direction: column; gap: 3px; }
-.readiness .v { font-family: var(--mono); font-size: 13px; color: var(--ink); }
-.meter { height: 2px; background: var(--rule); margin: 8px 0 7px; border-radius: 2px; overflow: hidden; }
-.meter i { display: block; height: 100%; background: var(--ink); border-radius: 2px; }
-.readiness small { font-size: 11px; color: var(--ink-3); }
 
 main { padding: 26px 26px 40px; min-width: 0; max-width: 100%; overflow-x: hidden; }
 .page { display: none; }
@@ -282,8 +256,6 @@ table.data td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; 
   .cols { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 860px) {
-  .app { grid-template-columns: minmax(0, 1fr); }
-  .sidebar { display: none; }
   main { padding: 18px 16px 36px; }
   .topbar { padding: 0 16px; gap: 12px; }
   .wordmark span, .syncpill { display: none; }
@@ -301,7 +273,7 @@ table.data td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; 
       <div class="mark">S</div>
       <div class="wordmark">
         <b>SCHOLA // REGISTRY</b>
-        <span>Academic Operative System</span>
+        <span id="termLine">Academic Operative System</span>
       </div>
     </div>
     <nav class="topnav" id="topnav" aria-label="Sections"></nav>
@@ -314,19 +286,6 @@ table.data td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; 
           fill="currentColor"/></svg></button>
     </div>
   </header>
-
-  <aside class="sidebar">
-    <div class="ledger">
-      <b>Scholastic Ledger</b>
-      <span id="termLine">—</span>
-    </div>
-    <nav class="sidenav" id="sidenav" aria-label="Sections"></nav>
-    <div class="readiness">
-      <div class="row"><span class="label">Strain Index</span><span class="v" id="strainV">—</span></div>
-      <div class="meter"><i id="strainBar" style="width:0%"></i></div>
-      <small id="cogBand">Recovery band: —</small>
-    </div>
-  </aside>
 
   <main>
     <!-- ── Academic Overview ────────────────────────────────────────────── -->
@@ -563,10 +522,10 @@ function emptyState(msg) { return '<div class="empty">' + esc(msg) + '</div>'; }
 
 /* ── Routing ───────────────────────────────────────────────────────────── */
 const PAGES = [
-  { id: "register",    label: "Academic Register",  short: "Academic Overview", icon: "M3 3h10v10H3z" },
-  { id: "assignments", label: "Assignments & iCal", short: "Assignments & iCal", icon: "M3 5h10M3 8h10M3 11h6" },
-  { id: "readiness",   label: "WHOOP & Readiness",  short: "WHOOP & Readiness", icon: "M2 8h3l2-4 2 8 2-4h3" },
-  { id: "sync",        label: "Sync & Feeds",       short: "Sync & Feeds", icon: "M3 6h10l-3-3M13 10H3l3 3" },
+  { id: "register",    label: "Academic Register" },
+  { id: "assignments", label: "Assignments & iCal" },
+  { id: "readiness",   label: "WHOOP & Readiness" },
+  { id: "sync",        label: "Sync & Feeds" },
 ];
 const LOADERS = {};
 let current = "";
@@ -574,10 +533,6 @@ let current = "";
 function buildNav() {
   $("#topnav").innerHTML = PAGES.map(p =>
     '<button data-page="' + p.id + '">' + esc(p.label) + '</button>').join("");
-  $("#sidenav").innerHTML = PAGES.map(p =>
-    '<button data-page="' + p.id + '"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" ' +
-    'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
-    '<path d="' + p.icon + '"/></svg>' + esc(p.short) + '</button>').join("");
   document.querySelectorAll("[data-page]").forEach(b =>
     b.addEventListener("click", () => go(b.dataset.page)));
 }
@@ -703,7 +658,7 @@ LOADERS.register = async function () {
   const dayType = day.day_type ? (day.day_type[0].toUpperCase() + day.day_type.slice(1)) : null;
   $("#dayChip").textContent = day.is_school_day ? (dayType ? dayType + " Day" : "School Day") : "No School";
   $("#dayChip").className = "chip " + (day.is_school_day ? "ok" : "");
-  $("#termLine").textContent = new Date().toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" });
+
 
   const srcs = new Set(courses.map(c => c.src));
   $("#gradeSrc").textContent = srcs.size ? [...srcs].join(" + ") : "No source";
@@ -1013,19 +968,6 @@ async function refreshSyncPill() {
       esc(bad.length ? bad.length + " connector error(s)" : "Synced " + fmtAgo(latest)) + '</span>';
   } catch (e) { /* pill is decorative; stay quiet */ }
 }
-async function refreshReadinessStrip() {
-  try {
-    const s = await api("/api/whoop/summary");
-    const days = (s.days || []).slice().sort((a, b) => a.date.localeCompare(b.date));
-    const t = days[days.length - 1];
-    if (!t) return;
-    $("#strainV").textContent = (t.strain != null ? (Math.round(t.strain * 10) / 10).toFixed(1) : "—") +
-      (s.mock ? " // EST" : " // OPT");
-    $("#strainBar").style.width = Math.max(0, Math.min(100, (t.strain || 0) / 21 * 100)) + "%";
-    $("#cogBand").textContent = "Recovery band: " + bandName(t.recovery_score);
-  } catch (e) { /* strip is decorative */ }
-}
-
 buildNav();
 bindTableToggle("#btnRecTable", "#recTable", "#recChart");
 bindTableToggle("#btnStrainTable", "#strainTable", "#strainChart");
@@ -1066,7 +1008,6 @@ try {
 window.addEventListener("hashchange", () => go(location.hash.slice(1)));
 go(location.hash.slice(1) || PAGES[0].id);
 refreshSyncPill();
-refreshReadinessStrip();
 setInterval(refreshSyncPill, 120000);
 </script>
 </body>
