@@ -874,11 +874,38 @@ const CONNECTOR_COPY = {
   powerschool: { title: "PowerSchool Gradebook", desc: "Headless client for weighted grades and attendance.", chip: "Headless Client" },
   whoop: { title: "WHOOP Biometrics", desc: "Daily strain, sleep recovery architecture, and resting heart rate.", chip: "OAuth 2.0" },
 };
+/* This district does not issue Canvas personal access tokens, so grades come
+   from signing in with the account's own credentials. Stored server-side and
+   never returned to the page. */
+function canvasGradesForm(cv) {
+  const err = cv.last_login_error;
+  const state = cv.mode === "token" ? ["ok", "API token"]
+    : cv.mode === "password" ? (err ? ["bad", "Sign-in failing"] : ["ok", "Signed in with password"])
+    : ["warn", "Grades not connected"];
+  return '<div style="border-top:1px solid var(--rule-soft);margin:12px 0 0;padding-top:12px">' +
+    '<span class="label">Grade access</span> <span class="chip ' + state[0] + '">' +
+    '<span class="dot"></span>' + esc(state[1]) + '</span>' +
+    (err ? '<p style="margin:8px 0 0;font-size:11.5px;color:var(--bad)">' + esc(err.message) + '</p>' : '') +
+    '<form id="canvasCredForm" style="margin-top:10px">' +
+    '<label class="field"><span class="label">Canvas URL</span>' +
+    '<input id="cvBase" type="url" placeholder="https://pcsd.instructure.com" value="' +
+    esc(cv.base_url || "") + '" required></label>' +
+    '<label class="field"><span class="label">Username / email</span>' +
+    '<input id="cvUser" type="text" autocomplete="username" value="' + esc(cv.username || "") + '"></label>' +
+    '<label class="field"><span class="label">Password' +
+    (cv.has_password ? " (stored — leave blank to keep)" : "") + '</span>' +
+    '<input id="cvPass" type="password" autocomplete="current-password" placeholder="••••••••"></label>' +
+    '<button class="btn btn-sm btn-dark" id="canvasCredSave" type="submit">Save &amp; test sign-in</button>' +
+    ' <span id="canvasCredResult" style="font-size:11.5px;color:var(--ink-2)"></span>' +
+    '</form></div>';
+}
+
 LOADERS.sync = async function () {
-  const [status, log, cfg] = await Promise.all([
+  const [status, log, cfg, canvas] = await Promise.all([
     api("/api/sync-status").catch(() => ({ connectors: [] })),
     api("/api/sync/events?limit=14").catch(() => ({ events: [] })),
     api("/api/config").catch(() => ({})),
+    api("/api/canvas/status").catch(() => ({ configured: false, mode: "" })),
   ]);
   const conns = status.connectors || [];
   const online = conns.filter(c => c.connected).length;
@@ -915,6 +942,7 @@ LOADERS.sync = async function () {
       (url ? '<span class="label">Subscription endpoint</span><div class="endpoint" style="margin:5px 0 12px">' +
         '<code>' + esc(url) + '</code>' +
         '<button class="btn btn-sm" data-copy="' + esc(url) + '">Copy</button></div>' : '') +
+      (c.name === "canvas" ? canvasGradesForm(canvas) : '') +
       '<dl style="margin:0">' +
       kv("Last run", lr ? fmtAgo(lr.at) : "never") +
       kv("Result", lr ? (lr.status + (lr.duration_ms ? " · " + lr.duration_ms + "ms" : "")) : "—") +
@@ -925,6 +953,31 @@ LOADERS.sync = async function () {
       '&#8635;&nbsp; Run now</button></div>' +
       '</div></section>';
   }).join("") || '<div class="panel">' + emptyState("No connectors registered.") + '</div>';
+
+  const cf = $("#canvasCredForm");
+  if (cf) {
+    cf.addEventListener("submit", async ev => {
+      ev.preventDefault();
+      const out = $("#canvasCredResult");
+      const btn = $("#canvasCredSave");
+      btn.disabled = true; out.textContent = "Signing in…";
+      try {
+        const r = await api("/api/canvas/configure", { method: "POST", body: JSON.stringify({
+          base_url: $("#cvBase").value.trim(),
+          username: $("#cvUser").value.trim(),
+          password: $("#cvPass").value,
+        }) });
+        out.textContent = r.ok
+          ? "Signed in — " + r.graded_courses + " of " + r.courses + " courses reporting a grade."
+          : "Failed: " + (r.error || "unknown error");
+      } catch (e) {
+        out.textContent = "Failed: " + e.message;
+      }
+      btn.disabled = false;
+      $("#cvPass").value = "";
+      LOADERS.sync();
+    });
+  }
 
   $("#connectorCards").querySelectorAll("[data-run]").forEach(b => b.addEventListener("click", async () => {
     b.disabled = true; b.textContent = "Running…";

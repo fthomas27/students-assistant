@@ -331,6 +331,8 @@ ON CONFLICT (user_id, key) DO NOTHING""", (user_id, k, v))
 PERSONAL_ICAL_URL = os.environ.get("PERSONAL_ICAL_URL", "")
 CANVAS_ICAL_URL = os.environ.get("CANVAS_ICAL_URL", "")
 CANVAS_API_TOKEN = os.environ.get("CANVAS_API_TOKEN", "")
+CANVAS_USERNAME  = os.environ.get("CANVAS_USERNAME", "")
+CANVAS_PASSWORD  = os.environ.get("CANVAS_PASSWORD", "")
 CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/")
 SPORTS_ICAL_URL = os.environ.get("SPORTS_ICAL_URL", "")
 
@@ -1265,21 +1267,185 @@ CANVAS_GRADES_TTL = 600            # 10 minutes
 CANVAS_ASSIGNMENT_TTL = 1800       # 30 minutes
 
 
+def u_canvas_username(): return _resolve_user_url("canvas_username", CANVAS_USERNAME)
+def u_canvas_password(): return _resolve_user_url("canvas_password", CANVAS_PASSWORD)
+
+
+def _canvas_auth_mode():
+    """'token' when a personal access token is set, 'password' when we have to
+    log in as a browser would, None when Canvas is not set up for the API.
+
+    Districts often disable token generation for student accounts, which leaves
+    the login form as the only way in.
+    """
+    if not u_canvas_base_url():
+        return None
+    if u_canvas_api_token():
+        return "token"
+    if u_canvas_username() and u_canvas_password():
+        return "password"
+    return None
+
+
 def _canvas_configured():
-    return bool(u_canvas_api_token() and u_canvas_base_url())
+    return _canvas_auth_mode() is not None
 
 
-def _canvas_get(path, params=None, timeout=12):
-    if not _canvas_configured():
+CANVAS_SESSION_TTL = 1500          # 25 min — Canvas sessions outlive this comfortably
+_canvas_session_lock = threading.Lock()
+_canvas_session_cache = {"session": None, "expires": 0.0}
+_canvas_last_login_error = {"at": "", "message": ""}
+
+
+def _canvas_login_error_set(msg):
+    _canvas_last_login_error["at"] = datetime.now(TZ).isoformat()
+    _canvas_last_login_error["message"] = msg
+    log.warning("Canvas login: %s", msg)
+
+
+def _canvas_looks_like_login_page(html):
+    low = (html or "")[:20000].lower()
+    return ('pseudonym_session[password]' in low
+            or 'name="pseudonym_session[unique_id]"' in low)
+
+
+def _canvas_login():
+    """Sign in through Canvas' own login form and return an authenticated
+    requests.Session, or None.
+
+    Canvas accepts its /api/v1 JSON endpoints with a plain session cookie, so
+    once we hold a session we can reuse the same JSON code path the token mode
+    uses — no HTML scraping of the gradebook.
+
+    Read-only by construction: this only ever issues GETs afterwards.
+    """
+    from bs4 import BeautifulSoup
+    base = u_canvas_base_url()
+    user, pw = u_canvas_username(), u_canvas_password()
+    if not (base and user and pw):
+        _canvas_login_error_set("Canvas username/password not configured")
+        return None
+
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    login_url = base + "/login/canvas"
+
+    try:
+        r1 = sess.get(login_url, timeout=20)
+        r1.raise_for_status()
+    except Exception as e:
+        _canvas_login_error_set(f"could not reach {login_url}: {e}")
+        return None
+
+    # A district using SSO bounces away from instructure.com entirely; the
+    # form POST below would then be pointless, so say so precisely.
+    if "instructure.com" not in r1.url and base.split("//")[-1].split("/")[0] not in r1.url:
+        _canvas_login_error_set(
+            f"login redirected to {r1.url} — this district appears to use SSO, "
+            "which this password flow cannot complete")
+        return None
+
+    soup = BeautifulSoup(r1.text, "html.parser")
+    token_el = soup.find("input", attrs={"name": "authenticity_token"})
+    if not token_el or not token_el.get("value"):
+        _canvas_login_error_set("no authenticity_token on the login page (layout changed?)")
+        return None
+
+    form = soup.find("form", attrs={"id": "login_form"}) or soup.find("form")
+    action = (form.get("action") if form else "") or "/login/canvas"
+    if not action.startswith("http"):
+        action = base + (action if action.startswith("/") else "/" + action)
+
+    payload = {
+        "utf8": "\u2713",
+        "authenticity_token": token_el["value"],
+        "redirect_to_ssl": "1",
+        "pseudonym_session[unique_id]": user,
+        "pseudonym_session[password]": pw,
+        "pseudonym_session[remember_me]": "0",
+    }
+    try:
+        r2 = sess.post(action, data=payload, timeout=25, allow_redirects=True,
+                       headers={"Referer": login_url})
+    except Exception as e:
+        _canvas_login_error_set(f"login POST failed: {e}")
+        return None
+
+    if _canvas_looks_like_login_page(r2.text):
+        err = ""
+        try:
+            es = BeautifulSoup(r2.text, "html.parser").find(class_=re.compile(r"error|alert", re.I))
+            err = es.get_text(" ", strip=True)[:160] if es else ""
+        except Exception:
+            pass
+        _canvas_login_error_set("still on the login page after POST — "
+                                + (err or "wrong username/password, or MFA is required"))
+        return None
+
+    if not sess.cookies.get("canvas_session"):
+        _canvas_login_error_set(f"no canvas_session cookie after login (landed on {r2.url})")
+        return None
+
+    _canvas_last_login_error["message"] = ""
+    log.info("Canvas login succeeded as %s", user)
+    return sess
+
+
+def _canvas_get_session():
+    now = time.monotonic()
+    with _canvas_session_lock:
+        if _canvas_session_cache["session"] and now < _canvas_session_cache["expires"]:
+            return _canvas_session_cache["session"]
+        sess = _canvas_login()
+        _canvas_session_cache["session"] = sess
+        _canvas_session_cache["expires"] = now + (CANVAS_SESSION_TTL if sess else 120)
+        return sess
+
+
+def _canvas_invalidate_session():
+    with _canvas_session_lock:
+        _canvas_session_cache["session"] = None
+        _canvas_session_cache["expires"] = 0.0
+
+
+def _canvas_get(path, params=None, timeout=12, _retry=True):
+    """GET a Canvas JSON endpoint using whichever auth mode is configured."""
+    mode = _canvas_auth_mode()
+    if mode is None:
         return None
     url = u_canvas_base_url() + (path if path.startswith("/") else "/" + path)
-    headers = {"Authorization": "Bearer " + u_canvas_api_token(), "Accept": "application/json"}
+
+    if mode == "token":
+        headers = {"Authorization": "Bearer " + u_canvas_api_token(), "Accept": "application/json"}
+        try:
+            resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            log.warning("Canvas API GET %s failed: %s", path, e)
+            return None
+
+    sess = _canvas_get_session()
+    if sess is None:
+        return None
     try:
-        resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
+        resp = sess.get(url, params=params or {}, timeout=timeout,
+                        headers={"Accept": "application/json"})
+        # An expired session gets bounced to the login page, often as a 200.
+        if resp.status_code in (401, 403) or _canvas_looks_like_login_page(resp.text[:2000]):
+            _canvas_invalidate_session()
+            if _retry:
+                return _canvas_get(path, params=params, timeout=timeout, _retry=False)
+            _canvas_login_error_set("session rejected twice; giving up for this cycle")
+            return None
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
-        log.warning("Canvas API GET %s failed: %s", path, e)
+        log.warning("Canvas session GET %s failed: %s", path, e)
         return None
 
 
@@ -1305,6 +1471,12 @@ def canvas_courses():
 
 
 def canvas_grades():
+    """Course grades for whoever we are signed in as.
+
+    A view-only/observer account carries ObserverEnrollment rather than
+    StudentEnrollment, so filtering by type would return nothing. Ask for all
+    active enrollments and keep whichever ones actually carry a grade.
+    """
     cached = _cache_get("canvas:grades", CANVAS_GRADES_TTL)
     if cached is not None:
         return cached
@@ -1312,18 +1484,24 @@ def canvas_grades():
     course_name = {c["id"]: c["name"] for c in courses}
     data = _canvas_get(
         "/api/v1/users/self/enrollments",
-        params={"state[]": "active", "type[]": "StudentEnrollment", "per_page": 50},
+        params={"state[]": "active", "per_page": 100},
     )
     grades = []
     if isinstance(data, list):
         for e in data:
             if not isinstance(e, dict):
                 continue
-            cid = e.get("course_id")
             g = e.get("grades") or {}
+            # Observer rows for a course the observed student isn't graded in
+            # come back with an empty grades object; drop those, keep the rest.
+            if not any(g.get(k) is not None for k in
+                       ("current_grade", "current_score", "final_grade", "final_score")):
+                continue
+            cid = e.get("course_id")
             grades.append({
                 "course_id": cid,
                 "course": course_name.get(cid, ""),
+                "enrollment_type": e.get("type", ""),
                 "current_grade": g.get("current_grade"),
                 "current_score": g.get("current_score"),
                 "final_grade": g.get("final_grade"),
@@ -2792,7 +2970,23 @@ def sync_canvas():
         live = parse_canvas_assignments(cal)
         _cache_canvas_assignments(live)
         return "200 OK", f"Imported {len(live)} upcoming events"
-    return _timed("canvas", "canvas.ical.fetch", run)
+    ok = _timed("canvas", "canvas.ical.fetch", run)
+    return sync_canvas_grades() and ok
+
+
+def sync_canvas_grades():
+    """Re-pull course grades over whichever Canvas auth mode is configured."""
+    def run():
+        if not _canvas_configured():
+            return "Skipped", "Canvas grade access not configured"
+        with _simple_cache_lock:
+            _simple_cache.pop("canvas:grades", None)
+            _simple_cache.pop("canvas:courses", None)
+        grades = canvas_grades()
+        if not grades and _canvas_last_login_error.get("message"):
+            raise RuntimeError(_canvas_last_login_error["message"])
+        return "200 OK", f"{len(grades)} course(s) reporting a grade"
+    return _timed("canvas", "canvas.grades.pulled", run)
 
 
 def sync_powerschool():
@@ -4075,6 +4269,112 @@ def api_calendar():
     return jsonify({"events": events})
 
 
+@app.route("/api/canvas/status")
+def api_canvas_status():
+    mode = _canvas_auth_mode()
+    err = dict(_canvas_last_login_error)
+    return jsonify({
+        "configured": mode is not None,
+        "mode": mode or "",
+        "base_url": u_canvas_base_url(),
+        "username": u_canvas_username(),
+        "has_password": bool(u_canvas_password()),
+        "has_token": bool(u_canvas_api_token()),
+        "last_login_error": err if err.get("message") else None,
+    })
+
+
+@app.route("/api/canvas/configure", methods=["POST"])
+def api_canvas_configure():
+    """Save Canvas credentials and immediately try them, so the student finds
+    out here rather than waiting for the next sync."""
+    data = request.get_json(silent=True) or {}
+    updates = {}
+    base = str(data.get("base_url", "")).strip().rstrip("/")
+    if base:
+        if not base.startswith("https://"):
+            return jsonify({"error": "base_url must start with https://"}), 400
+        updates["canvas_base_url"] = base
+    if "username" in data:
+        updates["canvas_username"] = str(data.get("username", "")).strip()[:200]
+    # An empty password means "leave the stored one alone".
+    if data.get("password"):
+        updates["canvas_password"] = str(data["password"])[:200]
+    if not updates:
+        return jsonify({"error": "nothing to update"}), 400
+
+    uid = _uid()
+    if uid:
+        set_user_config(updates, user_id=uid)
+    else:
+        set_config(updates)
+    _canvas_invalidate_session()
+    with _simple_cache_lock:
+        _simple_cache.pop("canvas:grades", None)
+        _simple_cache.pop("canvas:courses", None)
+
+    mode = _canvas_auth_mode()
+    if mode is None:
+        return jsonify({"ok": False, "mode": "", "error": "Canvas is still not fully configured"})
+    if mode == "password" and _canvas_get_session() is None:
+        return jsonify({"ok": False, "mode": mode,
+                        "error": _canvas_last_login_error.get("message") or "login failed"})
+    grades = canvas_grades()
+    return jsonify({"ok": True, "mode": mode, "courses": len(canvas_courses()),
+                    "graded_courses": len(grades)})
+
+
+@app.route("/api/canvas/disconnect", methods=["POST"])
+def api_canvas_disconnect():
+    updates = {"canvas_username": "", "canvas_password": "", "canvas_api_token": ""}
+    uid = _uid()
+    if uid:
+        set_user_config(updates, user_id=uid)
+    else:
+        set_config(updates)
+    _canvas_invalidate_session()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/canvas/debug")
+def api_canvas_debug():
+    """Step-by-step view of the login, for diagnosing a district we can't test
+    against locally. Never returns the password or session cookies."""
+    mode = _canvas_auth_mode()
+    out = {"mode": mode or "", "base_url": u_canvas_base_url(),
+           "username": u_canvas_username(), "steps": []}
+    if mode is None:
+        out["steps"].append({"step": "config", "ok": False,
+                             "detail": "need base_url plus either a token or username+password"})
+        return jsonify(out)
+
+    if mode == "password":
+        _canvas_invalidate_session()
+        sess = _canvas_get_session()
+        out["steps"].append({
+            "step": "login", "ok": sess is not None,
+            "detail": _canvas_last_login_error.get("message") or "signed in",
+        })
+        if sess is None:
+            return jsonify(out)
+
+    enr = _canvas_get("/api/v1/users/self/enrollments", params={"state[]": "active", "per_page": 100})
+    out["steps"].append({
+        "step": "enrollments", "ok": isinstance(enr, list),
+        "detail": (f"{len(enr)} enrollment(s): " +
+                   ", ".join(sorted({str(e.get("type")) for e in enr if isinstance(e, dict)}))
+                   ) if isinstance(enr, list) else "no JSON returned",
+    })
+    courses = canvas_courses()
+    out["steps"].append({"step": "courses", "ok": bool(courses),
+                         "detail": f"{len(courses)} course(s)"})
+    grades = canvas_grades()
+    out["steps"].append({"step": "grades", "ok": bool(grades),
+                         "detail": f"{len(grades)} course(s) reporting a grade"})
+    out["sample"] = grades[:3]
+    return jsonify(out)
+
+
 @app.route("/api/canvas/grades")
 def api_canvas_grades():
     """Live Canvas course grades. Needs CANVAS_API_TOKEN; the iCal feed alone
@@ -4347,6 +4647,8 @@ def api_config_get():
         "personal_ical_url":     cfg.get("personal_ical_url", ""),
         "canvas_ical_url":       cfg.get("canvas_ical_url", ""),
         "canvas_api_token":      "••••••••" if cfg.get("canvas_api_token", "") else "",
+        "canvas_username":       cfg.get("canvas_username", ""),
+        "canvas_password":       "••••••••" if cfg.get("canvas_password", "") else "",
         "canvas_base_url":       cfg.get("canvas_base_url", ""),
         "sports_ical_url":       cfg.get("sports_ical_url", ""),
     })

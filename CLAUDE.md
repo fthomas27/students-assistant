@@ -34,7 +34,7 @@ the Sync & Feeds page exists to show their state.
 
 | Connector | Source | Cadence | Gives us |
 |---|---|---|---|
-| **Canvas** | iCal feed (+ REST when a token is set) | every 15 min | assignment titles, due dates; grades and descriptions with a token |
+| **Canvas** | iCal feed + REST (token *or* password login) | every 15 min | assignment titles, due dates, course grades |
 | **PowerSchool** | headless-browser scrape | weekdays 07:12 and 15:12 | weighted grades, attendance |
 | **WHOOP** | OAuth2 API | every 30 min | recovery, sleep, strain, workouts, heart rate |
 
@@ -107,7 +107,9 @@ Optional:
 - `ANTHROPIC_API_KEY` - only used by the PowerSchool vision fallback
 - `APP_PASSWORD`, `ADMIN_PASSWORD`, `AVERAGE_USER`, `ADMIN_USER` - login
 - `CANVAS_ICAL_URL` - Canvas assignment feed (titles + due dates)
-- `CANVAS_API_TOKEN` / `CANVAS_BASE_URL` - unlocks live grades and descriptions
+- `CANVAS_BASE_URL` - Canvas root, e.g. `https://pcsd.instructure.com`
+- `CANVAS_API_TOKEN` - personal access token, when the district allows them
+- `CANVAS_USERNAME` / `CANVAS_PASSWORD` - fallback when it doesn't (see below)
 - `POWER_USERN` / `POWER_PASS` / `PS_BASE_URL` - PowerSchool credentials
 - `WHOOP_CLIENT_ID` / `WHOOP_CLIENT_SECRET` / `WHOOP_REDIRECT_URI` - WHOOP OAuth
 - `PERSONAL_ICAL_URL`, `SPORTS_ICAL_URL` - extra calendar feeds
@@ -125,6 +127,10 @@ env var.
 - `POST /api/assignments/<uid>/estimate` - override a time estimate
 - `GET /api/calendar?days=N` - all feed events, each with a source-derived category
 - `GET /api/canvas/grades` - live Canvas course grades
+- `GET /api/canvas/status` - which auth mode is active, and the last login error
+- `POST /api/canvas/configure` - save credentials and immediately test the sign-in
+- `POST /api/canvas/disconnect` - clear stored Canvas credentials
+- `GET /api/canvas/debug` - step-by-step login/enrollment/grade diagnostics
 - `GET /api/powerschool/grades` / `/api/powerschool/attendance` - scraped data
 - `POST /api/powerschool/refresh` - bust the scrape cache
 - `GET /api/whoop/summary` / `/workouts` / `/heart-rate` / `/bedtime` / `/status`
@@ -139,6 +145,36 @@ env var.
 Unconfigured optional connectors answer `200` with `configured: false`, not an
 error status — "not set up" is a normal state, and a 503 just makes the console
 noisy.
+
+## Canvas grade access
+
+Park City does not let student accounts generate personal access tokens, so
+there are two auth modes and `_canvas_auth_mode()` picks between them:
+
+- **token** — `CANVAS_API_TOKEN` is set. Preferred wherever it is available.
+- **password** — `CANVAS_USERNAME` + `CANVAS_PASSWORD`. `_canvas_login()` posts
+  the login form at `/login/canvas` (carrying the page's `authenticity_token`)
+  and keeps the resulting `canvas_session` cookie for 25 minutes.
+
+The important part: **Canvas accepts its own `/api/v1` JSON endpoints with a
+plain session cookie.** So the password mode reuses the same JSON code path as
+the token mode — there is no HTML gradebook scraping, and `_canvas_get()` is the
+only place that knows which mode is in play. Keep it that way; do not add an
+HTML parser for grades.
+
+Two things that will bite you:
+
+- **The account is view-only, i.e. an observer.** Observer rows are
+  `ObserverEnrollment`, not `StudentEnrollment`, so `canvas_grades()` must not
+  filter by enrollment type — it asks for all active enrollments and keeps the
+  ones carrying a grade. Narrowing that filter silently returns zero grades.
+- **An expired session comes back as a 200 containing the login page**, not a
+  401. `_canvas_get()` sniffs for that, re-logs in, and retries exactly once.
+
+Everything here is read-only: only GETs are issued after the login POST.
+
+Credentials live in the `config` table in plaintext, like the other secrets in
+this app. `/api/config` masks them and the page never receives them back.
 
 ## Park City School Specific
 

@@ -696,3 +696,145 @@ def test_connector_state_reports_all_three(client):
     for name in flask_app.CONNECTORS:
         st = flask_app._connector_state(name)
         assert set(["name", "label", "configured", "connected", "last_run", "next_run"]) <= set(st)
+
+
+# ── Canvas password login ─────────────────────────────────────────────────────
+
+_CANVAS_LOGIN_HTML = (
+    '<html><body><form id="login_form" action="/login/canvas" method="post">'
+    '<input name="authenticity_token" value="tok-abc">'
+    '<input name="pseudonym_session[unique_id]">'
+    '<input type="password" name="pseudonym_session[password]">'
+    '</form></body></html>'
+)
+
+
+class _Resp:
+    def __init__(self, text="", status=200, json_data=None, url="https://pcsd.instructure.com/"):
+        self.text = text
+        self.status_code = status
+        self._json = json_data
+        self.url = url
+
+    def json(self):
+        if self._json is None:
+            raise ValueError("no json")
+        return self._json
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+
+class _FakeCanvasSession:
+    """Stands in for requests.Session during a Canvas login."""
+
+    def __init__(self, post_result, api_json=None):
+        self.headers = {}
+        self.cookies = {}
+        self._post_result = post_result
+        self._api_json = api_json
+        self.posted = None
+        self.gets = []
+
+    def get(self, url, **kw):
+        self.gets.append(url)
+        if "/login/canvas" in url:
+            return _Resp(_CANVAS_LOGIN_HTML, url=url)
+        return _Resp("", json_data=self._api_json if self._api_json is not None else [], url=url)
+
+    def post(self, url, data=None, **kw):
+        self.posted = data
+        return self._post_result
+
+
+def _canvas_setup(flask_app, monkeypatch, session_obj):
+    monkeypatch.setattr(flask_app, "u_canvas_base_url", lambda: "https://pcsd.instructure.com")
+    monkeypatch.setattr(flask_app, "u_canvas_api_token", lambda: "")
+    monkeypatch.setattr(flask_app, "u_canvas_username", lambda: "someone@example.com")
+    monkeypatch.setattr(flask_app, "u_canvas_password", lambda: "pw")
+    monkeypatch.setattr(flask_app.requests, "Session", lambda: session_obj)
+    flask_app._canvas_invalidate_session()
+
+
+def test_canvas_auth_mode_prefers_token_then_password(client, monkeypatch):
+    _, flask_app = client
+    monkeypatch.setattr(flask_app, "u_canvas_base_url", lambda: "https://x.instructure.com")
+    monkeypatch.setattr(flask_app, "u_canvas_api_token", lambda: "t")
+    monkeypatch.setattr(flask_app, "u_canvas_username", lambda: "u")
+    monkeypatch.setattr(flask_app, "u_canvas_password", lambda: "p")
+    assert flask_app._canvas_auth_mode() == "token"
+    monkeypatch.setattr(flask_app, "u_canvas_api_token", lambda: "")
+    assert flask_app._canvas_auth_mode() == "password"
+    monkeypatch.setattr(flask_app, "u_canvas_password", lambda: "")
+    assert flask_app._canvas_auth_mode() is None
+
+
+def test_canvas_login_posts_authenticity_token_and_credentials(client, monkeypatch):
+    _, flask_app = client
+    sess = _FakeCanvasSession(_Resp("<html>Dashboard</html>", url="https://pcsd.instructure.com/?login_success=1"))
+    sess.cookies = {"canvas_session": "abc"}
+    _canvas_setup(flask_app, monkeypatch, sess)
+    out = flask_app._canvas_login()
+    assert out is sess
+    assert sess.posted["authenticity_token"] == "tok-abc"
+    assert sess.posted["pseudonym_session[unique_id]"] == "someone@example.com"
+    assert sess.posted["pseudonym_session[password]"] == "pw"
+
+
+def test_canvas_login_detects_bad_credentials(client, monkeypatch):
+    """A rejected login re-renders the login form; that must not read as success."""
+    _, flask_app = client
+    sess = _FakeCanvasSession(_Resp(_CANVAS_LOGIN_HTML))
+    _canvas_setup(flask_app, monkeypatch, sess)
+    assert flask_app._canvas_login() is None
+    assert "login page" in flask_app._canvas_last_login_error["message"]
+
+
+def test_canvas_login_reports_missing_session_cookie(client, monkeypatch):
+    _, flask_app = client
+    sess = _FakeCanvasSession(_Resp("<html>Somewhere else</html>"))
+    sess.cookies = {}
+    _canvas_setup(flask_app, monkeypatch, sess)
+    assert flask_app._canvas_login() is None
+    assert "canvas_session" in flask_app._canvas_last_login_error["message"]
+
+
+def test_canvas_grades_keeps_observer_enrollments(client, monkeypatch):
+    """A view-only account is an ObserverEnrollment. Filtering to
+    StudentEnrollment would silently return no grades at all."""
+    _, flask_app = client
+    monkeypatch.setattr(flask_app, "canvas_courses",
+                        lambda: [{"id": 1, "name": "AP Chemistry"}, {"id": 2, "name": "AP Physics C"}])
+    monkeypatch.setattr(flask_app, "_canvas_get", lambda *a, **k: [
+        {"course_id": 1, "type": "ObserverEnrollment",
+         "grades": {"current_score": 94.2, "current_grade": "A"}},
+        {"course_id": 2, "type": "ObserverEnrollment", "grades": {}},
+    ])
+    with flask_app._simple_cache_lock:
+        flask_app._simple_cache.pop("canvas:grades", None)
+    out = flask_app.canvas_grades()
+    assert len(out) == 1
+    assert out[0]["course"] == "AP Chemistry"
+    assert out[0]["current_score"] == 94.2
+    assert out[0]["enrollment_type"] == "ObserverEnrollment"
+
+
+def test_canvas_get_retries_once_when_session_expires(client, monkeypatch):
+    """An expired Canvas session returns the login page with a 200. That must
+    invalidate and re-login exactly once, not loop."""
+    _, flask_app = client
+    calls = {"n": 0}
+
+    class Expiring(_FakeCanvasSession):
+        def get(self, url, **kw):
+            if "/login/canvas" in url:
+                return _Resp(_CANVAS_LOGIN_HTML, url=url)
+            calls["n"] += 1
+            return _Resp(_CANVAS_LOGIN_HTML, url=url)  # always looks logged out
+
+    sess = Expiring(_Resp("<html>ok</html>"))
+    sess.cookies = {"canvas_session": "abc"}
+    _canvas_setup(flask_app, monkeypatch, sess)
+    assert flask_app._canvas_get("/api/v1/users/self/enrollments") is None
+    assert calls["n"] == 2  # original attempt plus exactly one retry

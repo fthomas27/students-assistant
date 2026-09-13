@@ -29,8 +29,11 @@ None of the three are required — the app renders with whatever is configured,
 and Sync & Feeds shows the state of each.
 
 - **Canvas** — paste your calendar feed URL in the app, or set `CANVAS_ICAL_URL`.
-  That gives titles and due dates. Add `CANVAS_API_TOKEN` and `CANVAS_BASE_URL`
-  for live grades and full assignment descriptions.
+  That gives titles and due dates. For grades, open **Sync & Feeds** and fill in
+  the Canvas card: your Canvas URL plus the username and password you sign in
+  with. If your district does issue personal access tokens, set
+  `CANVAS_API_TOKEN` instead — it is preferred when present. `GET
+  /api/canvas/debug` prints a step-by-step trace if sign-in misbehaves.
 - **PowerSchool** — set `POWER_USERN`, `POWER_PASS`, and `PS_BASE_URL`. Scraped
   with a headless browser on weekdays at 07:12 and 15:12.
 - **WHOOP** — set `WHOOP_CLIENT_ID` and `WHOOP_CLIENT_SECRET`, then connect from
