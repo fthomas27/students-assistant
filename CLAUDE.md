@@ -185,16 +185,17 @@ Two more things that will bite you:
   and retry exactly once.
 - A course with no grade posted yet appears on `/grades` with `N/A`; those rows
   are dropped rather than shown as 0%.
-- **Canvas only prints a letter when the course has a grading scheme enabled**,
-  and Park City's courses mostly do not. `_letter_for_score()` derives one from
-  the percentage on a standard 10-point scale, sets `grade_derived: true`, and
-  the UI prefixes it with `~` plus a tooltip. A letter Canvas *does* publish
-  always wins. If the school's scale differs, edit `_LETTER_SCALE` — do not
-  silently present a derived letter as the official one.
-- **An observer's page repeats the student's name on every row**
-  ("Finley Thomas, AP STATISTICS ..."). `_clean_course_name()` strips the shared
-  prefix, detected from the data rather than hardcoded, and only when 2+ rows
-  agree on it — a single row keeps its name intact.
+- **The page is a list of links, not a table.** Each course link is followed by
+  its grade. `_canvas_parse_grades_html()` therefore finds every
+  `/courses/<id>` link and reads the grade from its table row *or*, when there
+  is no row, the text up to the next course link. Do not narrow it to tables.
+- **Most courses publish a letter and no percentage.** A row with a letter and
+  no percent is kept; the UI leads with the letter and shows no progress bar.
+- **Never derive a letter from a percentage.** Park City's scale is not the
+  standard 10-point one — 71.61% is a B- there — so derivation was wrong on 3
+  of 4 courses when it was tried. Letters come from the page or not at all.
+- **"no grade" rows are dropped**, as are `N/A` ones. Note `N/A` ends in a
+  standalone A, which a naive letter match reads as an A grade.
 
 `GET /api/canvas/debug?raw=1` dumps the first table's markup even when parsing
 succeeded, which is how to fix what it got *wrong* rather than what it missed.

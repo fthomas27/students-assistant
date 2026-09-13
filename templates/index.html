@@ -621,7 +621,7 @@ LOADERS.register = async function () {
     if (!g.course) return;
     byName.set(g.course.toLowerCase(), {
       course: g.course, teacher: "", pct: g.current_score,
-      letter: g.current_grade || "", derived: !!g.grade_derived, src: "Canvas",
+      letter: g.current_grade || "", src: "Canvas",
     });
   });
   (ps.grades || []).forEach(g => {
@@ -631,12 +631,14 @@ LOADERS.register = async function () {
       course: g.course, teacher: g.teacher || prev.teacher || "",
       pct: g.grade_pct != null ? g.grade_pct : prev.pct,
       letter: g.grade_letter || prev.letter || "",
-      derived: g.grade_letter ? false : !!prev.derived,
       absences: g.absences, src: prev.src ? "Both" : "PowerSchool",
     });
   });
   const courses = [...byName.values()].sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
   const withPct = courses.filter(c => typeof c.pct === "number");
+  // A course counts as graded on a letter alone; this school publishes letters
+  // without percentages for most courses.
+  const graded = courses.filter(c => typeof c.pct === "number" || c.letter);
   const mean = withPct.length
     ? Math.round(withPct.reduce((s, c) => s + c.pct, 0) / withPct.length * 10) / 10 : null;
 
@@ -647,10 +649,11 @@ LOADERS.register = async function () {
   const dueWeek = open.filter(a => !a.overdue && new Date(a.due_iso).getTime() <= weekEnd);
 
   $("#registerStats").innerHTML =
-    statTile("Course Load", courses.length || "—", courses.length ? "Enrolled" : "", 
-      withPct.length + " reporting a grade") +
+    statTile("Course Load", courses.length || "—", courses.length ? "Enrolled" : "",
+      graded.length + " reporting a grade") +
     statTile("Mean Standing", mean != null ? mean : "—", mean != null ? "%" : "",
-      mean != null ? "Across " + withPct.length + " courses" : "No grades available") +
+      mean != null ? "Across " + withPct.length + " of " + courses.length + " courses"
+                   : (courses.length ? "Letter grades only" : "No grades available")) +
     statTile("Needs Attention", overdue.length, overdue.length === 1 ? "Overdue" : "Overdue",
       dueWeek.length + " more due this week") +
     statTile("Logged This Week", stats.weekly_minutes != null ? Math.round(stats.weekly_minutes / 60 * 10) / 10 : "—",
@@ -676,10 +679,10 @@ LOADERS.register = async function () {
       (c.absences ? '<span>' + esc(c.absences) + ' absences</span>' : '') + '</div>' +
       (pct != null ? '<div class="gradebar"><i style="width:' + Math.max(0, Math.min(100, pct)) + '%"></i></div>' : '') +
       '</div><div style="text-align:right;flex:none">' +
-      '<div class="num" style="font-size:15px">' + (pct != null ? pct + "%" : "—") + '</div>' +
-      (c.letter ? '<div class="label"' + (c.derived
-          ? ' title="Derived from the percentage — this course publishes no letter grade in Canvas"'
-          : '') + '>' + (c.derived ? '~' : '') + esc(c.letter) + '</div>' : '') +
+      (pct != null
+        ? '<div class="num" style="font-size:15px">' + pct + '%</div>' +
+          (c.letter ? '<div class="label">' + esc(c.letter) + '</div>' : '')
+        : '<div class="num" style="font-size:17px">' + esc(c.letter || "—") + '</div>') +
       '</div></div>';
   }).join("") : emptyState(canvas.configured || (ps.grades || []).length
       ? "No course grades reported yet." : "Connect Canvas or PowerSchool on Sync & Feeds to see grades.");

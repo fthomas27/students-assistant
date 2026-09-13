@@ -868,17 +868,6 @@ _GRADES_PAGE = """
 """
 
 
-def test_canvas_grades_page_parses_courses_and_scores(client):
-    _, flask_app = client
-    out = flask_app._canvas_parse_grades_html(_GRADES_PAGE)
-    assert len(out) == 2, "the ungraded Advisory row must be dropped"
-    assert out[0]["course"] == "AP Chemistry"
-    assert out[0]["course_id"] == 1021
-    assert out[0]["current_score"] == 94.2
-    assert out[0]["current_grade"] == "A"
-    assert out[1]["current_grade"] == "B+"
-
-
 def test_canvas_grades_page_tolerates_different_markup(client):
     """Parsing keys off /courses/<id> links and row text, not class names, so a
     differently themed Canvas still works."""
@@ -990,31 +979,12 @@ def test_observer_page_strips_the_repeated_student_name(client):
     ]
 
 
-def test_letter_grade_derived_when_canvas_publishes_none(client):
-    """Canvas only prints a letter when the course has a grading scheme. Derive
-    one from the percentage, but flag it as derived."""
-    _, flask_app = client
-    out = flask_app._canvas_parse_grades_html(_OBSERVER_GRADES_PAGE)
-    assert [(r["current_score"], r["current_grade"], r["grade_derived"]) for r in out] == [
-        (82.59, "B-", True), (79.65, "C+", True), (75.0, "C", True),
-    ]
-
-
 def test_canvas_letter_wins_over_the_derived_one(client):
     _, flask_app = client
     html = ('<table><tr><td><a href="/courses/4">Chem</a></td>'
             '<td>91.0% A-</td></tr></table>')
     out = flask_app._canvas_parse_grades_html(html)
     assert out[0]["current_grade"] == "A-"
-    assert out[0]["grade_derived"] is False
-
-
-def test_letter_scale_boundaries(client):
-    _, flask_app = client
-    f = flask_app._letter_for_score
-    assert (f(93), f(92.9), f(90), f(89.9)) == ("A", "A-", "A-", "B+")
-    assert (f(60), f(59.9), f(0)) == ("D-", "F", "F")
-    assert f(None) == ""
 
 
 def test_single_row_page_keeps_its_course_name(client):
@@ -1025,3 +995,122 @@ def test_single_row_page_keeps_its_course_name(client):
             '<td>88%</td></tr></table>')
     out = flask_app._canvas_parse_grades_html(html)
     assert out[0]["course"] == "Smith, John AP Chem"
+
+
+# ── Letter grades, in every shape Canvas renders them ─────────────────────────
+
+def _one_row(grade_cell):
+    return ('<table><tr><td><a href="/courses/7/grades/1">AP Chemistry</a></td>'
+            '<td>Fall 2025</td><td>Student</td><td>' + grade_cell + '</td></tr></table>')
+
+
+def _parsed(flask_app, grade_cell):
+    out = flask_app._canvas_parse_grades_html(_one_row(grade_cell))
+    assert len(out) == 1, grade_cell
+    return out[0]
+
+
+def test_letter_in_its_own_span(client):
+    _, a = client
+    g = _parsed(a, '<span class="percent">82.59%</span> <span class="letter_grade">B-</span>')
+    assert (g["current_score"], g["current_grade"]) == (82.59, "B-")
+
+
+def test_letter_inline_beside_the_percentage(client):
+    _, a = client
+    g = _parsed(a, "82.59% B-")
+    assert g["current_grade"] == "B-"
+
+
+def test_letter_with_no_space_after_the_percentage(client):
+    _, a = client
+    g = _parsed(a, "82.59%B-")
+    assert g["current_grade"] == "B-"
+
+
+def test_letter_using_a_unicode_minus(client):
+    """Canvas themes render the minus as U+2212 / en dash rather than ASCII."""
+    _, a = client
+    for dash in ("−", "–", "—"):
+        g = _parsed(a, "82.59% B" + dash)
+        assert g["current_grade"] == "B-", dash
+
+
+def test_letter_in_a_separate_column(client):
+    _, a = client
+    out = a._canvas_parse_grades_html(
+        '<table><tr><td><a href="/courses/7">AP Chem</a></td>'
+        '<td>91.2%</td><td>A-</td></tr></table>')
+    assert out[0]["current_grade"] == "A-"
+
+
+def test_letter_in_parentheses(client):
+    _, a = client
+    g = _parsed(a, "82.59% (B-)")
+    assert g["current_grade"] == "B-"
+
+
+def test_na_is_not_read_as_the_letter_a(client):
+    """"N/A" ends in a standalone A. Without a guard every ungraded course
+    would show a fabricated A."""
+    _, a = client
+    out = a._canvas_parse_grades_html(
+        '<table><tr><td><a href="/courses/8">Advisory</a></td>'
+        '<td>Fall 2025</td><td><span class="percent">N/A</span></td></tr></table>')
+    assert out == [], "an ungraded row must be dropped, not shown as an A"
+
+
+# ── The real pcsd.instructure.com /grades layout ──────────────────────────────
+# A list, not a table: a course link followed by its letter grade. Some courses
+# publish only a letter and no percentage; some publish "no grade".
+
+_REAL_GRADES_PAGE = """
+<html><body>
+<h1>Courses I'm Taking</h1>
+<div><a href="/courses/101/grades/9">SOCS AP ECONOMICS - Feasler - YR ^</a><div>B-</div></div>
+<div><a href="/courses/102/grades/9">ELA ENGLISH 2010 CE - Jobe - YR</a><div>F</div></div>
+<div><a href="/courses/103/grades/9">SOCS AP US GOVERNMENT - Andres - YR ^</a><div>B</div></div>
+<div><a href="/courses/104/grades/9">AP STATISTICS (Monson) ^</a><div>B-</div></div>
+<div><a href="/courses/105/grades/9">PCHS Library The Mine 2026-2027 Matthews</a><div>no grade</div></div>
+<div><a href="/courses/106/grades/9">LANG SPANISH 3117 CE - Fernandez - YR</a><div>C</div></div>
+</body></html>
+"""
+
+
+def test_real_grades_page_list_layout(client):
+    """The live page is a list of links, not a table, and carries letters only."""
+    _, a = client
+    out = a._canvas_parse_grades_html(_REAL_GRADES_PAGE)
+    assert [(r["course"], r["current_grade"]) for r in out] == [
+        ("SOCS AP ECONOMICS - Feasler - YR", "B-"),
+        ("ELA ENGLISH 2010 CE - Jobe - YR", "F"),
+        ("SOCS AP US GOVERNMENT - Andres - YR", "B"),
+        ("AP STATISTICS (Monson)", "B-"),
+        ("LANG SPANISH 3117 CE - Fernandez - YR", "C"),
+    ]
+
+
+def test_no_grade_courses_are_dropped(client):
+    _, a = client
+    out = a._canvas_parse_grades_html(_REAL_GRADES_PAGE)
+    assert not any("Library" in r["course"] for r in out)
+
+
+def test_letter_only_course_survives_without_a_percentage(client):
+    """A course with an F and no percentage must not be dropped."""
+    _, a = client
+    out = a._canvas_parse_grades_html(_REAL_GRADES_PAGE)
+    ela = next(r for r in out if r["course"].startswith("ELA"))
+    assert ela["current_grade"] == "F"
+    assert ela["current_score"] is None
+
+
+def test_letters_are_never_invented_from_a_percentage(client):
+    """The school's scale is not the standard 10-point one — 71.61% is a B-
+    here — so a percentage alone must never produce a letter."""
+    _, a = client
+    out = a._canvas_parse_grades_html(
+        '<table><tr><td><a href="/courses/9">AP Econ</a></td>'
+        '<td>71.61%</td></tr></table>')
+    assert out[0]["current_score"] == 71.61
+    assert out[0]["current_grade"] is None

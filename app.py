@@ -1497,25 +1497,6 @@ def _canvas_get_html(path, timeout=20):
 
 
 _GRADE_PCT_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
-# Canvas only prints a letter when the course has a grading scheme enabled, so
-# derive one when it doesn't. Standard 10-point scale; adjust if the school's
-# differs. Derived letters are marked in the UI so they aren't mistaken for
-# Canvas' own.
-_LETTER_SCALE = [
-    (93, "A"), (90, "A-"), (87, "B+"), (83, "B"), (80, "B-"),
-    (77, "C+"), (73, "C"), (70, "C-"), (67, "D+"), (63, "D"), (60, "D-"),
-]
-
-
-def _letter_for_score(score):
-    if score is None:
-        return ""
-    for cutoff, letter in _LETTER_SCALE:
-        if score >= cutoff:
-            return letter
-    return "F"
-
-
 def _clean_course_name(name, drop_prefix=""):
     """Tidy a course title taken from the /grades page.
 
@@ -1529,61 +1510,146 @@ def _clean_course_name(name, drop_prefix=""):
     out = re.sub(r"[\s\^\*\u25b2\u25bc]+$", "", out)      # trailing carets/arrows
     return re.sub(r"\s{2,}", " ", out).strip(" ,-")
 _GRADE_LETTER_RE = re.compile(r"^([A-F][+-]?|N/A)$", re.I)
+# A letter on its own, not part of a word or number: "B-", "A", "C+".
+_LETTER_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])([A-F][+-]?)(?![A-Za-z0-9])")
+# Canvas renders minus signs as several different dashes depending on theme and
+# locale; normalise them (and zero-width junk) before matching.
+_DASH_TRANSLATION = {ord(c): "-" for c in "\u2212\u2013\u2014\u2011\u2012"}
+_DASH_TRANSLATION.update({ord(c): None for c in "\u200b\u200c\u200d\ufeff\xa0"})
+
+
+def _norm_grade_text(t):
+    return re.sub(r"\s+", " ", (t or "").translate(_DASH_TRANSLATION)).strip()
+
+
+def _strip_non_grades(t):
+    """Remove text that would otherwise be misread as a letter grade.
+
+    "N/A" is the big one: its trailing A satisfies a standalone-letter match,
+    which would put a fake A on every ungraded course.
+    """
+    t = re.sub(r"\bN\s*/?\s*A\b", " ", t, flags=re.I)
+    return re.sub(r"\d+(?:\.\d+)?\s*%", " ", t)
+
+
+def _letter_from_element(el):
+    """A letter grade out of one element, if it holds exactly one."""
+    t = _norm_grade_text(el.get_text(" ", strip=True))
+    if not t or t.upper() == "N/A":
+        return ""
+    m = re.match(r"^([A-F][+-]?)$", t, re.I)
+    return m.group(1).upper() if m else ""
+
+
+def _extract_letter_grade(row, score_cell, rest_text):
+    """Pull the published letter grade out of a /grades row.
+
+    Layered, most-specific first, because Canvas puts the letter in a dedicated
+    span on some themes, inline beside the percentage on others, and omits it
+    entirely when the course has no grading scheme.
+    """
+    # 1. An element Canvas explicitly labels as the letter grade.
+    for scope in (score_cell, row):
+        if scope is None:
+            continue
+        if scope is None:
+            continue
+        for el in scope.find_all(attrs={"class": True}):
+            classes = " ".join(el.get("class") or []).lower()
+            if "letter" in classes or "grade_letter" in classes:
+                got = _letter_from_element(el)
+                if got:
+                    return got
+    # 2. A standalone letter in the same cell as the percentage — the safest
+    #    place to look, since it can't collide with a term or teacher name.
+    if score_cell is not None:
+        m = _LETTER_TOKEN_RE.search(
+            _strip_non_grades(_norm_grade_text(score_cell.get_text(" ", strip=True))))
+        if m:
+            return m.group(1).upper()
+    # 3. Anywhere else in the row's non-course cells.
+    m = _LETTER_TOKEN_RE.search(_strip_non_grades(_norm_grade_text(rest_text)))
+    return m.group(1).upper() if m else ""
 _COURSE_HREF_RE = re.compile(r"/courses/(\d+)")
+
+
+def _text_between(start, end):
+    """Text lying between two elements in document order.
+
+    Canvas' /grades renders as a list on some layouts rather than a table, so a
+    course's grade is simply the text following its link. Skips the start
+    element's own descendants so the course title isn't mistaken for a grade.
+    """
+    from bs4 import NavigableString
+    inside = {id(d) for d in start.descendants}
+    parts = []
+    for node in start.next_elements:
+        if end is not None and node is end:
+            break
+        if id(node) in inside:
+            continue
+        if isinstance(node, NavigableString):
+            parts.append(str(node))
+    return " ".join(parts)
 
 
 def _canvas_parse_grades_html(html):
     """Parse Canvas' own /grades summary page.
 
-    Deliberately tolerant: Canvas markup differs by version and theme, so rather
-    than binding to specific class names this walks table rows, takes the course
-    from whatever /courses/<id> link the row contains, and picks the percentage
-    and letter out of the row's text. That survives a redesign; a class-name
-    parser would not.
+    Deliberately tolerant: Canvas renders this page as a table on some themes
+    and a plain list on others, so rather than binding to class names this finds
+    every /courses/<id> link and reads the grade out of the text belonging to
+    it — the rest of its table row, or the text up to the next course link.
+
+    Letters are only ever taken from the page. They are NOT derived from the
+    percentage: the school's grading scale is not the standard 10-point one
+    (71.61% is a B- here), so a derived letter would simply be wrong.
     """
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html or "", "html.parser")
+
+    links = [a for a in soup.find_all("a", href=True)
+             if _COURSE_HREF_RE.search(a["href"])]
     out, seen = [], set()
 
-    for row in soup.find_all("tr"):
-        link = None
-        for a in row.find_all("a", href=True):
-            if _COURSE_HREF_RE.search(a["href"]):
-                link = a
-                break
-        if link is None:
-            continue
-        course = link.get_text(" ", strip=True)
-        if not course:
-            continue
+    for idx, link in enumerate(links):
         m = _COURSE_HREF_RE.search(link["href"])
         course_id = int(m.group(1)) if m else None
         if course_id in seen:
             continue
+        course = link.get_text(" ", strip=True)
+        if not course:
+            continue
 
-        # Score and letter come from the cells that are not the course cell.
-        cells = row.find_all(["td", "th"])
-        rest = " ".join(c.get_text(" ", strip=True) for c in cells
-                        if link not in c.find_all("a"))
-        pct = _GRADE_PCT_RE.search(rest)
+        row = link.find_parent("tr")
+        if row is not None:
+            cells = [c for c in row.find_all(["td", "th"]) if link not in c.find_all("a")]
+            scope_text = " ".join(c.get_text(" ", strip=True) for c in cells)
+            score_cell = next(
+                (c for c in cells
+                 if _GRADE_PCT_RE.search(_norm_grade_text(c.get_text(" ", strip=True)))), None)
+            scope_el = row
+        else:
+            scope_text = _text_between(link, links[idx + 1] if idx + 1 < len(links) else None)
+            score_cell = None
+            scope_el = None
+
+        norm = _norm_grade_text(scope_text)
+        if re.search(r"\bno grade\b", norm, re.I):
+            continue
+
+        pct = _GRADE_PCT_RE.search(norm)
         score = float(pct.group(1)) if pct else None
-
-        letter = ""
-        for tok in rest.replace(",", " ").split():
-            tok = tok.strip("()[]")
-            if _GRADE_LETTER_RE.match(tok) and tok.upper() != "N/A":
-                letter = tok.upper()
-                break
+        letter = _extract_letter_grade(scope_el, score_cell, scope_text)
 
         if score is None and not letter:
-            continue          # a course row with no grade posted yet
+            continue          # nothing published for this course yet
         seen.add(course_id)
         out.append({
             "course_id": course_id,
             "course": course,
             "enrollment_type": "",
-            "current_grade": letter or _letter_for_score(score) or None,
-            "grade_derived": not letter and score is not None,
+            "current_grade": letter or None,
             "current_score": score,
             "final_grade": None,
             "final_score": None,
