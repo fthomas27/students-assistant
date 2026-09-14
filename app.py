@@ -1453,19 +1453,33 @@ def canvas_courses():
     cached = _cache_get("canvas:courses", CANVAS_COURSES_TTL)
     if cached is not None:
         return cached
-    data = _canvas_get("/api/v1/courses", params={"enrollment_state": "active", "per_page": 50})
+    data = _canvas_get("/api/v1/courses", params={
+        "enrollment_state": "active", "per_page": 100, "include[]": "total_scores"})
     if not isinstance(data, list):
         _cache_set("canvas:courses", [])
         return []
-    courses = [
-        {
+    courses = []
+    for c in data:
+        if not isinstance(c, dict) or not c.get("id"):
+            continue
+        # total_scores rides along on the enrollment rows.
+        score = grade = None
+        for e in (c.get("enrollments") or []):
+            if not isinstance(e, dict):
+                continue
+            if e.get("computed_current_score") is not None:
+                score = e["computed_current_score"]
+            if e.get("computed_current_grade"):
+                grade = e["computed_current_grade"]
+            if score is not None or grade:
+                break
+        courses.append({
             "id": c.get("id"),
             "name": c.get("name") or c.get("course_code") or "",
             "course_code": c.get("course_code") or "",
-        }
-        for c in data
-        if isinstance(c, dict) and c.get("id")
-    ]
+            "score": score,
+            "grade": grade,
+        })
     _cache_set("canvas:courses", courses)
     return courses
 
@@ -1550,8 +1564,6 @@ def _extract_letter_grade(row, score_cell, rest_text):
     """
     # 1. An element Canvas explicitly labels as the letter grade.
     for scope in (score_cell, row):
-        if scope is None:
-            continue
         if scope is None:
             continue
         for el in scope.find_all(attrs={"class": True}):
@@ -1693,11 +1705,29 @@ def canvas_grades():
 
     grades = _canvas_grades_from_html()
     if grades:
-        # Fill in any course names the summary page left blank.
-        names = {c["id"]: c["name"] for c in canvas_courses()}
+        # The page shows a percentage for some courses and a letter for others.
+        # /api/v1/courses?include[]=total_scores carries both, so use it to fill
+        # whichever half the page left out rather than deriving anything.
+        api = {c["id"]: c for c in canvas_courses()}
+        seen = set()
         for g in grades:
+            seen.add(g["course_id"])
+            c = api.get(g["course_id"]) or {}
             if not g["course"]:
-                g["course"] = names.get(g["course_id"], "")
+                g["course"] = c.get("name") or ""
+            if g["current_grade"] is None and c.get("grade"):
+                g["current_grade"] = c["grade"]
+            if g["current_score"] is None and c.get("score") is not None:
+                g["current_score"] = c["score"]
+        # A graded course the page didn't list at all still belongs here.
+        for cid, c in api.items():
+            if cid in seen or (c.get("score") is None and not c.get("grade")):
+                continue
+            grades.append({
+                "course_id": cid, "course": c.get("name") or "",
+                "enrollment_type": "", "current_grade": c.get("grade"),
+                "current_score": c.get("score"), "final_grade": None, "final_score": None,
+            })
         _cache_set("canvas:grades", grades)
         return grades
 

@@ -178,9 +178,13 @@ What the live page actually looks like, and what the parser must handle:
   grade. The parser finds every `/courses/<id>` link and reads the grade from
   its enclosing table row when there is one, or from the text up to the next
   course link when there isn't. Do not narrow it to tables.
-- **Most courses publish a letter and no percentage.** A row with a letter and
-  no percent is kept; the UI leads with the letter and shows no progress bar.
-  Dropping those rows is what once hid a course sitting at an F.
+- **The page gives a percentage for some courses and a letter for others,
+  rarely both.** `canvas_courses()` therefore requests
+  `include[]=total_scores`, which returns `computed_current_score` *and*
+  `computed_current_grade` per course, and `canvas_grades()` uses it to fill
+  whichever half the page omitted. The page wins where it has a value; the API
+  only fills gaps and adds graded courses the page missed. A row with a letter
+  and no percent is still kept — dropping those once hid a course at an F.
 - **Never derive a letter from a percentage.** Park City's scale is not the
   standard 10-point one — 71.61% is a B- there — so derivation disagreed with
   Canvas on 3 of 4 courses when it was tried. Letters come from the page or not

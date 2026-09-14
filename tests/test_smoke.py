@@ -1114,3 +1114,56 @@ def test_letters_are_never_invented_from_a_percentage(client):
         '<td>71.61%</td></tr></table>')
     assert out[0]["current_score"] == 71.61
     assert out[0]["current_grade"] is None
+
+
+def test_api_total_scores_fill_in_a_letter_the_page_omits(client, monkeypatch):
+    """The /grades page shows a percentage for some courses and a letter for
+    others. /api/v1/courses?include[]=total_scores carries both, so it fills
+    whichever half is missing — no derivation."""
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_get_html", lambda p, **k:
+        '<table><tr><td><a href="/courses/11">AP US GOVERNMENT</a></td>'
+        '<td>82.59%</td></tr></table>')
+    monkeypatch.setattr(a, "canvas_courses", lambda: [
+        {"id": 11, "name": "AP US GOVERNMENT", "score": 82.59, "grade": "B"}])
+    with a._simple_cache_lock:
+        a._simple_cache.pop("canvas:grades", None)
+    out = a.canvas_grades()
+    assert out[0]["current_score"] == 82.59
+    assert out[0]["current_grade"] == "B", "letter must come from the API, not a scale"
+
+
+def test_page_letter_wins_over_the_api(client, monkeypatch):
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_get_html", lambda p, **k:
+        '<table><tr><td><a href="/courses/11">Chem</a></td><td>90% A-</td></tr></table>')
+    monkeypatch.setattr(a, "canvas_courses", lambda: [
+        {"id": 11, "name": "Chem", "score": 90.0, "grade": "B+"}])
+    with a._simple_cache_lock:
+        a._simple_cache.pop("canvas:grades", None)
+    assert a.canvas_grades()[0]["current_grade"] == "A-"
+
+
+def test_api_adds_a_graded_course_missing_from_the_page(client, monkeypatch):
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_get_html", lambda p, **k:
+        '<table><tr><td><a href="/courses/11">Chem</a></td><td>90%</td></tr></table>')
+    monkeypatch.setattr(a, "canvas_courses", lambda: [
+        {"id": 11, "name": "Chem", "score": 90.0, "grade": "A-"},
+        {"id": 12, "name": "Spanish IV", "score": 75.0, "grade": "C"}])
+    with a._simple_cache_lock:
+        a._simple_cache.pop("canvas:grades", None)
+    out = a.canvas_grades()
+    assert {r["course"] for r in out} == {"Chem", "Spanish IV"}
+
+
+def test_api_ungraded_course_is_not_added(client, monkeypatch):
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_get_html", lambda p, **k:
+        '<table><tr><td><a href="/courses/11">Chem</a></td><td>90%</td></tr></table>')
+    monkeypatch.setattr(a, "canvas_courses", lambda: [
+        {"id": 11, "name": "Chem", "score": 90.0, "grade": "A-"},
+        {"id": 13, "name": "Advisory", "score": None, "grade": None}])
+    with a._simple_cache_lock:
+        a._simple_cache.pop("canvas:grades", None)
+    assert [r["course"] for r in a.canvas_grades()] == ["Chem"]

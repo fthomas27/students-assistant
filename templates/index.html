@@ -196,6 +196,12 @@ main { padding: 26px 26px 40px; min-width: 0; max-width: 100%; overflow-x: hidde
 .kv dd { margin: 0; font-family: var(--mono); font-size: 12px; text-align: right;
   min-width: 0; overflow-wrap: anywhere; }
 
+.gradepair { display: flex; align-items: baseline; justify-content: flex-end; gap: 9px; }
+.gradepair .pctv { font-size: 15px; color: var(--ink-2); }
+.gradepair .letterv {
+  font-family: var(--serif); font-size: 21px; font-weight: 500; line-height: 1;
+  letter-spacing: -.01em; min-width: 1.6em; text-align: right;
+}
 .gradebar { height: 3px; background: var(--rule); border-radius: 2px; overflow: hidden; margin-top: 6px; }
 .gradebar i { display: block; height: 100%; background: var(--ink-2); border-radius: 2px; }
 
@@ -679,10 +685,11 @@ LOADERS.register = async function () {
       (c.absences ? '<span>' + esc(c.absences) + ' absences</span>' : '') + '</div>' +
       (pct != null ? '<div class="gradebar"><i style="width:' + Math.max(0, Math.min(100, pct)) + '%"></i></div>' : '') +
       '</div><div style="text-align:right;flex:none">' +
-      (pct != null
-        ? '<div class="num" style="font-size:15px">' + pct + '%</div>' +
-          (c.letter ? '<div class="label">' + esc(c.letter) + '</div>' : '')
-        : '<div class="num" style="font-size:17px">' + esc(c.letter || "—") + '</div>') +
+      '<div class="gradepair">' +
+        (pct != null ? '<span class="num pctv">' + pct + '%</span>' : '') +
+        (c.letter ? '<span class="letterv">' + esc(c.letter) + '</span>'
+                  : (pct == null ? '<span class="letterv">—</span>' : '')) +
+      '</div>' +
       '</div></div>';
   }).join("") : emptyState(canvas.configured || (ps.grades || []).length
       ? "No course grades reported yet." : "Connect Canvas or PowerSchool on Sync & Feeds to see grades.");
