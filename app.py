@@ -1255,6 +1255,17 @@ def _cache_get(key, ttl):
 _SIMPLE_CACHE_MAX = 256
 
 
+def _cache_set_if_any(key, value):
+    """Cache only a non-empty result.
+
+    Caching an empty list after a transient failure blanks the dashboard for the
+    whole TTL, which is far worse than re-fetching on the next request.
+    """
+    if value:
+        _cache_set(key, value)
+    return value
+
+
 def _cache_set(key, value):
     with _simple_cache_lock:
         _simple_cache[key] = (time.monotonic(), value)
@@ -1462,7 +1473,6 @@ def canvas_courses():
     data = _canvas_get("/api/v1/courses", params={
         "enrollment_state": "active", "per_page": 100, "include[]": "total_scores"})
     if not isinstance(data, list):
-        _cache_set("canvas:courses", [])
         return []
     courses = []
     for c in data:
@@ -1486,8 +1496,85 @@ def canvas_courses():
             "score": score,
             "grade": grade,
         })
-    _cache_set("canvas:courses", courses)
-    return courses
+    return _cache_set_if_any("canvas:courses", courses)
+
+
+def _canvas_assignment_urgency(due_utc, now_utc):
+    delta = (due_utc - now_utc).total_seconds()
+    if delta < 86400:
+        return "high"
+    if delta < 259200:
+        return "medium"
+    return "low"
+
+
+def canvas_assignments_api(days_back=60, days_ahead=45):
+    """Assignments across every active course, straight from the Canvas API.
+
+    Preferred over the iCal feed: it carries points, submission state and a
+    direct link, it does not need a separate feed URL that can be reset, and it
+    still returns past-due work — the iCal feed drops it, which is the whole
+    reason canvas_assignments_cache exists for that path.
+    """
+    cached = _cache_get("canvas:assignments", CANVAS_ASSIGNMENT_TTL)
+    if cached is not None:
+        return cached
+
+    courses = canvas_courses()
+    if not courses:
+        return []
+    now = datetime.now(ZoneInfo("UTC"))
+    lo, hi = now - timedelta(days=days_back), now + timedelta(days=days_ahead)
+
+    def for_course(c):
+        rows = _canvas_get(
+            f"/api/v1/courses/{c['id']}/assignments",
+            params={"per_page": 100, "order_by": "due_at", "include[]": "submission"},
+            timeout=15,
+        )
+        if not isinstance(rows, list):
+            return []
+        out = []
+        for a in rows:
+            if not isinstance(a, dict) or not a.get("due_at"):
+                continue
+            try:
+                due = datetime.fromisoformat(a["due_at"].replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            if due < lo or due > hi:
+                continue
+            local = due.astimezone(TZ)
+            sub = a.get("submission") or {}
+            overdue = due < now
+            out.append({
+                "uid": f"canvas-{a.get('id')}",
+                "title": (a.get("name") or "Untitled").strip(),
+                "class_name": c.get("name") or "",
+                "description": _strip_html(a.get("description") or "")[:1000],
+                "due_iso": local.isoformat(),
+                "due_display": local.strftime("%A, %-m/%-d/%Y, at %-I:%M %p (%Z)"),
+                "urgency": "high" if overdue else _canvas_assignment_urgency(due, now),
+                "overdue": overdue,
+                "html_url": a.get("html_url") or "",
+                "points_possible": a.get("points_possible"),
+                "submitted": bool(sub.get("submitted_at")) or
+                             sub.get("workflow_state") in ("submitted", "graded"),
+                "score": sub.get("score"),
+            })
+        return out
+
+    assignments = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(for_course, c): c for c in courses}
+        for fut in as_completed(futures):
+            try:
+                assignments.extend(fut.result())
+            except Exception as e:
+                log.warning("Canvas assignments for %s failed: %s", futures[fut].get("name"), e)
+
+    assignments.sort(key=lambda x: x["due_iso"])
+    return _cache_set_if_any("canvas:assignments", assignments)
 
 
 def _canvas_get_html(path, timeout=20):
@@ -1734,8 +1821,7 @@ def canvas_grades():
                 "enrollment_type": "", "current_grade": c.get("grade"),
                 "current_score": c.get("score"), "final_grade": None, "final_score": None,
             })
-        _cache_set("canvas:grades", grades)
-        return grades
+        return _cache_set_if_any("canvas:grades", grades)
 
     courses = canvas_courses()
     course_name = {c["id"]: c["name"] for c in courses}
@@ -1761,8 +1847,7 @@ def canvas_grades():
                 "final_grade": g.get("final_grade"),
                 "final_score": g.get("final_score"),
             })
-    _cache_set("canvas:grades", grades)
-    return grades
+    return _cache_set_if_any("canvas:grades", grades)
 
 
 def _strip_html(html):
@@ -3802,11 +3887,29 @@ def index():
 def build_assignments():
     """Canvas assignments with estimates and completion state applied.
 
-    Raises on a failed Canvas fetch; callers decide how to report it.
+    Source order: the Canvas REST API when we can sign in, otherwise the iCal
+    feed. The API is richer (points, submission state, links), keeps past-due
+    work, and needs no separate feed URL. Raises when neither is available.
     """
-    cal = fetch_ical(u_canvas_ical())
-    if cal is None:
-        raise RuntimeError("Failed to fetch Canvas calendar.")
+    source = "api"
+    items = []
+    if _canvas_configured():
+        try:
+            items = canvas_assignments_api()
+        except Exception as e:
+            log.warning("Canvas assignment API failed, falling back to iCal: %s", e)
+            items = []
+    if not items:
+        source = "ical"
+        if not u_canvas_ical():
+            if _canvas_configured():
+                return []          # signed in, genuinely nothing due
+            raise RuntimeError("Canvas is not configured: no login and no iCal feed URL.")
+        cal = fetch_ical(u_canvas_ical())
+        if cal is None:
+            raise RuntimeError("Failed to fetch Canvas calendar.")
+        items = get_canvas_assignments_with_overdue(cal)
+
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT assignment_title, submitted FROM completions")
@@ -3819,8 +3922,9 @@ def build_assignments():
     conn.close()
 
     result = []
-    for a in get_canvas_assignments_with_overdue(cal):
-        if a["title"] in submitted_titles:
+    for a in items:
+        # Canvas' own submission flag counts as submitted, as does a local one.
+        if a.pop("submitted", False) or a["title"] in submitted_titles:
             continue
         uid = a.get("uid", "")
         if uid in custom_estimates:
@@ -3830,6 +3934,7 @@ def build_assignments():
             a["estimate_minutes"] = estimate_assignment(a["title"], a["class_name"])
             a["estimate_custom"] = False
         a["done"] = a["title"] in done_titles
+        a["source"] = source
         result.append(a)
     return result
 
@@ -4270,6 +4375,10 @@ def api_canvas_debug():
 
     if mode == "password":
         _canvas_invalidate_session()
+    with _simple_cache_lock:
+        for k in ("canvas:grades", "canvas:courses", "canvas:assignments"):
+            _simple_cache.pop(k, None)
+    if mode == "password":
         sess = _canvas_get_session()
         out["steps"].append({
             "step": "login", "ok": sess is not None,

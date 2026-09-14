@@ -54,6 +54,18 @@ The surface is read-only and refuses anything but GET. With `AGENT_API_KEY`
 unset it is switched off completely. The key reaches a student's grades and
 health data, so treat it like the login password.
 
+### MCP
+
+`mcp_server.py` exposes the same data as MCP tools over stdio:
+
+```sh
+pip install -r requirements-mcp.txt
+SCHOLA_BASE_URL=https://your-app AGENT_API_KEY=... python mcp_server.py
+```
+
+Tools: `get_snapshot`, `get_grades`, `get_assignments`, `get_calendar`,
+`get_readiness`, `get_schedule`, `get_sync_status`.
+
 ## Tests
 
 ```sh

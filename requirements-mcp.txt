@@ -1,0 +1,4 @@
+# Dependencies for mcp_server.py only. The web app does not need these —
+# install them wherever the agent runs the MCP server.
+mcp>=2.0.0
+requests==2.33.1

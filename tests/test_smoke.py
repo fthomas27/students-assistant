@@ -1235,3 +1235,142 @@ def test_agent_snapshot_flags_mock_readiness(client, monkeypatch):
     body = c.get("/api/agent/snapshot", headers={"X-Agent-Key": "k"}).get_json()
     assert body["readiness"]["mock"] is True
     assert body["readiness"]["connected"] is False
+
+
+# ── Canvas assignments over the REST API ──────────────────────────────────────
+
+def _assignment_row(aid, name, due_at, **kw):
+    row = {"id": aid, "name": name, "due_at": due_at, "html_url": f"/courses/1/assignments/{aid}",
+           "points_possible": 100, "description": "<p>Do the thing</p>"}
+    row.update(kw)
+    return row
+
+
+def test_canvas_assignments_api_normalises_rows(client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    _, a = client
+    soon = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setattr(a, "canvas_courses", lambda: [{"id": 1, "name": "AP Chemistry"}])
+    monkeypatch.setattr(a, "_canvas_get", lambda p, **k: [_assignment_row(9, "Lab Report", soon)])
+    with a._simple_cache_lock:
+        a._simple_cache.pop("canvas:assignments", None)
+    out = a.canvas_assignments_api()
+    assert len(out) == 1
+    r = out[0]
+    assert r["title"] == "Lab Report"
+    assert r["class_name"] == "AP Chemistry"
+    assert r["overdue"] is False
+    assert r["urgency"] == "medium"
+    assert r["points_possible"] == 100
+    assert r["description"] == "Do the thing", "HTML must be stripped"
+
+
+def test_canvas_assignments_api_marks_past_due_as_overdue(client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    _, a = client
+    past = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setattr(a, "canvas_courses", lambda: [{"id": 1, "name": "AP Chem"}])
+    monkeypatch.setattr(a, "_canvas_get", lambda p, **k: [_assignment_row(9, "Late Lab", past)])
+    with a._simple_cache_lock:
+        a._simple_cache.pop("canvas:assignments", None)
+    out = a.canvas_assignments_api()
+    assert out[0]["overdue"] is True
+    assert out[0]["urgency"] == "high"
+
+
+def test_canvas_assignments_api_skips_undated_and_out_of_window(client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    _, a = client
+    far = (datetime.now(timezone.utc) + timedelta(days=400)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setattr(a, "canvas_courses", lambda: [{"id": 1, "name": "AP Chem"}])
+    monkeypatch.setattr(a, "_canvas_get", lambda p, **k: [
+        _assignment_row(1, "No due date", None),
+        _assignment_row(2, "Next year", far),
+    ])
+    with a._simple_cache_lock:
+        a._simple_cache.pop("canvas:assignments", None)
+    assert a.canvas_assignments_api() == []
+
+
+def test_build_assignments_drops_canvas_submitted_work(client, monkeypatch):
+    """Canvas' own submission state counts, not just a local completion."""
+    from datetime import datetime, timedelta, timezone
+    _, a = client
+    soon = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    monkeypatch.setattr(a, "_canvas_configured", lambda: True)
+    monkeypatch.setattr(a, "canvas_assignments_api", lambda: [
+        {"uid": "c-1", "title": "Turned in", "class_name": "Chem", "description": "",
+         "due_iso": soon, "due_display": "", "urgency": "low", "overdue": False,
+         "submitted": True},
+        {"uid": "c-2", "title": "Still open", "class_name": "Chem", "description": "",
+         "due_iso": soon, "due_display": "", "urgency": "low", "overdue": False,
+         "submitted": False},
+    ])
+    out = a.build_assignments()
+    assert [x["title"] for x in out] == ["Still open"]
+    assert out[0]["source"] == "api"
+
+
+def test_build_assignments_falls_back_to_ical(client, monkeypatch):
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_configured", lambda: False)
+    monkeypatch.setattr(a, "u_canvas_ical", lambda: "https://example.test/c.ics")
+    monkeypatch.setattr(a, "fetch_ical", lambda url: object())
+    monkeypatch.setattr(a, "get_canvas_assignments_with_overdue", lambda cal: [
+        {"uid": "i-1", "title": "From iCal", "class_name": "Chem", "description": "",
+         "due_iso": "2026-09-20T23:59:00-06:00", "due_display": "", "urgency": "low"},
+    ])
+    out = a.build_assignments()
+    assert out[0]["source"] == "ical"
+
+
+def test_build_assignments_raises_when_nothing_is_configured(client, monkeypatch):
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_configured", lambda: False)
+    monkeypatch.setattr(a, "u_canvas_ical", lambda: "")
+    with pytest.raises(RuntimeError):
+        a.build_assignments()
+
+
+def test_build_assignments_signed_in_with_nothing_due_is_not_an_error(client, monkeypatch):
+    """Signed in and genuinely nothing due must return [], not raise."""
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_configured", lambda: True)
+    monkeypatch.setattr(a, "canvas_assignments_api", lambda: [])
+    monkeypatch.setattr(a, "u_canvas_ical", lambda: "")
+    assert a.build_assignments() == []
+
+
+def test_empty_canvas_results_are_not_cached(client, monkeypatch):
+    """A transient failure returning [] must not blank grades for the whole
+    TTL — the next request has to try again."""
+    _, a = client
+    with a._simple_cache_lock:
+        a._simple_cache.clear()
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        return [] if calls["n"] == 1 else [{"id": 1, "name": "Chem", "score": 90, "grade": "A-"}]
+
+    monkeypatch.setattr(a, "_canvas_get", lambda p, **k:
+                        [] if calls["n"] == 0 else None)
+    # Drive canvas_courses directly through its cache helper instead.
+    assert a._cache_set_if_any("canvas:courses", []) == []
+    assert a._cache_get("canvas:courses", 3600) is None, "empty result must not be cached"
+    assert a._cache_set_if_any("canvas:courses", [{"id": 1}]) == [{"id": 1}]
+    assert a._cache_get("canvas:courses", 3600) == [{"id": 1}], "a real result must cache"
+
+
+def test_canvas_grades_retries_after_an_empty_result(client, monkeypatch):
+    _, a = client
+    with a._simple_cache_lock:
+        a._simple_cache.clear()
+    seq = [[], [{"course_id": 1, "course": "Chem", "current_grade": "A-",
+                 "current_score": 90.0, "enrollment_type": "",
+                 "final_grade": None, "final_score": None}]]
+    monkeypatch.setattr(a, "_canvas_grades_from_html", lambda: seq.pop(0) if seq else [])
+    monkeypatch.setattr(a, "canvas_courses", lambda: [])
+    monkeypatch.setattr(a, "_canvas_get", lambda *args, **kw: [])
+    assert a.canvas_grades() == []
+    assert a.canvas_grades()[0]["course"] == "Chem", "second call must re-fetch"

@@ -174,12 +174,28 @@ Four properties to preserve:
 
 Snapshot sections are built independently through `_agent_error()`, so one dead
 connector degrades to an entry in `errors` rather than failing the whole call.
+Note every response carries an `error` key, often `null` — consumers must test
+the **value**, not the key's presence.
 The endpoints reuse `build_assignments()` and `_collect_calendar_events()` —
 the same builders the dashboard uses — so the agent and the UI can never
 disagree.
 
 The data here is a student's grades and health metrics. Treat the key as a
 password: it is as sensitive as the login.
+
+### MCP server
+
+`mcp_server.py` wraps that API as an MCP stdio server, so an MCP-speaking agent
+gets typed tools instead of raw HTTP. It is a thin forwarder — no database
+handle, no Canvas credentials — and its deps live in `requirements-mcp.txt`,
+deliberately apart from the web app's.
+
+    SCHOLA_BASE_URL=https://your-app AGENT_API_KEY=... python mcp_server.py
+
+Tools: `get_snapshot`, `get_grades`, `get_assignments(status)`, `get_calendar`,
+`get_readiness`, `get_schedule`, `get_sync_status`. The server `instructions`
+carry the two caveats an agent will otherwise get wrong: readiness may be mock
+data, and letters and percentages must never be converted into one another.
 
 ## Canvas grade access
 
@@ -220,6 +236,10 @@ What the live page actually looks like, and what the parser must handle:
   whichever half the page omitted. The page wins where it has a value; the API
   only fills gaps and adds graded courses the page missed. A row with a letter
   and no percent is still kept — dropping those once hid a course at an F.
+- **Never cache an empty Canvas result.** `_cache_set_if_any()` stores only
+  non-empty values. Caching `[]` after a transient failure blanked the grades
+  panel for the full 10-minute TTL, and `/api/canvas/debug` reported "0 courses
+  reporting a grade" while the page it had just parsed held six.
 - **Never derive a letter from a percentage.** Park City's scale is not the
   standard 10-point one — 71.61% is a B- there — so derivation disagreed with
   Canvas on 3 of 4 courses when it was tried. Letters come from the page or not
