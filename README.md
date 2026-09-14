@@ -39,6 +39,21 @@ and Sync & Feeds shows the state of each.
 
 See `CLAUDE.md` for the full environment variable list and architecture notes.
 
+## Letting an agent read it
+
+Set `AGENT_API_KEY` to a long random string, then:
+
+```sh
+curl -H "Authorization: Bearer $AGENT_API_KEY" https://your-app/api/agent/snapshot
+```
+
+That returns grades, assignments, calendar, readiness and connector health in
+one call. `GET /api/agent` lists the narrower endpoints and describes itself.
+
+The surface is read-only and refuses anything but GET. With `AGENT_API_KEY`
+unset it is switched off completely. The key reaches a student's grades and
+health data, so treat it like the login password.
+
 ## Tests
 
 ```sh

@@ -118,6 +118,8 @@ Optional:
 - `RED_DAY_ICAL_URL`, `WHITE_DAY_ICAL_URL` - Park City bell-schedule feeds
 - `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`,
   `STRIPE_PRODUCT_ID` - billing
+- `AGENT_API_KEY` - bearer token for the read-only agent API. **Unset disables
+  that surface entirely** — see below.
 
 Calendar URLs can also be set per-user in the app; the DB value wins over the
 env var.
@@ -145,6 +147,39 @@ env var.
 Unconfigured optional connectors answer `200` with `configured: false`, not an
 error status — "not set up" is a normal state, and a 503 just makes the console
 noisy.
+
+## Agent API
+
+`/api/agent/*` is a read-only surface for an external agent, guarded by its own
+bearer token rather than the session cookie:
+
+    Authorization: Bearer <AGENT_API_KEY>      (or X-Agent-Key: <key>)
+
+`GET /api/agent` describes itself — endpoints plus the caveats an agent needs
+(readiness may be mock data; a course may report a letter with no percentage).
+`GET /api/agent/snapshot` returns everything in one call; the rest are
+`grades`, `assignments`, `calendar`, `readiness`, `schedule`, `status`.
+
+Four properties to preserve:
+
+- **Unset `AGENT_API_KEY` shuts the surface** (503). An unset key must never
+  authenticate an empty header — check the key is truthy *before* comparing.
+- **Comparison is constant-time** via `secrets.compare_digest`.
+- **Read-only.** `require_auth` refuses every non-GET under `/api/agent` with a
+  405. The token is not a write channel, and it does not unlock the rest of the
+  API — `/api/config` with a valid agent key is still a 401.
+- **CSRF is skipped for this prefix only** because it authenticates with a
+  bearer token, not an ambient cookie, so there is no cross-site authority to
+  forge. That is safe *only* while the surface stays GET-only.
+
+Snapshot sections are built independently through `_agent_error()`, so one dead
+connector degrades to an entry in `errors` rather than failing the whole call.
+The endpoints reuse `build_assignments()` and `_collect_calendar_events()` —
+the same builders the dashboard uses — so the agent and the UI can never
+disagree.
+
+The data here is a student's grades and health metrics. Treat the key as a
+password: it is as sensitive as the login.
 
 ## Canvas grade access
 

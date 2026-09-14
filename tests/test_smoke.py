@@ -185,10 +185,10 @@ def test_calendar_urls_resolved_outside_worker_threads(client):
     _, flask_app = client
     src = open(flask_app.__file__).read()
 
-    # /api/calendar — the worker closures should reference the pre-resolved
+    # _collect_calendar_events — the worker closures should reference the pre-resolved
     # variables (personal_url, sports_url, canvas_url), NOT call
     # u_*_ical() directly inside the closure body.
-    idx = src.find("def api_calendar(")
+    idx = src.find("def _collect_calendar_events(")
     assert idx > 0
     end = src.find("\n@app.route", idx)
     body = src[idx:end if end > 0 else len(src)]
@@ -1158,3 +1158,80 @@ def test_api_ungraded_course_is_not_added(client, monkeypatch):
     with a._simple_cache_lock:
         a._simple_cache.pop("canvas:grades", None)
     assert [r["course"] for r in a.canvas_grades()] == ["Chem"]
+
+
+# ── Agent API ─────────────────────────────────────────────────────────────────
+
+def test_agent_api_is_off_without_a_key(client, monkeypatch):
+    """An unset AGENT_API_KEY must shut the surface, not authenticate an empty
+    header."""
+    c, flask_app = client
+    monkeypatch.setattr(flask_app, "AGENT_API_KEY", "")
+    assert c.get("/api/agent/snapshot").status_code == 503
+    assert c.get("/api/agent/snapshot", headers={"Authorization": "Bearer "}).status_code == 503
+    assert flask_app.agent_authenticated.__doc__  # documented behaviour
+
+
+def test_agent_api_rejects_a_wrong_key(client, monkeypatch):
+    c, flask_app = client
+    monkeypatch.setattr(flask_app, "AGENT_API_KEY", "right-key")
+    r = c.get("/api/agent/snapshot", headers={"Authorization": "Bearer wrong-key"})
+    assert r.status_code == 401
+
+
+def test_agent_api_rejects_a_missing_key(client, monkeypatch):
+    c, flask_app = client
+    monkeypatch.setattr(flask_app, "AGENT_API_KEY", "right-key")
+    assert c.get("/api/agent/snapshot").status_code == 401
+
+
+def test_agent_api_accepts_both_header_forms(client, monkeypatch):
+    c, flask_app = client
+    monkeypatch.setattr(flask_app, "AGENT_API_KEY", "right-key")
+    for headers in ({"Authorization": "Bearer right-key"}, {"X-Agent-Key": "right-key"}):
+        r = c.get("/api/agent", headers=headers)
+        assert r.status_code == 200, headers
+        assert r.get_json()["read_only"] is True
+
+
+def test_agent_api_is_read_only(client, monkeypatch):
+    """A valid key must not become a write channel."""
+    c, flask_app = client
+    monkeypatch.setattr(flask_app, "AGENT_API_KEY", "right-key")
+    r = c.post("/api/agent/snapshot", headers={"Authorization": "Bearer right-key"}, json={})
+    assert r.status_code == 405
+
+
+def test_agent_key_does_not_unlock_the_rest_of_the_api(client, monkeypatch):
+    """The token opens /api/agent only — not the session-authenticated app."""
+    c, flask_app = client
+    monkeypatch.setattr(flask_app, "AGENT_API_KEY", "right-key")
+    r = c.get("/api/config", headers={"Authorization": "Bearer right-key"})
+    assert r.status_code == 401
+
+
+def test_agent_snapshot_survives_a_broken_connector(client, monkeypatch):
+    """One failing section must not deny the agent everything else."""
+    c, flask_app = client
+    monkeypatch.setattr(flask_app, "AGENT_API_KEY", "k")
+    monkeypatch.setattr(flask_app, "canvas_grades", lambda: (_ for _ in ()).throw(RuntimeError("canvas down")))
+    monkeypatch.setattr(flask_app, "build_assignments", lambda: [])
+    monkeypatch.setattr(flask_app, "_collect_calendar_events", lambda days=21: [])
+    r = c.get("/api/agent/snapshot", headers={"X-Agent-Key": "k"})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["grades"] == []
+    assert "canvas down" in body["errors"]["grades"]
+    assert "readiness" in body and "today" in body
+
+
+def test_agent_snapshot_flags_mock_readiness(client, monkeypatch):
+    """The agent must be able to tell sample data from real WHOOP numbers."""
+    c, flask_app = client
+    monkeypatch.setattr(flask_app, "AGENT_API_KEY", "k")
+    monkeypatch.setattr(flask_app, "canvas_grades", lambda: [])
+    monkeypatch.setattr(flask_app, "build_assignments", lambda: [])
+    monkeypatch.setattr(flask_app, "_collect_calendar_events", lambda days=21: [])
+    body = c.get("/api/agent/snapshot", headers={"X-Agent-Key": "k"}).get_json()
+    assert body["readiness"]["mock"] is True
+    assert body["readiness"]["connected"] is False

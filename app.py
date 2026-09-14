@@ -224,6 +224,10 @@ def require_csrf():
         return None
     if path.startswith('/api/admin/login') or path.startswith('/api/parent/login'):
         return None
+    # Bearer-token surface: no ambient cookie authority, so no CSRF exposure.
+    # require_auth refuses every non-GET here regardless.
+    if path.startswith('/api/agent'):
+        return None
     # Public signup + Stripe webhook endpoints: the caller has no authenticated
     # session yet (or is Stripe), so CSRF protection adds no value.
     if path.startswith('/api/signup/') or path.startswith('/api/webhooks/'):
@@ -245,9 +249,40 @@ def require_csrf():
     return None
 
 
+def _agent_key_presented():
+    """The agent's bearer token, from either header form."""
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.headers.get("X-Agent-Key", "").strip()
+
+
+def agent_authenticated():
+    """True only when AGENT_API_KEY is configured and the caller matches it.
+
+    With no key set the whole agent surface stays shut: an unset key must never
+    authenticate an empty header.
+    """
+    if not AGENT_API_KEY:
+        return False
+    presented = _agent_key_presented()
+    if not presented:
+        return False
+    return secrets.compare_digest(str(AGENT_API_KEY), str(presented))
+
+
 @app.before_request
 def require_auth():
     path = request.path.rstrip('/')
+    # Read-only agent surface, guarded by its own bearer token.
+    if path.startswith('/api/agent'):
+        if not AGENT_API_KEY:
+            return jsonify({"error": "Agent access is not configured on this server"}), 503
+        if not agent_authenticated():
+            return jsonify({"error": "Invalid or missing agent key"}), 401
+        if request.method not in ("GET", "HEAD"):
+            return jsonify({"error": "The agent API is read-only"}), 405
+        return None
     if path in ('/login', '/logout', '/admin', '/parent', '/manifest.json', '/sw.js'):
         return None
     if path.startswith('/signup'):
@@ -306,6 +341,7 @@ ON CONFLICT (user_id, key) DO NOTHING""", (user_id, k, v))
 PERSONAL_ICAL_URL = os.environ.get("PERSONAL_ICAL_URL", "")
 CANVAS_ICAL_URL = os.environ.get("CANVAS_ICAL_URL", "")
 CANVAS_API_TOKEN = os.environ.get("CANVAS_API_TOKEN", "")
+AGENT_API_KEY    = os.environ.get("AGENT_API_KEY", "")
 CANVAS_USERNAME  = os.environ.get("CANVAS_USERNAME", "")
 CANVAS_PASSWORD  = os.environ.get("CANVAS_PASSWORD", "")
 CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/")
@@ -3763,49 +3799,53 @@ def index():
 
 
 @app.route("/api/assignments")
+def build_assignments():
+    """Canvas assignments with estimates and completion state applied.
+
+    Raises on a failed Canvas fetch; callers decide how to report it.
+    """
+    cal = fetch_ical(u_canvas_ical())
+    if cal is None:
+        raise RuntimeError("Failed to fetch Canvas calendar.")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT assignment_title, submitted FROM completions")
+    completion_rows = cur.fetchall()
+    submitted_titles = set(r["assignment_title"] for r in completion_rows if r["submitted"])
+    done_titles = set(r["assignment_title"] for r in completion_rows if not r["submitted"])
+    cur.execute("SELECT uid, minutes FROM assignment_estimates")
+    custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
+    cur.close()
+    conn.close()
+
+    result = []
+    for a in get_canvas_assignments_with_overdue(cal):
+        if a["title"] in submitted_titles:
+            continue
+        uid = a.get("uid", "")
+        if uid in custom_estimates:
+            a["estimate_minutes"] = custom_estimates[uid]
+            a["estimate_custom"] = True
+        else:
+            a["estimate_minutes"] = estimate_assignment(a["title"], a["class_name"])
+            a["estimate_custom"] = False
+        a["done"] = a["title"] in done_titles
+        result.append(a)
+    return result
+
+
 def api_assignments():
     start = time.time()
     try:
-        t1 = time.time()
-        cal = fetch_ical(u_canvas_ical())
-        log.info(f"/api/assignments: fetch_ical took {time.time()-t1:.2f}s")
-        if cal is None:
-            return jsonify({"assignments": [], "error": "Failed to fetch Canvas calendar."})
-        t2 = time.time()
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT assignment_title, submitted FROM completions")
-        completion_rows = cur.fetchall()
-        submitted_titles = set(r["assignment_title"] for r in completion_rows if r["submitted"])
-        done_titles = set(r["assignment_title"] for r in completion_rows if not r["submitted"])
-        cur.execute("SELECT uid, minutes FROM assignment_estimates")
-        custom_estimates = {r["uid"]: r["minutes"] for r in cur.fetchall()}
-        cur.close()
-        conn.close()
-        log.info(f"/api/assignments: db query took {time.time()-t2:.2f}s")
-        t3 = time.time()
-        assignments = get_canvas_assignments_with_overdue(cal)
-        result = []
-        for a in assignments:
-            if a["title"] in submitted_titles:
-                continue
-            uid = a.get("uid", "")
-            if uid in custom_estimates:
-                a["estimate_minutes"] = custom_estimates[uid]
-                a["estimate_custom"] = True
-            else:
-                a["estimate_minutes"] = estimate_assignment(a["title"], a["class_name"])
-                a["estimate_custom"] = False
-            if a["title"] in done_titles:
-                a["done"] = True
-            result.append(a)
-        log.info(f"/api/assignments: estimate took {time.time()-t3:.2f}s for {len(result)} assignments")
-        cfg = get_config()
-        log.info(f"/api/assignments: total took {time.time()-start:.2f}s")
-        return jsonify({"assignments": result, "timezone": cfg.get("timezone", "America/Denver")})
+        result = build_assignments()
+    except RuntimeError as e:
+        return jsonify({"assignments": [], "error": str(e)})
     except Exception as e:
         log.exception(f"/api/assignments failed after {time.time()-start:.2f}s: {e}")
         return jsonify({"assignments": [], "error": "Internal server error fetching assignments."}), 500
+    log.info(f"/api/assignments: {len(result)} assignments in {time.time()-start:.2f}s")
+    return jsonify({"assignments": result,
+                    "timezone": get_config().get("timezone", "America/Denver")})
 
 
 @app.route("/api/assignments/<uid>/estimate", methods=["POST"])
@@ -3846,15 +3886,14 @@ def api_day_info():
     return jsonify(result)
 
 
-@app.route("/api/calendar")
-def api_calendar():
+def _collect_calendar_events(days=30):
+    """All calendar events across every configured feed, newest first.
+
+    Callers must resolve this on the request thread: u_*_ical() reads the Flask
+    session, which is not available inside the worker pool below.
+    """
     start = time.time()
-    try:
-        days = int(request.args.get("days", 30))
-        # Validate days parameter: must be between 1 and 365
-        days = max(1, min(days, 365))
-    except (ValueError, TypeError):
-        days = 30
+    days = max(1, min(int(days), 365))
     events = []
     today = datetime.now(TZ).date()
 
@@ -3946,8 +3985,208 @@ def api_calendar():
     events.sort(key=lambda x: x.get("start_iso", ""))
     for ev in events:
         ev.setdefault("category", _SOURCE_CATEGORY.get(ev.get("source", ""), "general"))
-    log.info(f"/api/calendar: total took {time.time()-start:.2f}s with {len(events)} events")
-    return jsonify({"events": events})
+    log.info(f"calendar: collected {len(events)} events in {time.time()-start:.2f}s")
+    return events
+
+
+@app.route("/api/calendar")
+def api_calendar():
+    try:
+        days = int(request.args.get("days", 30))
+    except (ValueError, TypeError):
+        days = 30
+    return jsonify({"events": _collect_calendar_events(days)})
+
+
+# ── Agent API ─────────────────────────────────────────────────────────────────
+# A read-only surface for an external agent. Everything here is a GET, guarded
+# by AGENT_API_KEY (see require_auth). It reuses the same builders the UI does,
+# so the agent can never see a different truth from the dashboard.
+
+def _agent_error(fn, default):
+    """Run a section builder, degrading to an error note rather than a 500.
+
+    One dead connector must not deny the agent the rest of the snapshot.
+    """
+    try:
+        return fn(), None
+    except Exception as e:
+        log.warning("agent snapshot section failed: %s", e)
+        return default, str(e)[:200]
+
+
+@app.route("/api/agent")
+def api_agent_index():
+    """What this agent surface offers, so it can be discovered rather than
+    guessed at."""
+    return jsonify({
+        "name": "Schola Registry agent API",
+        "read_only": True,
+        "auth": "Authorization: Bearer <AGENT_API_KEY>  (or X-Agent-Key)",
+        "timezone": str(get_tz()),
+        "endpoints": {
+            "GET /api/agent": "this index",
+            "GET /api/agent/snapshot": "everything the dashboard knows, in one call",
+            "GET /api/agent/grades": "course standing from Canvas",
+            "GET /api/agent/assignments": "assignments with due dates, estimates, completion",
+            "GET /api/agent/calendar?days=N": "calendar events across all feeds (default 21)",
+            "GET /api/agent/readiness": "WHOOP recovery, sleep, strain, workouts, bedtime",
+            "GET /api/agent/schedule?date=YYYY-MM-DD": "bell schedule and day type",
+            "GET /api/agent/status": "connector health and recent sync activity",
+        },
+        "notes": [
+            "Readiness may be sample data; check readiness.mock before quoting numbers.",
+            "A course can report a letter grade with no percentage, or vice versa.",
+            "Assignment 'overdue' is computed against the student's timezone.",
+        ],
+    })
+
+
+@app.route("/api/agent/grades")
+def api_agent_grades():
+    grades, err = _agent_error(canvas_grades, [])
+    return jsonify({"grades": grades, "configured": _canvas_configured(), "error": err})
+
+
+@app.route("/api/agent/assignments")
+def api_agent_assignments():
+    items, err = _agent_error(build_assignments, [])
+    now = datetime.now(TZ)
+    open_items = [a for a in items if not a.get("done")]
+    return jsonify({
+        "assignments": items,
+        "counts": {
+            "total": len(items),
+            "open": len(open_items),
+            "overdue": sum(1 for a in open_items if a.get("overdue")),
+            "due_today": sum(1 for a in open_items
+                             if (a.get("due_iso") or "")[:10] == now.date().isoformat()),
+        },
+        "timezone": str(TZ),
+        "error": err,
+    })
+
+
+@app.route("/api/agent/calendar")
+def api_agent_calendar():
+    try:
+        days = max(1, min(int(request.args.get("days", 21)), 90))
+    except (TypeError, ValueError):
+        days = 21
+    events, err = _agent_error(lambda: _collect_calendar_events(days), [])
+    return jsonify({"events": events, "days": days, "error": err})
+
+
+@app.route("/api/agent/readiness")
+def api_agent_readiness():
+    days, is_mock = fitness_daily_summary(7)
+    workouts, _ = _agent_error(lambda: fitness_workouts(limit=10)[0], [])
+    bedtime, _ = _agent_error(whoop_bedtime_recommendation, {})
+    return jsonify({
+        "connected": _whoop_connected(),
+        "mock": is_mock,
+        "days": days,
+        "today": (days or [{}])[0] if days else {},
+        "workouts": workouts,
+        "bedtime": bedtime,
+    })
+
+
+@app.route("/api/agent/schedule")
+def api_agent_schedule():
+    date_str = request.args.get("date", "") or datetime.now(TZ).date().isoformat()
+    try:
+        d = date.fromisoformat(date_str)
+    except ValueError:
+        return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+    dtype = get_day_type(d)
+    hours = get_school_hours(d)
+    out = {"date": date_str, "day_type": dtype, "is_school_day": dtype is not None}
+    if hours:
+        sh, sm, eh, em = hours
+        out["school_start"] = "%02d:%02d" % (sh, sm)
+        out["school_end"] = "%02d:%02d" % (eh, em)
+    return jsonify(out)
+
+
+@app.route("/api/agent/status")
+def api_agent_status():
+    events = []
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT connector, event, status, detail, duration_ms, created_at "
+                    "FROM sync_events ORDER BY created_at DESC LIMIT 20")
+        for r in cur.fetchall():
+            created = r["created_at"]
+            events.append({"connector": r["connector"], "event": r["event"],
+                           "status": r["status"], "detail": r["detail"] or "",
+                           "at": created.isoformat() if hasattr(created, "isoformat") else str(created)})
+        cur.close(); conn.close()
+    except Exception as e:
+        log.warning("/api/agent/status: %s", e)
+    return jsonify({
+        "connectors": [_connector_state(c) for c in CONNECTORS],
+        "scheduler_running": bool(scheduler.running),
+        "recent_events": events,
+    })
+
+
+@app.route("/api/agent/snapshot")
+def api_agent_snapshot():
+    """Everything at once. Sections fail independently so a dead connector
+    still leaves the rest usable."""
+    errors = {}
+    now = datetime.now(TZ)
+    today = now.date()
+
+    grades, e = _agent_error(canvas_grades, [])
+    if e: errors["grades"] = e
+    assignments, e = _agent_error(build_assignments, [])
+    if e: errors["assignments"] = e
+    events, e = _agent_error(lambda: _collect_calendar_events(21), [])
+    if e: errors["calendar"] = e
+    whoop_days, whoop_mock = fitness_daily_summary(7)
+    workouts, e = _agent_error(lambda: fitness_workouts(limit=10)[0], [])
+    if e: errors["workouts"] = e
+    bedtime, _ = _agent_error(whoop_bedtime_recommendation, {})
+
+    open_items = [a for a in assignments if not a.get("done")]
+    dtype = get_day_type(today)
+    hours = get_school_hours(today)
+    cfg = get_config()
+
+    return jsonify({
+        "generated_at": now.isoformat(),
+        "timezone": str(TZ),
+        "student": {"name": cfg.get("name", ""), "wake_time": cfg.get("wake_time", "")},
+        "today": {
+            "date": today.isoformat(),
+            "day_type": dtype,
+            "is_school_day": dtype is not None,
+            "school_start": "%02d:%02d" % (hours[0], hours[1]) if hours else None,
+            "school_end": "%02d:%02d" % (hours[2], hours[3]) if hours else None,
+        },
+        "grades": grades,
+        "assignments": {
+            "items": assignments,
+            "open": len(open_items),
+            "overdue": sum(1 for a in open_items if a.get("overdue")),
+            "due_today": sum(1 for a in open_items
+                             if (a.get("due_iso") or "")[:10] == today.isoformat()),
+        },
+        "calendar": events,
+        "readiness": {
+            "connected": _whoop_connected(),
+            "mock": whoop_mock,
+            "today": (whoop_days or [{}])[0] if whoop_days else {},
+            "days": whoop_days,
+            "workouts": workouts,
+            "bedtime": bedtime,
+        },
+        "connectors": [_connector_state(c) for c in CONNECTORS],
+        "errors": errors,
+    })
 
 
 @app.route("/api/canvas/status")
