@@ -252,6 +252,35 @@ What the live page actually looks like, and what the parser must handle:
 - **An expired session comes back as a 200 containing the login page**, not a
   401. Both `_canvas_get()` and `_canvas_get_html()` sniff for that, re-log in,
   and retry exactly once.
+- **A 403 is not an expired session.** It means this account may not read that
+  resource, which is routine for an observer. Treating it as expiry caused a
+  fresh login *per request* — fourteen logins for one assignment fetch, which
+  is exactly how an account gets rate-limited. 403 returns None and leaves the
+  session alone.
+
+## Assignments
+
+`build_assignments()` **unions** two sources rather than choosing one:
+
+1. `canvas_assignments_api()` — `/api/v1/courses/<id>/assignments` per active
+   course. Richer (points, links, submission state) and it keeps past-due work.
+2. The iCal feed, via `get_canvas_assignments_with_overdue()`.
+
+They are merged and de-duplicated on `(title, due date)` by `_assignment_key()`,
+with API rows winning a collision. Either/or was wrong: an observer login is
+refused the assignment list for *some* courses, so a partial API result would
+silently suppress everything the feed carried. The result records which sources
+contributed in `source` (`api`, `ical`, or `api+ical`).
+
+Two observer-specific behaviours to keep:
+
+- `include[]=submission` is often refused for an observer, which fails the whole
+  per-course request. The fetch retries once without the include.
+- Courses the account cannot read return 403 and are simply skipped.
+
+`GET /api/canvas/debug` reports assignments per course — what each returned,
+whether the submission include was refused, and the api/ical/merged counts —
+so a short list can be traced to the course that refused rather than guessed at.
 
 `GET /api/canvas/debug?raw=1` dumps the first table's markup even when parsing
 succeeded, which is how to fix what it got *wrong* rather than what it missed.

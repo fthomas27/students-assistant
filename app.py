@@ -1453,7 +1453,13 @@ def _canvas_get(path, params=None, timeout=12, _retry=True):
         resp = sess.get(url, params=params or {}, timeout=timeout,
                         headers={"Accept": "application/json"})
         # An expired session gets bounced to the login page, often as a 200.
-        if resp.status_code in (401, 403) or _canvas_looks_like_login_page(resp.text[:2000]):
+        # A 403 is different: the session is fine, this account just may not
+        # read that resource (common for an observer). Re-logging in on a 403
+        # means a fresh login per request and gets the account rate-limited.
+        if resp.status_code == 403:
+            log.info("Canvas GET %s: 403 for this account; not a session problem", path)
+            return None
+        if resp.status_code == 401 or _canvas_looks_like_login_page(resp.text[:2000]):
             _canvas_invalidate_session()
             if _retry:
                 return _canvas_get(path, params=params, timeout=timeout, _retry=False)
@@ -1527,12 +1533,17 @@ def canvas_assignments_api(days_back=60, days_ahead=45):
     lo, hi = now - timedelta(days=days_back), now + timedelta(days=days_ahead)
 
     def for_course(c):
-        rows = _canvas_get(
-            f"/api/v1/courses/{c['id']}/assignments",
-            params={"per_page": 100, "order_by": "due_at", "include[]": "submission"},
-            timeout=15,
-        )
+        base = {"per_page": 100, "order_by": "due_at"}
+        rows = _canvas_get(f"/api/v1/courses/{c['id']}/assignments",
+                           params={**base, "include[]": "submission"}, timeout=15)
         if not isinstance(rows, list):
+            # An observer login is often refused the submission include, which
+            # fails the whole request. The bare listing usually still works.
+            rows = _canvas_get(f"/api/v1/courses/{c['id']}/assignments",
+                               params=base, timeout=15)
+        if not isinstance(rows, list):
+            log.warning("Canvas assignments: course %s (%s) returned nothing",
+                        c.get("id"), c.get("name"))
             return []
         out = []
         for a in rows:
@@ -3884,6 +3895,15 @@ def index():
 
 
 @app.route("/api/assignments")
+def _assignment_key(a):
+    """Identity for de-duplicating the same assignment seen twice.
+
+    Canvas' feed and its API word titles identically but assign different uids,
+    so match on the title and the due date instead.
+    """
+    return ((a.get("title") or "").strip().lower(), (a.get("due_iso") or "")[:10])
+
+
 def build_assignments():
     """Canvas assignments with estimates and completion state applied.
 
@@ -3891,24 +3911,37 @@ def build_assignments():
     feed. The API is richer (points, submission state, links), keeps past-due
     work, and needs no separate feed URL. Raises when neither is available.
     """
-    source = "api"
-    items = []
+    api_items, ical_items = [], []
     if _canvas_configured():
         try:
-            items = canvas_assignments_api()
+            api_items = canvas_assignments_api()
         except Exception as e:
-            log.warning("Canvas assignment API failed, falling back to iCal: %s", e)
-            items = []
-    if not items:
-        source = "ical"
-        if not u_canvas_ical():
-            if _canvas_configured():
-                return []          # signed in, genuinely nothing due
-            raise RuntimeError("Canvas is not configured: no login and no iCal feed URL.")
-        cal = fetch_ical(u_canvas_ical())
-        if cal is None:
-            raise RuntimeError("Failed to fetch Canvas calendar.")
-        items = get_canvas_assignments_with_overdue(cal)
+            log.warning("Canvas assignment API failed: %s", e)
+    if u_canvas_ical():
+        try:
+            cal = fetch_ical(u_canvas_ical())
+            if cal is not None:
+                ical_items = get_canvas_assignments_with_overdue(cal)
+        except Exception as e:
+            log.warning("Canvas iCal fetch failed: %s", e)
+
+    if not api_items and not ical_items:
+        if _canvas_configured() or u_canvas_ical():
+            return []          # connected, genuinely nothing due
+        raise RuntimeError("Canvas is not configured: no login and no iCal feed URL.")
+
+    # Union rather than either/or: the API can be refused for some courses
+    # while the feed still carries them, and vice versa. API rows win on a
+    # collision because they carry points, links and submission state.
+    items, seen = list(api_items), {_assignment_key(a) for a in api_items}
+    for a in ical_items:
+        k = _assignment_key(a)
+        if k not in seen:
+            seen.add(k)
+            items.append(a)
+    items.sort(key=lambda x: x.get("due_iso") or "")
+    source = ("api+ical" if api_items and ical_items
+              else "api" if api_items else "ical")
 
     conn = get_db()
     cur = conn.cursor()
@@ -4420,6 +4453,56 @@ def api_canvas_debug():
     out["steps"].append({"step": "grades", "ok": bool(grades),
                          "detail": f"{len(grades)} course(s) reporting a grade"})
     out["sample"] = grades[:3]
+
+    # Assignments, per course, so a partial failure is visible rather than
+    # showing up as a mysteriously short list.
+    per_course = []
+    for c in courses:
+        rows = _canvas_get(f"/api/v1/courses/{c['id']}/assignments",
+                           params={"per_page": 100, "order_by": "due_at",
+                                   "include[]": "submission"}, timeout=15)
+        with_inc = isinstance(rows, list)
+        if not with_inc:
+            rows = _canvas_get(f"/api/v1/courses/{c['id']}/assignments",
+                               params={"per_page": 100, "order_by": "due_at"}, timeout=15)
+        dated = sum(1 for a in rows if isinstance(a, dict) and a.get("due_at")) \
+            if isinstance(rows, list) else 0
+        per_course.append({
+            "course": c.get("name"),
+            "ok": isinstance(rows, list),
+            "returned": len(rows) if isinstance(rows, list) else 0,
+            "with_due_date": dated,
+            "submission_include": "ok" if with_inc else "refused (retried without)",
+        })
+    out["assignments_per_course"] = per_course
+
+    api_items = canvas_assignments_api()
+    ical_url = u_canvas_ical()
+    ical_n = 0
+    if ical_url:
+        try:
+            cal = fetch_ical(ical_url)
+            ical_n = len(get_canvas_assignments_with_overdue(cal)) if cal is not None else -1
+        except Exception:
+            ical_n = -1
+    try:
+        built = build_assignments()
+    except Exception as e:
+        built, build_err = [], str(e)[:200]
+    else:
+        build_err = None
+    out["steps"].append({
+        "step": "assignments", "ok": bool(built),
+        "detail": (f"api={len(api_items)} ical="
+                   + ("not configured" if not ical_url else
+                      "fetch failed" if ical_n < 0 else str(ical_n))
+                   + f" merged={len(built)}"
+                   + (f" error={build_err}" if build_err else "")),
+    })
+    out["assignments_sample"] = [
+        {k: a.get(k) for k in ("title", "class_name", "due_iso", "overdue", "source")}
+        for a in built[:5]
+    ]
     return jsonify(out)
 
 

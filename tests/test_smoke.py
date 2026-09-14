@@ -1374,3 +1374,103 @@ def test_canvas_grades_retries_after_an_empty_result(client, monkeypatch):
     monkeypatch.setattr(a, "_canvas_get", lambda *args, **kw: [])
     assert a.canvas_grades() == []
     assert a.canvas_grades()[0]["course"] == "Chem", "second call must re-fetch"
+
+
+def test_assignments_union_both_sources(client, monkeypatch):
+    """A partial API result must not suppress the iCal feed. Either/or once
+    meant a couple of API courses hid everything the feed carried."""
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_configured", lambda: True)
+    monkeypatch.setattr(a, "canvas_assignments_api", lambda: [
+        {"uid": "c-1", "title": "From API", "class_name": "Chem", "description": "",
+         "due_iso": "2026-09-20T23:59:00-06:00", "due_display": "", "urgency": "low"},
+    ])
+    monkeypatch.setattr(a, "u_canvas_ical", lambda: "https://x.test/c.ics")
+    monkeypatch.setattr(a, "fetch_ical", lambda url: object())
+    monkeypatch.setattr(a, "get_canvas_assignments_with_overdue", lambda cal: [
+        {"uid": "i-1", "title": "From iCal", "class_name": "Hist", "description": "",
+         "due_iso": "2026-09-21T23:59:00-06:00", "due_display": "", "urgency": "low"},
+    ])
+    out = a.build_assignments()
+    assert {x["title"] for x in out} == {"From API", "From iCal"}
+    assert out[0]["source"] == "api+ical"
+
+
+def test_assignments_deduplicate_across_sources(client, monkeypatch):
+    """The same assignment from both sources appears once, keeping the API row."""
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_configured", lambda: True)
+    monkeypatch.setattr(a, "canvas_assignments_api", lambda: [
+        {"uid": "c-1", "title": "Lab Report", "class_name": "Chem", "description": "",
+         "due_iso": "2026-09-20T23:59:00-06:00", "due_display": "", "urgency": "low",
+         "points_possible": 100},
+    ])
+    monkeypatch.setattr(a, "u_canvas_ical", lambda: "https://x.test/c.ics")
+    monkeypatch.setattr(a, "fetch_ical", lambda url: object())
+    monkeypatch.setattr(a, "get_canvas_assignments_with_overdue", lambda cal: [
+        {"uid": "i-1", "title": "  lab report ", "class_name": "Chem", "description": "",
+         "due_iso": "2026-09-20T18:00:00-06:00", "due_display": "", "urgency": "low"},
+    ])
+    out = a.build_assignments()
+    assert len(out) == 1
+    assert out[0]["points_possible"] == 100, "the API row must win"
+
+
+def test_assignments_retry_without_submission_include(client, monkeypatch):
+    """An observer login is often refused include[]=submission. The bare
+    listing must still be tried rather than yielding zero assignments."""
+    from datetime import datetime, timedelta, timezone
+    _, a = client
+    soon = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    seen = []
+
+    def fake_get(path, params=None, **kw):
+        seen.append(dict(params or {}))
+        if "include[]" in (params or {}):
+            return None          # refused, as Canvas does for observers
+        return [{"id": 5, "name": "Essay", "due_at": soon}]
+
+    monkeypatch.setattr(a, "canvas_courses", lambda: [{"id": 1, "name": "ELA"}])
+    monkeypatch.setattr(a, "_canvas_get", fake_get)
+    with a._simple_cache_lock:
+        a._simple_cache.pop("canvas:assignments", None)
+    out = a.canvas_assignments_api()
+    assert len(out) == 1 and out[0]["title"] == "Essay"
+    assert len(seen) == 2, "must retry once without the include"
+    assert "include[]" not in seen[1]
+
+
+def test_assignments_empty_when_connected_but_nothing_due(client, monkeypatch):
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_configured", lambda: True)
+    monkeypatch.setattr(a, "canvas_assignments_api", lambda: [])
+    monkeypatch.setattr(a, "u_canvas_ical", lambda: "")
+    assert a.build_assignments() == []
+
+
+def test_canvas_403_does_not_trigger_a_relogin(client, monkeypatch):
+    """403 means this account can't read that resource, not that the session
+    died. Re-logging in on 403 caused a fresh login per request."""
+    _, a = client
+    logins = {"n": 0}
+
+    class Sess:
+        headers: dict = {}
+        cookies = {"canvas_session": "x"}
+
+        def get(self, url, **kw):
+            return _Resp("forbidden", status=403, url=url)
+
+    def fake_login():
+        logins["n"] += 1
+        return Sess()
+
+    monkeypatch.setattr(a, "u_canvas_base_url", lambda: "https://x.instructure.com")
+    monkeypatch.setattr(a, "u_canvas_api_token", lambda: "")
+    monkeypatch.setattr(a, "u_canvas_username", lambda: "u")
+    monkeypatch.setattr(a, "u_canvas_password", lambda: "p")
+    monkeypatch.setattr(a, "_canvas_login", fake_login)
+    a._canvas_invalidate_session()
+
+    assert a._canvas_get("/api/v1/courses/1/assignments") is None
+    assert logins["n"] == 1, "one login, and no re-login on the 403"
