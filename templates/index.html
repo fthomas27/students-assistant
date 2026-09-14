@@ -421,7 +421,7 @@ table.data td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; 
         <div>
           <div class="crumb"><span class="label">System Connectors &amp; Integration Registry</span><span class="chip" id="syncChip">—</span></div>
           <h1 class="display" id="h-sync">Quiet Sync &amp; Connections</h1>
-          <p class="lede">Background connectors for coursework, grade reporting and wellness metrics. Credentials stay server-side.</p>
+          <p class="lede">Background connectors for coursework and wellness metrics. Credentials stay server-side.</p>
         </div>
         <div class="actions">
           <button class="btn btn-dark" id="btnRunPipeline">&#8635;&nbsp; Run Full Pipeline</button>
@@ -870,7 +870,6 @@ function bandName(v) {
 /* ── Page: Sync & Feeds ────────────────────────────────────────────────── */
 const CONNECTOR_COPY = {
   canvas: { title: "Canvas LMS Feed", desc: "Syllabus calendar, milestone submissions, and course schedules.", chip: "iCal + REST" },
-  powerschool: { title: "PowerSchool Gradebook", desc: "Headless client for weighted grades and attendance.", chip: "Headless Client" },
   whoop: { title: "WHOOP Biometrics", desc: "Daily strain, sleep recovery architecture, and resting heart rate.", chip: "OAuth 2.0" },
 };
 /* This district does not issue Canvas personal access tokens, so grades come
@@ -931,8 +930,7 @@ LOADERS.sync = async function () {
     const state = !c.configured ? ["warn", "Not configured"]
       : !c.connected ? ["warn", "Configured, not connected"]
       : lr && lr.status === "Error" ? ["bad", "Error"] : ["ok", "Connected"];
-    const url = c.name === "canvas" ? (cfg.canvas_ical_url || "")
-      : c.name === "powerschool" ? (cfg.powerschool_url || "") : "";
+    const url = c.name === "canvas" ? (cfg.canvas_ical_url || "") : "";
     return '<section class="panel"><div class="panel-head">' +
       '<div><h2 class="panel-title">' + esc(copy.title) + ' <span class="chip ' + state[0] +
       '"><span class="dot"></span>' + esc(state[1]) + '</span></h2><p>' + esc(copy.desc) + '</p></div>' +
@@ -993,7 +991,6 @@ LOADERS.sync = async function () {
     kv("Scheduler", status.scheduler_running ? "Running" : "Stopped") +
     kv("Connectors online", online + " / " + conns.length) +
     kv("Canvas cadence", "Every 15 min") +
-    kv("PowerSchool", "Weekdays 07:12 / 15:12") +
     kv("WHOOP cadence", "Every 30 min") +
     (err ? kv("Last error", (err.job_id || "") + " · " + fmtAgo(err.at)) : kv("Last error", "None"));
 

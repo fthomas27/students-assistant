@@ -373,14 +373,6 @@ transition: background 0.15s, color 0.15s;
       <div class="stat-value" id="lockout-count">0</div>
       <div class="stat-label">Locked IPs</div>
     </div>
-
-    <div class="card">
-      <div class="card-title">🤖 Claude API Usage</div>
-      <div class="stat-value" id="tokens-percent">0%</div>
-      <div class="stat-label" id="tokens-used">0 / 0 tokens</div>
-      <div class="progress-bar">
-        <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
-      </div>
     </div>
   </div>
 
@@ -790,26 +782,6 @@ function loadSuspiciousActivity() {
     });
 }
 
-function loadClaudeUsage() {
-  createFetchWithTimeout('/api/admin/claude-usage', {
-    credentials: 'same-origin'
-  })
-    .then(r => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    })
-    .then(data => {
-      var percent = data.percent_used || 0;
-      document.getElementById('tokens-percent').textContent = percent.toFixed(2) + '%';
-      document.getElementById('tokens-used').textContent = data.tokens_used.toLocaleString() + ' / ' + data.tokens_limit.toLocaleString() + ' tokens';
-      document.getElementById('progress-fill').style.width = percent + '%';
-    })
-    .catch(e => {
-      console.error('Error loading Claude usage:', e);
-      document.getElementById('tokens-percent').textContent = 'Error';
-      document.getElementById('tokens-used').textContent = e.name === 'AbortError' ? 'Request timeout' : 'Error loading data';
-    });
-}
 
 function loadLockdownStatus() {
   createFetchWithTimeout('/api/lockdown-status', {
@@ -989,7 +961,6 @@ function editIPName(ip, currentName) {
 
 loadLoginAttempts();
 loadSuspiciousActivity();
-loadClaudeUsage();
 loadBlockedIPs();
 loadLockdownStatus();
 loadPricing();
@@ -998,7 +969,6 @@ loadSubscribers();
 
 setInterval(loadLoginAttempts, 30000);
 setInterval(loadSuspiciousActivity, 30000);
-setInterval(loadClaudeUsage, 60000);
 setInterval(loadLockdownStatus, 10000);
 setInterval(loadBlockedIPs, 60000);
 setInterval(loadSubscribers, 60000);

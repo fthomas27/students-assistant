@@ -29,7 +29,6 @@ from icalendar import Calendar
 import recurring_ical_events
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.events import EVENT_JOB_ERROR
-import anthropic
 try:
     import stripe as _stripe_module
     stripe = _stripe_module
@@ -161,29 +160,6 @@ def get_tz():
 # For backward compatibility, initialize with default
 TZ = _TZ_DEFAULT
 
-_api_usage_cache = {"tokens_used": 0, "tokens_limit": 1000000, "last_updated": None}
-
-def track_api_usage(response):
-    """Extract and track API usage from Claude API response."""
-    global _api_usage_cache
-    try:
-        if hasattr(response, 'usage'):
-            u = response.usage
-            tokens = u.input_tokens + u.output_tokens
-            _api_usage_cache["tokens_used"] = _api_usage_cache.get("tokens_used", 0) + tokens
-            _api_usage_cache["last_updated"] = datetime.now(TZ)
-            cache_create = getattr(u, "cache_creation_input_tokens", 0) or 0
-            cache_read = getattr(u, "cache_read_input_tokens", 0) or 0
-            if cache_create or cache_read:
-                log.info(
-                    "Anthropic usage: in=%d out=%d cache_create=%d cache_read=%d",
-                    u.input_tokens, u.output_tokens, cache_create, cache_read,
-                )
-            else:
-                log.debug(f"Tracked {tokens} tokens. Total: {_api_usage_cache['tokens_used']}")
-    except Exception as e:
-        log.warning(f"Error tracking API usage: {e}")
-
 _scheduler_last_error = {}
 _scheduler_last_error_lock = threading.Lock()
 
@@ -310,7 +286,6 @@ def _init_user_defaults(user_id):
     defaults = {
         "name": "Student",
         "wake_time": "07:00",
-        "anthropic_api_key": "",
     }
     conn = get_db()
     cur = conn.cursor()
@@ -411,11 +386,6 @@ WHITE_DAY_ICAL_URL = os.environ.get("WHITE_DAY_ICAL_URL", "https://calendar.goog
 WHOOP_CLIENT_ID = os.environ.get("WHOOP_CLIENT_ID", "").strip()
 WHOOP_CLIENT_SECRET = os.environ.get("WHOOP_CLIENT_SECRET", "").strip()
 WHOOP_REDIRECT_URI = os.environ.get("WHOOP_REDIRECT_URI", "").strip()
-
-# ── PowerSchool ───────────────────────────────────────────────────────────────
-POWER_USERN = os.environ.get("POWER_USERN", "").strip()
-POWER_PASS  = os.environ.get("POWER_PASS", "").strip()
-PS_BASE_URL = "https://powerschool.pcschools.us"
 
 # ── Default values ─────────────────────────────────────────────────────────────
 DEFAULT_ESTIMATE_MINS = 30
@@ -915,7 +885,7 @@ ON CONFLICT (user_id, key) DO NOTHING""", (_avg_uuid,))
             cur = conn.cursor()
 
     # Insert default config values
-    defaults = {"name": "Jarvis", "wake_time": "07:00", "anthropic_api_key": "", "formal_signoff_name": "Finley Thomas"}
+    defaults = {"name": "Jarvis", "wake_time": "07:00", "formal_signoff_name": "Finley Thomas"}
     for k, v in defaults.items():
         try:
             cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (k, v))
@@ -2321,490 +2291,6 @@ def whoop_bedtime_recommendation():
     }
 
 
-# ── PowerSchool Scraper (Playwright + Claude Vision) ──────────────────────────
-# Uses a headless Chromium browser to log in as a real user, screenshots the
-# grades page, then sends the image to Claude vision for extraction.
-# No HTML parsing — works regardless of PowerSchool's JS rendering.
-
-PS_GRADES_TTL     = 1800   # 30 minutes — screenshot + vision result lifetime
-PS_ATTENDANCE_TTL = 3600   # 1 hour
-
-# PowerSchool's login form hashes the password client-side as
-# md5(user.lower() + ":" + md5(password) + ":" + pstoken).
-def _ps_md5(value: str) -> str:
-    return hashlib.md5(value.encode("utf-8")).hexdigest()
-
-_ps_session_lock = threading.Lock()
-_ps_session_cache = {"session": None, "home_url": "", "expires": 0.0}
-
-
-def _ps_configured():
-    return bool(POWER_USERN and POWER_PASS)
-
-
-def _ps_ask_claude(content: list) -> dict:
-    """Send content blocks to Claude Haiku and parse the JSON grade/attendance result."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return {"error": "ANTHROPIC_API_KEY not set"}
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1500,
-            messages=[{"role": "user", "content": content}],
-        )
-        raw = resp.content[0].text.strip()
-        log.info("PowerSchool Claude response: %s", raw[:300])
-        m = re.search(r'\{.*\}', raw, re.DOTALL)
-        if not m:
-            return {"error": "No JSON in response", "raw": raw[:500]}
-        data = json.loads(m.group())
-        return {"grades": data.get("grades", []), "attendance": data.get("attendance", {})}
-    except Exception as e:
-        log.warning("PowerSchool: Claude API error — %s", e)
-        return {"error": str(e)}
-
-
-_PS_EXTRACT_PROMPT = (
-    "This is a PowerSchool student portal page showing grades and attendance. "
-    "Extract every course visible. "
-    "Return ONLY valid JSON — no markdown, no explanation:\n"
-    '{"grades":[{"course":"...","teacher":"...","grade_letter":"A","grade_pct":95.2,"absences":"0"}],'
-    '"attendance":{"absences":0,"tardies":0}}'
-)
-
-
-def _ps_extract_via_playwright() -> dict:
-    """Login with headless Chromium, screenshot the page, send to Claude vision."""
-    import base64
-    try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
-    except ImportError:
-        return {"error": "playwright_not_installed"}
-
-    screenshot_b64 = None
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
-            )
-            page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
-
-            log.info("PowerSchool (playwright): navigating to login page")
-            page.goto(f"{PS_BASE_URL}/public/", timeout=30000)
-            page.wait_for_load_state("domcontentloaded")
-
-            page.fill('input[name="account"], input[id="fieldAccount"]', POWER_USERN, timeout=10000)
-            page.fill('input[name="ldappassword"], input[id="fieldPassword"], input[type="password"]',
-                      POWER_PASS, timeout=10000)
-            page.click('input[type="submit"], button[type="submit"]', timeout=10000)
-            page.wait_for_load_state("networkidle", timeout=30000)
-
-            final_url = page.url
-            log.info("PowerSchool (playwright): post-login URL = %s", final_url)
-
-            if "/public/" in final_url and "home" not in final_url.lower():
-                err_el = page.locator("#LoginErrorMessages, .feedback-alert").first
-                err_txt = err_el.inner_text() if err_el.count() else "(no error element)"
-                log.warning("PowerSchool (playwright): login failed — %s", err_txt)
-                browser.close()
-                return {"error": f"Login failed: {err_txt}"}
-
-            screenshot_b64 = base64.b64encode(page.screenshot(full_page=True)).decode()
-            log.info("PowerSchool (playwright): screenshot taken")
-            browser.close()
-
-    except Exception as e:
-        log.warning("PowerSchool (playwright): browser error — %s", e)
-        return {"error": str(e)}
-
-    return _ps_ask_claude([
-        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64}},
-        {"type": "text", "text": _PS_EXTRACT_PROMPT},
-    ])
-
-
-def _ps_extract_via_requests() -> dict:
-    """
-    Fallback when Playwright isn't available: login with requests, send the raw
-    HTML to Claude as text. Claude reads HTML structure just as well as a screenshot.
-    """
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError:
-        return {"error": "beautifulsoup4 not installed"}
-
-    sess = requests.Session()
-    sess.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    })
-
-    # GET login page and collect all hidden form fields
-    try:
-        r1 = sess.get(f"{PS_BASE_URL}/public/", timeout=20)
-        r1.raise_for_status()
-    except Exception as e:
-        return {"error": f"Could not reach PowerSchool: {e}"}
-
-    soup = BeautifulSoup(r1.text, "html.parser")
-    form = soup.find("form", id="LoginForm") or soup.find("form")
-    if not form:
-        return {"error": "No login form found on /public/"}
-
-    action = (form.get("action") or "/public/").strip()
-    if not action.startswith("http"):
-        action = PS_BASE_URL + ("" if action.startswith("/") else "/") + action
-
-    # Echo all hidden inputs back, then overlay credentials
-    payload: dict = {
-        inp.get("name"): inp.get("value") or ""
-        for inp in form.find_all("input")
-        if inp.get("name")
-    }
-    pstoken = payload.get("pstoken", "")
-    import hashlib
-    def _md5(s): return hashlib.md5(s.encode()).hexdigest()
-    pw_hash = _md5(POWER_USERN.lower() + ":" + _md5(POWER_PASS) + ":" + pstoken)
-    payload.update({
-        "account": POWER_USERN,
-        "ldappassword": POWER_PASS,
-        "pw": pw_hash,
-        "dbpw": pw_hash,
-    })
-
-    log.info("PowerSchool (requests): POSTing login to %s", action)
-    try:
-        r2 = sess.post(action, data=payload, timeout=20, allow_redirects=True)
-        r2.raise_for_status()
-    except Exception as e:
-        return {"error": f"Login POST failed: {e}"}
-
-    home_url = r2.url
-    log.info("PowerSchool (requests): post-login URL = %s", home_url)
-
-    # Check we're not still on the login page
-    lower = r2.text.lower()
-    still_login = 'name="account"' in lower or 'id="fieldaccount"' in lower
-    if still_login:
-        return {"error": "Login failed — still on login page after POST. Check POWER_USERN / POWER_PASS."}
-
-    # Try the landing URL, then guardian/home.html as fallback
-    html = r2.text
-    if len(html) < 2000 or "grades" not in html.lower():
-        try:
-            r3 = sess.get(f"{PS_BASE_URL}/guardian/home.html", timeout=20)
-            if len(r3.text) > len(html):
-                html = r3.text
-                home_url = r3.url
-        except Exception:
-            pass
-
-    log.info("PowerSchool (requests): sending %d chars of HTML to Claude", len(html))
-
-    # Strip scripts/styles to reduce token count, keep the visible structure
-    for tag in BeautifulSoup(html, "html.parser").find_all(["script", "style", "noscript"]):
-        tag.decompose()
-    clean_html = str(BeautifulSoup(html, "html.parser"))[:18000]
-
-    return _ps_ask_claude([{
-        "type": "text",
-        "text": (
-            "Here is the HTML source of a PowerSchool student portal page. "
-            "Extract every course grade and attendance data visible. "
-            "Return ONLY valid JSON — no markdown, no explanation:\n"
-            '{"grades":[{"course":"...","teacher":"...","grade_letter":"A","grade_pct":95.2,"absences":"0"}],'
-            '"attendance":{"absences":0,"tardies":0}}\n\n'
-            "HTML:\n" + clean_html
-        ),
-    }])
-
-
-def _ps_screenshot_and_extract() -> dict:
-    """
-    Extract grades and attendance from PowerSchool.
-    Tries Playwright (screenshot → vision) first; falls back to requests (HTML → text).
-    Returns {"grades": [...], "attendance": {...}} or {"error": "..."}.
-    """
-    if not _ps_configured():
-        return {"error": "POWER_USERN / POWER_PASS not configured"}
-
-    result = _ps_extract_via_playwright()
-    if result.get("error") == "playwright_not_installed":
-        log.info("PowerSchool: playwright not available, falling back to requests+HTML")
-        result = _ps_extract_via_requests()
-
-    return result
-
-
-def _ps_is_login_page(html: str) -> bool:
-    """Return True if the HTML looks like the PS login page (not authenticated)."""
-    lower = html.lower()
-    return (
-        'name="account"' in lower
-        or 'id="fieldaccount"' in lower
-        or 'name="ldappassword"' in lower
-        or "/public/home.html" in lower
-        and 'name="pstoken"' in lower
-    )
-
-
-def _ps_login():
-    """
-    Authenticate to PowerSchool. Returns (session, home_url) or (None, "").
-
-    Key fixes vs the previous version:
-    - Captures ALL hidden form inputs (contextData, credentialType, ssononce, …)
-      and echoes them back — required by modern PowerSchool's RSA login flow.
-    - Posts to the form's actual action URL, not a hard-coded path.
-    - Only returns a session when login is confirmed; raises on failure so the
-      caller can treat a returned session as guaranteed-authenticated.
-    """
-    if not _ps_configured():
-        return None, ""
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError:
-        log.warning("PowerSchool: beautifulsoup4 not installed — pip install beautifulsoup4")
-        return None, ""
-
-    sess = requests.Session()
-    sess.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    })
-
-    # ── Step 1: GET login page ──────────────────────────────────────────────
-    try:
-        r1 = sess.get(f"{PS_BASE_URL}/public/", timeout=20)
-        r1.raise_for_status()
-    except Exception as e:
-        log.warning("PowerSchool: could not reach login page: %s", e)
-        return None, ""
-
-    soup = BeautifulSoup(r1.text, "html.parser")
-
-    # Find the login form (may be id="LoginForm" or the first <form>)
-    form = soup.find("form", id="LoginForm") or soup.find("form")
-    if not form:
-        log.warning("PowerSchool: no <form> found on login page (body preview: %s)",
-                    r1.text[:300])
-        return None, ""
-
-    # Determine POST target from the form's action attribute
-    action = (form.get("action") or "/public/").strip()
-    if not action.startswith("http"):
-        action = PS_BASE_URL + ("" if action.startswith("/") else "/") + action
-    log.info("PowerSchool: login form action = %s", action)
-
-    # ── Step 2: Collect ALL hidden inputs, then overlay credentials ─────────
-    # This is the critical fix: modern PS requires contextData, credentialType,
-    # ssononce, etc. to be echoed back exactly as received.
-    payload: dict = {}
-    for inp in form.find_all("input"):
-        name = inp.get("name", "")
-        if not name:
-            continue
-        payload[name] = inp.get("value") or ""
-
-    pstoken = payload.get("pstoken", "")
-    pw_hash = _ps_md5(POWER_USERN.lower() + ":" + _ps_md5(POWER_PASS) + ":" + pstoken)
-
-    # Overlay the credential fields
-    payload.update({
-        "account":      POWER_USERN,
-        "ldappassword": POWER_PASS,   # plaintext — used for LDAP / district SSO
-        "pw":           pw_hash,       # MD5 hash — used for local PS accounts
-        "dbpw":         pw_hash,
-        "returnTo":     payload.get("returnTo", ""),
-    })
-
-    log.info("PowerSchool: POSTing login (fields: %s)", ", ".join(sorted(payload.keys())))
-
-    # ── Step 3: POST login ──────────────────────────────────────────────────
-    try:
-        r2 = sess.post(action, data=payload, timeout=20, allow_redirects=True)
-        r2.raise_for_status()
-    except Exception as e:
-        log.warning("PowerSchool: login POST failed: %s", e)
-        return None, ""
-
-    home_url = r2.url
-    log.info("PowerSchool: login POST → final URL = %s  status = %s", home_url, r2.status_code)
-
-    # ── Step 4: Verify we are NOT still on the login page ──────────────────
-    if _ps_is_login_page(r2.text):
-        # Try to surface an error message from the page
-        err_el = (
-            soup.find(id="LoginErrorMessages")
-            or soup.find(class_=re.compile(r"error|alert", re.I))
-        )
-        err_txt = err_el.get_text(" ", strip=True)[:200] if err_el else "(no error element found)"
-        log.warning("PowerSchool: login failed — still on login page. err=%s", err_txt)
-        return None, ""
-
-    log.info("PowerSchool: login succeeded, home = %s", home_url)
-    return sess, home_url
-
-
-def _ps_get_session():
-    """Return (cached_session, home_url), re-logging-in if the cache expired."""
-    now = time.monotonic()
-    with _ps_session_lock:
-        if _ps_session_cache["session"] and now < _ps_session_cache["expires"]:
-            return _ps_session_cache["session"], _ps_session_cache["home_url"]
-        sess, home_url = _ps_login()
-        _ps_session_cache["session"]  = sess
-        _ps_session_cache["home_url"] = home_url
-        # Cache for 20 min — PS sessions typically last ~30 min
-        _ps_session_cache["expires"]  = now + 1200
-        return sess, home_url
-
-
-def _ps_invalidate_session():
-    with _ps_session_lock:
-        _ps_session_cache["session"]  = None
-        _ps_session_cache["home_url"] = ""
-        _ps_session_cache["expires"]  = 0
-
-
-def _ps_parse_grades(html: str, source_url: str) -> list:
-    """
-    Parse grades out of a PowerSchool guardian/home page.
-
-    PowerSchool renders one table row per course. The grade for the current
-    term is a link to /guardian/scores.html and typically reads "A (95.2%)"
-    or just "95.2" depending on the display setting.
-    """
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(html, "html.parser")
-
-    if _ps_is_login_page(html):
-        log.warning("PowerSchool _ps_parse_grades: received login page — session expired?")
-        return []
-
-    # Find the table that contains links to scores.html
-    main_table = None
-    for tbl in soup.find_all("table"):
-        if tbl.find("a", href=lambda h: h and "scores.html" in (h or "")):
-            main_table = tbl
-            break
-
-    # Fallback: any table whose cells contain letter-grade-like content
-    if not main_table:
-        grade_pat = re.compile(r"^\s*[A-F][+-]?\s*$")
-        for tbl in soup.find_all("table"):
-            cells = tbl.find_all("td")
-            if any(grade_pat.match(c.get_text()) for c in cells[:60]):
-                main_table = tbl
-                break
-
-    if not main_table:
-        log.warning("PowerSchool: no grades table found in %s (body length %d)",
-                    source_url, len(html))
-        log.debug("PowerSchool page preview: %s", html[:800])
-        return []
-
-    letter_re = re.compile(r"^[A-F][+-]?$")
-    pct_re    = re.compile(r"^(\d{1,3}(?:\.\d+)?)%?$")
-    grades    = []
-
-    for row in main_table.find_all("tr"):
-        cells = row.find_all(["td", "th"])
-        if len(cells) < 3 or cells[0].name == "th":
-            continue
-
-        # Course name — first cell, prefer the link text if it points to scores.html
-        course_link = cells[0].find("a", href=lambda h: h and "scores.html" in (h or ""))
-        course_name = (course_link or cells[0]).get_text(strip=True)
-        if not course_name:
-            continue
-
-        teacher = cells[1].get_text(strip=True)
-
-        grade_letter, grade_pct, grade_url, absences = "", None, "", ""
-
-        for cell in cells[2:]:
-            a = cell.find("a", href=lambda h: h and "scores.html" in (h or ""))
-            if a:
-                raw  = a.get_text(strip=True)
-                href = a.get("href", "")
-                grade_url = (PS_BASE_URL + href) if href.startswith("/") else href
-
-                # "A (95.2%)" → letter="A", pct=95.2
-                m = re.match(r"^([A-F][+-]?)\s*\((\d{1,3}(?:\.\d+)?)%?\)$", raw)
-                if m:
-                    grade_letter = m.group(1)
-                    grade_pct    = float(m.group(2))
-                elif letter_re.match(raw):
-                    grade_letter = raw
-                elif pct_re.match(raw):
-                    grade_pct = float(pct_re.match(raw).group(1))
-                break
-
-            # Bare cell fallback
-            ct = cell.get_text(strip=True)
-            if letter_re.match(ct) and not grade_letter:
-                grade_letter = ct
-            elif pct_re.match(ct) and grade_pct is None:
-                grade_pct = float(pct_re.match(ct).group(1))
-
-        # Absences column — last numeric-only cell that isn't the grade
-        last = cells[-1].get_text(strip=True)
-        if re.match(r"^\d+$", last) and last != grade_letter:
-            absences = last
-
-        if grade_letter or grade_pct is not None:
-            grades.append({
-                "course":       course_name,
-                "teacher":      teacher,
-                "grade_letter": grade_letter,
-                "grade_pct":    grade_pct,
-                "grade_url":    grade_url,
-                "absences":     absences,
-            })
-
-    return grades
-
-
-def _ps_fetch_data() -> dict:
-    """Run screenshot + vision extraction, caching the combined result for 30 min."""
-    cached = _cache_get("ps:data", PS_GRADES_TTL)
-    if cached is not None:
-        return cached
-    if not _ps_configured():
-        return {}
-    result = _ps_screenshot_and_extract()
-    if "error" not in result:
-        _cache_set("ps:data", result)
-    return result
-
-
-def ps_grades() -> list:
-    return _ps_fetch_data().get("grades", [])
-
-
-def ps_attendance() -> dict:
-    return _ps_fetch_data().get("attendance", {})
-
-
-def ps_refresh_cache():
-    """Bust the cache and re-run the screenshot + vision extraction."""
-    with _simple_cache_lock:
-        _simple_cache.pop("ps:data", None)
-    return ps_grades()
-
-
 def parse_canvas_assignments(cal):
     assignments = []
     now_utc = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
@@ -3159,7 +2645,7 @@ def cleanup_old_data():
 # WHOOP (OAuth2). Each run appends to sync_events, which is what the Sync & Feeds
 # page renders as its audit trail.
 
-CONNECTORS = ("canvas", "powerschool", "whoop")
+CONNECTORS = ("canvas", "whoop")
 
 _sync_run_lock = threading.Lock()
 _sync_last_run = {}          # connector -> {"at", "status", "detail", "duration_ms"}
@@ -3237,16 +2723,6 @@ def sync_canvas_grades():
     return _timed("canvas", "canvas.grades.pulled", run)
 
 
-def sync_powerschool():
-    """Re-run the PowerSchool scrape and refresh the grade cache."""
-    def run():
-        if not _ps_configured():
-            return "Skipped", "No PowerSchool credentials configured"
-        grades = ps_refresh_cache()
-        return "Cached", f"Parsed {len(grades)} courses into local client registry"
-    return _timed("powerschool", "pschool.grades.cached", run)
-
-
 def sync_whoop():
     """Pull the latest WHOOP recovery/sleep/strain snapshot."""
     def run():
@@ -3269,11 +2745,7 @@ def run_full_pipeline():
     if not _sync_run_lock.acquire(blocking=False):
         return {"ok": False, "error": "A pipeline run is already in progress"}
     try:
-        results = {
-            "canvas": sync_canvas(),
-            "powerschool": sync_powerschool(),
-            "whoop": sync_whoop(),
-        }
+        results = {"canvas": sync_canvas(), "whoop": sync_whoop()}
         return {"ok": True, "results": results}
     finally:
         _sync_run_lock.release()
@@ -3285,10 +2757,6 @@ def _connector_state(name):
         configured = bool(u_canvas_ical())
         connected = configured
         label = "Canvas LMS Feed"
-    elif name == "powerschool":
-        configured = _ps_configured()
-        connected = configured
-        label = "PowerSchool Gradebook"
     else:
         configured = _whoop_configured()
         connected = _whoop_connected()
@@ -4010,42 +3478,6 @@ FROM login_lockouts ORDER BY created_at DESC LIMIT 50""")
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/admin/claude-usage")
-def api_admin_claude_usage():
-    if not session.get("admin_authenticated"):
-        return jsonify({"error": "Not authenticated"}), 401
-
-    try:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            return jsonify({
-                "tokens_used": 0,
-                "tokens_limit": 1000000,
-                "percent_used": 0,
-                "status": "No API key configured"
-            })
-
-        global _api_usage_cache
-        _api_usage_cache["last_updated"] = datetime.now(TZ)
-
-        tokens_used = _api_usage_cache.get("tokens_used", 0)
-        tokens_limit = _api_usage_cache.get("tokens_limit", 1000000)
-        percent_used = round((tokens_used / tokens_limit * 100), 2) if tokens_limit > 0 else 0
-
-        return jsonify({
-            "tokens_used": tokens_used,
-            "tokens_limit": tokens_limit,
-            "tokens_remaining": tokens_limit - tokens_used,
-            "percent_used": percent_used,
-            "percent_remaining": 100 - percent_used,
-            "last_updated": _api_usage_cache["last_updated"].isoformat(),
-            "note": "Usage tracking requires integration with actual API calls in the application"
-        })
-    except Exception as e:
-        log.exception("Error fetching Claude usage")
-        return jsonify({"error": str(e), "tokens_used": 0, "tokens_limit": 1000000}), 500
-
-
 @app.route("/api/lockdown-status")
 def api_lockdown_status():
     is_locked = is_app_locked_down()
@@ -4301,7 +3733,7 @@ def api_sync_run():
     if which and which not in CONNECTORS:
         return jsonify({"error": f"unknown connector: {which}"}), 400
     if which:
-        ok = {"canvas": sync_canvas, "powerschool": sync_powerschool, "whoop": sync_whoop}[which]()
+        ok = {"canvas": sync_canvas, "whoop": sync_whoop}[which]()
         return jsonify({"ok": ok, "results": {which: ok}})
     result = run_full_pipeline()
     return (jsonify(result), 200) if result.get("ok") else (jsonify(result), 409)
@@ -4656,44 +4088,6 @@ def api_canvas_grades():
         return jsonify({"configured": True, "grades": [], "error": str(e)[:200]})
 
 
-@app.route("/api/powerschool/grades")
-def api_powerschool_grades():
-    """Return cached PowerSchool grades. Scrapes live if cache is cold."""
-    if not _ps_configured():
-        return jsonify({"configured": False, "grades": [], "count": 0})
-    grades = ps_grades()
-    return jsonify({"grades": grades, "count": len(grades), "configured": True})
-
-
-@app.route("/api/powerschool/attendance")
-def api_powerschool_attendance():
-    """Return cached PowerSchool attendance summary."""
-    if not _ps_configured():
-        return jsonify({"configured": False, "attendance": {}})
-    att = ps_attendance()
-    return jsonify({"attendance": att, "configured": True})
-
-
-@app.route("/api/powerschool/refresh", methods=["POST"])
-def api_powerschool_refresh():
-    """Force a fresh scrape of PowerSchool data."""
-    if not _ps_configured():
-        return jsonify({"error": "PowerSchool credentials not configured"}), 503
-    grades = ps_refresh_cache()
-    return jsonify({"grades": grades, "count": len(grades), "refreshed": True})
-
-
-@app.route("/api/powerschool/debug")
-def api_powerschool_debug():
-    """Run a fresh screenshot+vision extraction and return the raw result."""
-    if not _ps_configured():
-        return jsonify({"error": "PowerSchool credentials not configured"}), 503
-    with _simple_cache_lock:
-        _simple_cache.pop("ps:data", None)
-    result = _ps_screenshot_and_extract()
-    return jsonify(result)
-
-
 @app.route("/api/diagnostic")
 def api_diagnostic():
     """Health check: database reachable, API key present, connectors configured."""
@@ -4707,10 +4101,8 @@ def api_diagnostic():
     except Exception:
         has_db = False
     return jsonify({
-        "has_api_key": bool(get_config().get("anthropic_api_key", "") or os.environ.get("ANTHROPIC_API_KEY", "")),
         "has_db": has_db,
         "canvas_configured": bool(u_canvas_ical()),
-        "powerschool_configured": _ps_configured(),
         "whoop_connected": _whoop_connected(),
         "scheduler_running": bool(scheduler.running),
         "timezone": str(TZ),
@@ -4908,7 +4300,6 @@ def api_config_get():
     return jsonify({
         "name": cfg.get("name", "Jarvis"),
         "wake_time": cfg.get("wake_time", cfg.get("morning_briefing_time", "07:00")),
-        "has_api_key": bool(cfg.get("anthropic_api_key", "")),
         "formal_signoff_name": cfg.get("formal_signoff_name", "Finley Thomas"),
         "timezone": cfg.get("timezone", "America/Denver"),
         # Calendar URLs (per-user)
@@ -4926,7 +4317,7 @@ def api_config_get():
 def api_config_post():
     data = request.get_json(force=True) or {}
     allowed = {
-        "name", "wake_time", "anthropic_api_key", "formal_signoff_name", "timezone",
+        "name", "wake_time", "formal_signoff_name", "timezone",
         "personal_ical_url", "canvas_ical_url", "canvas_api_token",
         "canvas_base_url", "sports_ical_url", "job_schedule_ical_url",
     }
@@ -4975,32 +4366,18 @@ if not _SKIP_BOOT:
     except Exception as e:
         log.warning(f"Database initialization failed: {e}. Running in limited mode.")
 
-# Seed API key from env var into DB so it persists across deploys
-if not _SKIP_BOOT:
-    try:
-        _env_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if _env_api_key and not get_config().get("anthropic_api_key", ""):
-            set_config({"anthropic_api_key": _env_api_key})
-            log.info("Seeded ANTHROPIC_API_KEY from environment into DB config")
-    except Exception as e:
-        log.warning(f"Could not seed API key: {e}")
-
 def schedule_jobs():
     """Register the data-sync jobs. Cadences mirror the Sync & Feeds page."""
     scheduler.remove_all_jobs()
     # Canvas iCal is cheap — poll it often so assignments stay current.
     scheduler.add_job(sync_canvas, "interval", minutes=15,
                       id="sync_canvas", replace_existing=True)
-    # PowerSchool drives a headless browser, so run it only when grades move:
-    # before school and just after the last period.
-    scheduler.add_job(sync_powerschool, "cron", day_of_week="mon-fri", hour="7,15", minute=12,
-                      id="sync_powerschool", replace_existing=True)
     # WHOOP updates recovery overnight and strain through the day.
     scheduler.add_job(sync_whoop, "interval", minutes=30,
                       id="sync_whoop", replace_existing=True)
     scheduler.add_job(cleanup_old_data, "cron", hour=2, minute=30,
                       id="cleanup_old_data", replace_existing=True)
-    log.info("sync jobs registered (canvas 15m, powerschool weekdays 07:12/15:12, whoop 30m)")
+    log.info("sync jobs registered (canvas 15m, whoop 30m)")
 
 
 # Guard: only start the scheduler in the first/main worker.

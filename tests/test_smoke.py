@@ -672,15 +672,6 @@ def test_canvas_parser_leaves_plain_summary_alone(client):
     assert out[0]["class_name"] == ""
 
 
-def test_ps_login_helpers_are_defined(client):
-    """_ps_md5 / _ps_session_cache / _ps_session_lock were referenced by the
-    PowerSchool login path but never defined — a guaranteed NameError."""
-    _, flask_app = client
-    assert flask_app._ps_md5("abc") == "900150983cd24fb0d6963f7d28e17f72"
-    assert set(flask_app._ps_session_cache) == {"session", "home_url", "expires"}
-    assert flask_app._ps_session_lock is not None
-
-
 def test_sync_run_rejects_unknown_connector(client):
     c, flask_app = client
     with c.session_transaction() as sess:
@@ -690,9 +681,9 @@ def test_sync_run_rejects_unknown_connector(client):
     assert r.status_code == 400
 
 
-def test_connector_state_reports_all_three(client):
+def test_connector_state_reports_both_connectors(client):
     _, flask_app = client
-    assert flask_app.CONNECTORS == ("canvas", "powerschool", "whoop")
+    assert flask_app.CONNECTORS == ("canvas", "whoop")
     for name in flask_app.CONNECTORS:
         st = flask_app._connector_state(name)
         assert set(["name", "label", "configured", "connected", "last_run", "next_run"]) <= set(st)

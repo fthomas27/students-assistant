@@ -1,6 +1,6 @@
 # Schola Registry
 
-A focused academic dashboard for a Park City High School student. Three data
+A focused academic dashboard for a Park City High School student. Two data
 connectors, four pages, no assistant.
 
 ## What this app is
@@ -12,9 +12,9 @@ It answers three questions and nothing else:
 - **Am I rested enough to do it?** — WHOOP recovery, sleep and strain
 
 Everything else that used to live here (an AI assistant, a Telegram bot, tasks,
-projects, stocks, news, weather, reading lists, a parent portal) has been
-removed. If a feature does not serve one of those three questions, it does not
-belong.
+projects, stocks, news, weather, reading lists, a parent portal, a PowerSchool
+scraper) has been removed. If a feature does not serve one of those three
+questions, it does not belong.
 
 ## Tech Stack
 
@@ -22,12 +22,11 @@ belong.
 - **Database**: PostgreSQL via psycopg2 with a threaded connection pool
 - **Calendar parsing**: icalendar + recurring-ical-events
 - **Scheduling**: APScheduler, running data sync only
-- **Scraping**: Playwright + BeautifulSoup for PowerSchool; Claude vision as the
-  extraction fallback when HTML parsing fails
+- **Parsing**: BeautifulSoup, for Canvas' own /grades page
 - **Frontend**: one server-rendered template, no build step, no framework
 - **Auth**: session-based login with admin controls, IP lockout, and Stripe billing
 
-## The three connectors
+## The two connectors
 
 Everything on screen comes from one of these. They are the app's backbone, and
 the Sync & Feeds page exists to show their state.
@@ -35,12 +34,17 @@ the Sync & Feeds page exists to show their state.
 | Connector | Source | Cadence | Gives us |
 |---|---|---|---|
 | **Canvas** | iCal feed + REST (token *or* password login) | every 15 min | assignment titles, due dates, course grades |
-| **PowerSchool** | headless-browser scrape | weekdays 07:12 and 15:12 | weighted grades, attendance — **not currently shown anywhere in the UI** |
 | **WHOOP** | OAuth2 API | every 30 min | recovery, sleep, strain, workouts, heart rate |
 
 Each run is timed and written to `sync_events`, which is what the audit trail on
-Sync & Feeds renders. `run_full_pipeline()` runs all three under a lock so two
+Sync & Feeds renders. `run_full_pipeline()` runs both under a lock so two
 runs can't overlap; it also runs once at boot to warm the caches.
+
+PowerSchool was the third connector. The school stopped using it for anything
+but final transcripts, which this app does not do, so the scraper, its
+Playwright dependency and the Claude vision fallback it needed are gone. That
+also removed the app's last call to the Anthropic API — **nothing here talks to
+an LLM any more**, so there is no `ANTHROPIC_API_KEY` and no usage tracking.
 
 When WHOOP is not connected, a deterministic mock pipeline returns the same
 response shape so the Readiness page still renders. The `mock` flag on those
@@ -51,10 +55,8 @@ numbers as real ones.
 
 All four live in `templates/index.html` as sections toggled by hash routing.
 
-1. **Academic Overview** — course standing from **Canvas only**, today's bell
-   schedule, what needs attention. PowerSchool used to be merged in here by
-   course name, but it names the same courses differently, so nearly every
-   course appeared twice. Do not re-merge them on name.
+1. **Academic Overview** — course standing from Canvas, today's bell schedule,
+   what needs attention
 2. **Assignments & iCal** — the assignment register ordered by real due date,
    with complete/submit actions, plus upcoming calendar events and feed health
 3. **WHOOP & Readiness** — five stat tiles, 7-day recovery and strain charts,
@@ -106,13 +108,11 @@ Required:
 - `SECRET_KEY` - Flask session secret
 
 Optional:
-- `ANTHROPIC_API_KEY` - only used by the PowerSchool vision fallback
 - `APP_PASSWORD`, `ADMIN_PASSWORD`, `AVERAGE_USER`, `ADMIN_USER` - login
 - `CANVAS_ICAL_URL` - Canvas assignment feed (titles + due dates)
 - `CANVAS_BASE_URL` - Canvas root, e.g. `https://pcsd.instructure.com`
 - `CANVAS_API_TOKEN` - personal access token, when the district allows them
 - `CANVAS_USERNAME` / `CANVAS_PASSWORD` - fallback when it doesn't (see below)
-- `POWER_USERN` / `POWER_PASS` / `PS_BASE_URL` - PowerSchool credentials
 - `WHOOP_CLIENT_ID` / `WHOOP_CLIENT_SECRET` / `WHOOP_REDIRECT_URI` - WHOOP OAuth
 - `PERSONAL_ICAL_URL`, `SPORTS_ICAL_URL` - extra calendar feeds
 - `RED_DAY_ICAL_URL`, `WHITE_DAY_ICAL_URL` - Park City bell-schedule feeds
@@ -133,15 +133,13 @@ env var.
 - `POST /api/canvas/configure` - save credentials and immediately test the sign-in
 - `POST /api/canvas/disconnect` - clear stored Canvas credentials
 - `GET /api/canvas/debug` - step-by-step login / `/grades` / API / parse trace
-- `GET /api/powerschool/grades` / `/api/powerschool/attendance` - scraped data
-- `POST /api/powerschool/refresh` - bust the scrape cache
 - `GET /api/whoop/summary` / `/workouts` / `/heart-rate` / `/bedtime` / `/status`
 - `GET|POST /api/fitness/prs` - personal records
 - `GET /api/day-info?date=` / `/api/day-type` - Red/White day and bell schedule
 - `GET /api/stats` - logged minutes, streak, estimate accuracy
 - `GET /api/sync-status` - per-connector state, next run, feed errors
 - `GET /api/sync/events` - audit trail
-- `POST /api/sync/run` - run one connector (`{"connector": "canvas"}`) or all
+- `POST /api/sync/run` - run one connector (`{"connector": "canvas"}`) or both
 - `GET|POST /api/config` - settings
 
 Unconfigured optional connectors answer `200` with `configured: false`, not an

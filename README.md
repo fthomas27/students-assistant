@@ -3,7 +3,7 @@
 A focused academic dashboard: what you're graded on, what's due, and whether
 you're rested enough to do it.
 
-Three connectors feed it — **Canvas**, **PowerSchool**, and **WHOOP** — and four
+Two connectors feed it — **Canvas** and **WHOOP** — and four
 pages render it: Academic Overview, Assignments & iCal, WHOOP & Readiness, and
 Sync & Feeds.
 
@@ -25,7 +25,7 @@ Then open http://127.0.0.1:8000 and sign in with `APP_PASSWORD` (default
 
 ## Connecting the data sources
 
-None of the three are required — the app renders with whatever is configured,
+Neither is required — the app renders with whatever is configured,
 and Sync & Feeds shows the state of each.
 
 - **Canvas** — paste your calendar feed URL in the app, or set `CANVAS_ICAL_URL`.
@@ -34,8 +34,6 @@ and Sync & Feeds shows the state of each.
   with. If your district does issue personal access tokens, set
   `CANVAS_API_TOKEN` instead — it is preferred when present. `GET
   /api/canvas/debug` prints a step-by-step trace if sign-in misbehaves.
-- **PowerSchool** — set `POWER_USERN`, `POWER_PASS`, and `PS_BASE_URL`. Scraped
-  with a headless browser on weekdays at 07:12 and 15:12.
 - **WHOOP** — set `WHOOP_CLIENT_ID` and `WHOOP_CLIENT_SECRET`, then connect from
   the Readiness page. Without it, the page renders sample data, clearly labelled.
 
