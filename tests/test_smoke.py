@@ -4,6 +4,7 @@ These run without a live database. We monkeypatch get_db() to a stub so
 auth / CSRF / route wiring can be exercised in isolation.
 """
 
+import inspect
 import os
 import sys
 import time
@@ -1474,3 +1475,45 @@ def test_canvas_403_does_not_trigger_a_relogin(client, monkeypatch):
 
     assert a._canvas_get("/api/v1/courses/1/assignments") is None
     assert logins["n"] == 1, "one login, and no re-login on the 403"
+
+
+def test_every_route_is_bound_to_a_matching_view(client):
+    """A route decorator must sit on the function it names.
+
+    A helper once got inserted between `@app.route("/api/assignments")` and
+    the view below it, so the decorator landed on the helper and every request
+    to that URL raised TypeError. Flask never notices: it happily registers any
+    callable. Compare each rule's placeholders against the view's own
+    arguments instead.
+    """
+    import re
+    _, a = client
+    for rule in a.app.url_map.iter_rules():
+        view = a.app.view_functions[rule.endpoint]
+        if getattr(view, "__name__", "") in ("static", "<lambda>"):
+            continue
+        params = set(re.findall(r"<(?:[^:<>]+:)?([^<>]+)>", str(rule)))
+        spec = inspect.getfullargspec(view)
+        args = spec.args
+        required = set(args[: len(args) - len(spec.defaults or ())])
+        assert not (required - params), (
+            f"{rule} calls {view.__name__}({', '.join(args)}), which needs "
+            f"arguments the URL does not supply"
+        )
+        assert not (params - set(args)), (
+            f"{rule} supplies {sorted(params - set(args))} to "
+            f"{view.__name__}, which does not accept them"
+        )
+
+
+def test_api_assignments_returns_what_build_assignments_built(client, monkeypatch):
+    c, a = client
+    monkeypatch.setattr(a, "build_assignments", lambda: [
+        {"title": "Lab writeup", "class_name": "Chemistry", "due_iso": "2026-01-09",
+         "done": False, "overdue": False, "source": "api"}])
+    with c.session_transaction() as s:
+        s["authenticated"] = True
+    r = c.get("/api/assignments")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert [x["title"] for x in body["assignments"]] == ["Lab writeup"]

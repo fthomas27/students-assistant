@@ -3894,7 +3894,6 @@ def index():
     return render_template("index.html", tz=str(get_tz()))
 
 
-@app.route("/api/assignments")
 def _assignment_key(a):
     """Identity for de-duplicating the same assignment seen twice.
 
@@ -3972,6 +3971,7 @@ def build_assignments():
     return result
 
 
+@app.route("/api/assignments")
 def api_assignments():
     start = time.time()
     try:
