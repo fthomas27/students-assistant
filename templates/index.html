@@ -300,7 +300,7 @@ table.data td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; 
         <div>
           <div class="crumb"><span class="label">Academic Register</span><span class="chip" id="dayChip">—</span></div>
           <h1 class="display" id="h-register">Calm Academic Ledger</h1>
-          <p class="lede">Course standing across Canvas and PowerSchool, today's bell schedule, and what the week is actually asking of you.</p>
+          <p class="lede">Course standing from Canvas, today's bell schedule, and what the week is actually asking of you.</p>
         </div>
       </div>
       <div class="statrow" id="registerStats"></div>
@@ -308,7 +308,7 @@ table.data td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; 
         <div>
           <section class="panel">
             <div class="panel-head">
-              <div><h2 class="panel-title">Course Standing</h2><p>Live grades, merged across both gradebooks.</p></div>
+              <div><h2 class="panel-title">Course Standing</h2><p>Live course grades from Canvas.</p></div>
               <span class="chip" id="gradeSrc">—</span>
             </div>
             <div class="panel-body flush" id="courseList"><div class="empty">Loading courses…</div></div>
@@ -613,34 +613,23 @@ function bindTableToggle(btnSel, tableSel, chartSel) {
 
 /* ── Page: Academic Overview ───────────────────────────────────────────── */
 LOADERS.register = async function () {
-  const [ps, canvas, assigns, stats, day] = await Promise.all([
-    api("/api/powerschool/grades").catch(() => ({ grades: [] })),
+  const [canvas, assigns, stats, day] = await Promise.all([
     api("/api/canvas/grades").catch(() => ({ grades: [], configured: false })),
     api("/api/assignments").catch(() => ({ assignments: [] })),
     api("/api/stats").catch(() => ({})),
     api("/api/day-info?date=" + todayISO()).catch(() => ({})),
   ]);
 
-  // Merge the two gradebooks on course name; PowerSchool wins where both have it.
-  const byName = new Map();
+  // Canvas only. PowerSchool names the same courses differently, so merging the
+  // two gradebooks listed most of them twice.
+  const byId = new Map();
   (canvas.grades || []).forEach(g => {
     if (!g.course) return;
-    byName.set(g.course.toLowerCase(), {
-      course: g.course, teacher: "", pct: g.current_score,
-      letter: g.current_grade || "", src: "Canvas",
+    byId.set(g.course_id != null ? g.course_id : g.course.toLowerCase(), {
+      course: g.course, pct: g.current_score, letter: g.current_grade || "",
     });
   });
-  (ps.grades || []).forEach(g => {
-    const k = (g.course || "").toLowerCase();
-    const prev = byName.get(k) || {};
-    byName.set(k, {
-      course: g.course, teacher: g.teacher || prev.teacher || "",
-      pct: g.grade_pct != null ? g.grade_pct : prev.pct,
-      letter: g.grade_letter || prev.letter || "",
-      absences: g.absences, src: prev.src ? "Both" : "PowerSchool",
-    });
-  });
-  const courses = [...byName.values()].sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
+  const courses = [...byId.values()].sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
   const withPct = courses.filter(c => typeof c.pct === "number");
   // A course counts as graded on a letter alone; this school publishes letters
   // without percentages for most courses.
@@ -670,19 +659,11 @@ LOADERS.register = async function () {
   $("#dayChip").className = "chip " + (day.is_school_day ? "ok" : "");
 
 
-  const srcs = new Set();
-  courses.forEach(c => {
-    if (c.src === "Both") { srcs.add("Canvas"); srcs.add("PowerSchool"); }
-    else if (c.src) srcs.add(c.src);
-  });
-  $("#gradeSrc").textContent = srcs.size ? [...srcs].join(" + ") : "No source";
+  $("#gradeSrc").textContent = courses.length ? "Canvas" : "No source";
 
   $("#courseList").innerHTML = courses.length ? courses.map(c => {
     const pct = typeof c.pct === "number" ? c.pct : null;
     return '<div class="row"><div class="grow"><div class="t">' + esc(c.course) + '</div>' +
-      '<div class="m">' + (c.teacher ? '<span>' + esc(c.teacher) + '</span>' : '') +
-      '<span class="chip">' + esc(c.src) + '</span>' +
-      (c.absences ? '<span>' + esc(c.absences) + ' absences</span>' : '') + '</div>' +
       (pct != null ? '<div class="gradebar"><i style="width:' + Math.max(0, Math.min(100, pct)) + '%"></i></div>' : '') +
       '</div><div style="text-align:right;flex:none">' +
       '<div class="gradepair">' +
@@ -691,8 +672,9 @@ LOADERS.register = async function () {
                   : (pct == null ? '<span class="letterv">—</span>' : '')) +
       '</div>' +
       '</div></div>';
-  }).join("") : emptyState(canvas.configured || (ps.grades || []).length
-      ? "No course grades reported yet." : "Connect Canvas or PowerSchool on Sync & Feeds to see grades.");
+  }).join("") : emptyState(canvas.configured
+      ? "No course grades reported yet."
+      : "Connect Canvas on Sync & Feeds to see grades.");
 
   $("#todaySub").textContent = day.is_school_day && day.school_start
     ? day.school_start + " – " + day.school_end : "No classes scheduled today.";

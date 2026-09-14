@@ -7,7 +7,7 @@ connectors, four pages, no assistant.
 
 It answers three questions and nothing else:
 
-- **What am I being graded on?** — course standing from Canvas and PowerSchool
+- **What am I being graded on?** — course standing from Canvas
 - **What is due, and when?** — Canvas assignments plus surrounding calendar feeds
 - **Am I rested enough to do it?** — WHOOP recovery, sleep and strain
 
@@ -35,7 +35,7 @@ the Sync & Feeds page exists to show their state.
 | Connector | Source | Cadence | Gives us |
 |---|---|---|---|
 | **Canvas** | iCal feed + REST (token *or* password login) | every 15 min | assignment titles, due dates, course grades |
-| **PowerSchool** | headless-browser scrape | weekdays 07:12 and 15:12 | weighted grades, attendance |
+| **PowerSchool** | headless-browser scrape | weekdays 07:12 and 15:12 | weighted grades, attendance — **not currently shown anywhere in the UI** |
 | **WHOOP** | OAuth2 API | every 30 min | recovery, sleep, strain, workouts, heart rate |
 
 Each run is timed and written to `sync_events`, which is what the audit trail on
@@ -51,8 +51,10 @@ numbers as real ones.
 
 All four live in `templates/index.html` as sections toggled by hash routing.
 
-1. **Academic Overview** — course standing merged across both gradebooks
-   (PowerSchool wins on conflict), today's bell schedule, what needs attention
+1. **Academic Overview** — course standing from **Canvas only**, today's bell
+   schedule, what needs attention. PowerSchool used to be merged in here by
+   course name, but it names the same courses differently, so nearly every
+   course appeared twice. Do not re-merge them on name.
 2. **Assignments & iCal** — the assignment register ordered by real due date,
    with complete/submit actions, plus upcoming calendar events and feed health
 3. **WHOOP & Readiness** — five stat tiles, 7-day recovery and strain charts,
