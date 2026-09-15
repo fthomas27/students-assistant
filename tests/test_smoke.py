@@ -702,11 +702,13 @@ _CANVAS_LOGIN_HTML = (
 
 
 class _Resp:
-    def __init__(self, text="", status=200, json_data=None, url="https://pcsd.instructure.com/"):
+    def __init__(self, text="", status=200, json_data=None,
+                 url="https://pcsd.instructure.com/", headers=None):
         self.text = text
         self.status_code = status
         self._json = json_data
         self.url = url
+        self.headers = headers or {}
 
     def json(self):
         if self._json is None:
@@ -1517,3 +1519,132 @@ def test_api_assignments_returns_what_build_assignments_built(client, monkeypatc
     assert r.status_code == 200
     body = r.get_json()
     assert [x["title"] for x in body["assignments"]] == ["Lab writeup"]
+
+
+# ── Canvas planner: the dashboard's own assignment list ──────────────────
+
+
+def _planner_row(pid, ptype, title, due, course="AP US GOV", pts=10, subs=None):
+    return {
+        "plannable_id": pid, "plannable_type": ptype, "context_name": course,
+        "plannable_date": due,
+        "plannable": {"id": pid, "title": title, "due_at": due, "points_possible": pts},
+        "submissions": {"submitted": False} if subs is None else subs,
+        "html_url": f"/courses/1/assignments/{pid}",
+    }
+
+
+def _soon(days):
+    """A UTC timestamp `days` from now, so the range filter always keeps it."""
+    from datetime import timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_planner_sends_the_observed_user_id(client, monkeypatch):
+    """An observer's own planner is empty; the observed student's id is what
+    makes Canvas return the student's work."""
+    _, a = client
+    seen = {}
+
+    def fake_paged(path, params=None, **kw):
+        seen[path] = dict(params or {})
+        return [_planner_row(1, "assignment", "Fed 51 Analysis", _soon(2))]
+
+    monkeypatch.setattr(a, "_canvas_get_paged", fake_paged)
+    monkeypatch.setattr(a, "canvas_observee_id", lambda: 4242)
+    monkeypatch.setattr(a, "_cache_get", lambda *args, **kw: None)
+    monkeypatch.setattr(a, "_cache_set_if_any", lambda key, v: v)
+    monkeypatch.setattr(a, "u_canvas_base_url", lambda: "https://x.instructure.com")
+
+    out = a.canvas_planner_assignments()
+    assert seen["/api/v1/planner/items"]["observed_user_id"] == 4242
+    assert [x["title"] for x in out] == ["Fed 51 Analysis"]
+    assert out[0]["html_url"] == "https://x.instructure.com/courses/1/assignments/1"
+
+
+def test_planner_keeps_graded_work_and_drops_notes(client, monkeypatch):
+    _, a = client
+    rows = [
+        _planner_row(1, "assignment", "Unit 1 Vocab & How-To", _soon(1)),
+        _planner_row(2, "quiz", "Unit 1 Quiz", _soon(3)),
+        _planner_row(3, "planner_note", "buy a binder", _soon(1)),
+        _planner_row(4, "calendar_event", "Class meeting", _soon(1)),
+    ]
+    monkeypatch.setattr(a, "_canvas_get_paged", lambda *args, **kw: rows)
+    monkeypatch.setattr(a, "canvas_observee_id", lambda: None)
+    monkeypatch.setattr(a, "_cache_get", lambda *args, **kw: None)
+    monkeypatch.setattr(a, "_cache_set_if_any", lambda key, v: v)
+    monkeypatch.setattr(a, "u_canvas_base_url", lambda: "https://x.instructure.com")
+
+    assert sorted(x["title"] for x in a.canvas_planner_assignments()) == [
+        "Unit 1 Quiz", "Unit 1 Vocab & How-To"]
+
+
+def test_planner_survives_submissions_being_false(client, monkeypatch):
+    """Canvas sends `submissions: false`, not an object, for an item that
+    cannot be submitted. Calling .get() on that is an AttributeError."""
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_get_paged", lambda *args, **kw: [
+        _planner_row(1, "assignment", "Reading", _soon(1), subs=False)])
+    monkeypatch.setattr(a, "canvas_observee_id", lambda: None)
+    monkeypatch.setattr(a, "_cache_get", lambda *args, **kw: None)
+    monkeypatch.setattr(a, "_cache_set_if_any", lambda key, v: v)
+    monkeypatch.setattr(a, "u_canvas_base_url", lambda: "https://x.instructure.com")
+
+    out = a.canvas_planner_assignments()
+    assert len(out) == 1 and out[0]["submitted"] is False
+
+
+def test_planner_carries_the_list_when_every_course_refuses_the_api(client, monkeypatch):
+    """The real observer failure: /courses/<id>/assignments 403s for each
+    course, so the per-course API returns an empty list with no error."""
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_configured", lambda: True)
+    monkeypatch.setattr(a, "u_canvas_ical", lambda: "")
+    monkeypatch.setattr(a, "canvas_assignments_api", lambda: [])
+    monkeypatch.setattr(a, "canvas_planner_assignments", lambda: [
+        {"uid": "canvas-1", "title": "Fed 51 Analysis", "class_name": "AP US GOV",
+         "due_iso": "2026-09-17T23:59:00-06:00", "overdue": False}])
+    monkeypatch.setattr(a, "estimate_assignment", lambda t, c: 30)
+
+    out = a.build_assignments()
+    assert [x["title"] for x in out] == ["Fed 51 Analysis"]
+    assert out[0]["source"] == "planner"
+
+
+def test_planner_and_ical_are_unioned_not_chosen_between(client, monkeypatch):
+    _, a = client
+    monkeypatch.setattr(a, "_canvas_configured", lambda: True)
+    monkeypatch.setattr(a, "canvas_assignments_api", lambda: [])
+    monkeypatch.setattr(a, "canvas_planner_assignments", lambda: [
+        {"uid": "canvas-1", "title": "Fed 51 Analysis", "class_name": "AP US GOV",
+         "due_iso": "2026-09-17T23:59:00-06:00", "overdue": False}])
+    monkeypatch.setattr(a, "u_canvas_ical", lambda: "https://x/feed.ics")
+    monkeypatch.setattr(a, "fetch_ical", lambda url: object())
+    monkeypatch.setattr(a, "get_canvas_assignments_with_overdue", lambda cal: [
+        # Same assignment the planner already has, plus one only the feed knows.
+        {"uid": "ical-1", "title": "fed 51 analysis", "class_name": "AP US GOV",
+         "due_iso": "2026-09-17T23:59:00-06:00", "overdue": False},
+        {"uid": "ical-2", "title": "Lab Safety Quiz", "class_name": "Chemistry",
+         "due_iso": "2026-09-18T23:59:00-06:00", "overdue": False},
+    ])
+    monkeypatch.setattr(a, "estimate_assignment", lambda t, c: 30)
+
+    out = a.build_assignments()
+    assert [x["title"] for x in out] == ["Fed 51 Analysis", "Lab Safety Quiz"]
+    assert out[0]["source"] == "planner+ical"
+
+
+def test_paging_follows_the_link_header(client, monkeypatch):
+    """Canvas caps per_page and puts the continuation in a header, so a single
+    GET truncates a long list without reporting anything."""
+    _, a = client
+    pages = {
+        "/api/v1/planner/items": _Resp(
+            json_data=[{"n": 1}],
+            headers={"Link": '<https://x.instructure.com/api/v1/planner/items?page=2>; rel="next"'}),
+        "https://x.instructure.com/api/v1/planner/items?page=2": _Resp(json_data=[{"n": 2}]),
+    }
+    monkeypatch.setattr(a, "_canvas_request",
+                        lambda path, params=None, **kw: pages.get(path))
+    assert a._canvas_get_paged("/api/v1/planner/items") == [{"n": 1}, {"n": 2}]

@@ -1429,19 +1429,25 @@ def _canvas_invalidate_session():
         _canvas_session_cache["expires"] = 0.0
 
 
-def _canvas_get(path, params=None, timeout=12, _retry=True):
-    """GET a Canvas JSON endpoint using whichever auth mode is configured."""
+def _canvas_request(path, params=None, timeout=12, _retry=True):
+    """GET a Canvas endpoint using whichever auth mode is configured.
+
+    Returns the response itself rather than its body, because Canvas puts
+    paging in the Link header — a caller that only ever sees `.json()` cannot
+    tell a complete list from a truncated first page.
+    """
     mode = _canvas_auth_mode()
     if mode is None:
         return None
-    url = u_canvas_base_url() + (path if path.startswith("/") else "/" + path)
+    url = path if path.startswith("http") else (
+        u_canvas_base_url() + (path if path.startswith("/") else "/" + path))
 
     if mode == "token":
         headers = {"Authorization": "Bearer " + u_canvas_api_token(), "Accept": "application/json"}
         try:
             resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
             resp.raise_for_status()
-            return resp.json()
+            return resp
         except Exception as e:
             log.warning("Canvas API GET %s failed: %s", path, e)
             return None
@@ -1462,14 +1468,57 @@ def _canvas_get(path, params=None, timeout=12, _retry=True):
         if resp.status_code == 401 or _canvas_looks_like_login_page(resp.text[:2000]):
             _canvas_invalidate_session()
             if _retry:
-                return _canvas_get(path, params=params, timeout=timeout, _retry=False)
+                return _canvas_request(path, params=params, timeout=timeout, _retry=False)
             _canvas_login_error_set("session rejected twice; giving up for this cycle")
             return None
         resp.raise_for_status()
-        return resp.json()
+        return resp
     except Exception as e:
         log.warning("Canvas session GET %s failed: %s", path, e)
         return None
+
+
+def _canvas_get(path, params=None, timeout=12, _retry=True):
+    """GET a Canvas JSON endpoint and hand back the decoded body."""
+    resp = _canvas_request(path, params=params, timeout=timeout, _retry=_retry)
+    if resp is None:
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        log.warning("Canvas GET %s did not return JSON", path)
+        return None
+
+
+_LINK_NEXT_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
+
+
+def _canvas_get_paged(path, params=None, timeout=15, max_pages=10):
+    """GET a Canvas list endpoint, following its Link-header paging.
+
+    per_page is capped server-side, and the continuation lives in a header
+    rather than the body, so a single GET truncates a long list without saying
+    so. The page cap is a stop against a cycle, not a real limit.
+    """
+    out, url, page_params = [], path, dict(params or {})
+    for _ in range(max_pages):
+        resp = _canvas_request(url, params=page_params, timeout=timeout)
+        if resp is None:
+            break
+        try:
+            rows = resp.json()
+        except ValueError:
+            break
+        if not isinstance(rows, list) or not rows:
+            break
+        out.extend(rows)
+        link = (getattr(resp, "headers", None) or {}).get("Link", "") or ""
+        nxt = _LINK_NEXT_RE.search(link)
+        if not nxt:
+            break
+        # The next URL already carries its own query string.
+        url, page_params = nxt.group(1), {}
+    return out
 
 
 def canvas_courses():
@@ -1512,6 +1561,105 @@ def _canvas_assignment_urgency(due_utc, now_utc):
     if delta < 259200:
         return "medium"
     return "low"
+
+
+def _canvas_due(raw):
+    """Parse a Canvas timestamp into an aware UTC datetime, or None."""
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def canvas_observee_id():
+    """The student this login observes, when it is an observer account.
+
+    An observer's planner is their own, and it is empty; the observed
+    student's id has to ride along on the request for the planner to return
+    that student's work. A real student login has no observees, so this is
+    None and the parameter is simply left off.
+    """
+    cached = _cache_get("canvas:observee", CANVAS_COURSES_TTL)
+    if cached:
+        return cached
+    rows = _canvas_get("/api/v1/users/self/observees", params={"per_page": 10})
+    if not isinstance(rows, list):
+        return None
+    oid = next((r.get("id") for r in rows if isinstance(r, dict) and r.get("id")), None)
+    if not oid:
+        return None
+    return _cache_set_if_any("canvas:observee", oid)
+
+
+# Planner rows that represent graded work. planner_note and calendar_event are
+# also planner items, but they belong on the calendar, not the register.
+_PLANNER_GRADED = {"assignment", "quiz", "discussion_topic", "sub_assignment"}
+
+
+def canvas_planner_assignments(days_back=60, days_ahead=45):
+    """Assignments from Canvas' planner — the list the dashboard itself shows.
+
+    This is the most complete source available to an observer login.
+    /api/v1/courses/<id>/assignments is authorised per course and gets refused
+    for some of them, so it returns a partial list with no error; the planner
+    is served for the observed student as a whole and carries the course name,
+    due date, points and submission state already.
+    """
+    cached = _cache_get("canvas:planner", CANVAS_ASSIGNMENT_TTL)
+    if cached is not None:
+        return cached
+
+    now = datetime.now(ZoneInfo("UTC"))
+    lo, hi = now - timedelta(days=days_back), now + timedelta(days=days_ahead)
+    params = {
+        "start_date": lo.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end_date": hi.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "per_page": 100,
+    }
+    observee = canvas_observee_id()
+    rows = _canvas_get_paged(
+        "/api/v1/planner/items",
+        params={**params, "observed_user_id": observee} if observee else params)
+    if not rows and observee:
+        # Some Canvas installs refuse observed_user_id outright. Without it an
+        # observer usually gets nothing, but a student login gets everything,
+        # so it is still worth one try before giving up on the planner.
+        rows = _canvas_get_paged("/api/v1/planner/items", params=params)
+
+    base = u_canvas_base_url().rstrip("/")
+    out = []
+    for r in rows:
+        if not isinstance(r, dict) or r.get("plannable_type") not in _PLANNER_GRADED:
+            continue
+        p = r.get("plannable") if isinstance(r.get("plannable"), dict) else {}
+        due = _canvas_due(p.get("due_at") or r.get("plannable_date"))
+        if due is None or due < lo or due > hi:
+            continue
+        local = due.astimezone(TZ)
+        # `submissions` is an object when the item is submittable and the
+        # literal false when it is not — never assume a dict.
+        sub = r.get("submissions") if isinstance(r.get("submissions"), dict) else {}
+        overdue = due < now
+        url = r.get("html_url") or ""
+        out.append({
+            "uid": f"canvas-{r.get('plannable_id') or p.get('id')}",
+            "title": (p.get("title") or p.get("name") or "Untitled").strip(),
+            "class_name": (r.get("context_name") or "").strip(),
+            "description": "",
+            "due_iso": local.isoformat(),
+            "due_display": local.strftime("%A, %-m/%-d/%Y, at %-I:%M %p (%Z)"),
+            "urgency": "high" if overdue else _canvas_assignment_urgency(due, now),
+            "overdue": overdue,
+            "html_url": (base + url) if url.startswith("/") else url,
+            "points_possible": p.get("points_possible"),
+            "submitted": bool(sub.get("submitted")) or bool(sub.get("excused")),
+            "score": None,
+        })
+
+    out.sort(key=lambda x: x["due_iso"])
+    return _cache_set_if_any("canvas:planner", out)
 
 
 def canvas_assignments_api(days_back=60, days_ahead=45):
@@ -3906,41 +4054,50 @@ def _assignment_key(a):
 def build_assignments():
     """Canvas assignments with estimates and completion state applied.
 
-    Source order: the Canvas REST API when we can sign in, otherwise the iCal
-    feed. The API is richer (points, submission state, links), keeps past-due
-    work, and needs no separate feed URL. Raises when neither is available.
+    Three sources are unioned, never chosen between: the planner (what the
+    Canvas dashboard itself lists), the per-course REST API, and the iCal
+    feed. Each is incomplete in its own way for an observer login, and none
+    of them reports the gap as an error. Raises only when none is available.
     """
-    api_items, ical_items = [], []
+    sources = []
     if _canvas_configured():
-        try:
-            api_items = canvas_assignments_api()
-        except Exception as e:
-            log.warning("Canvas assignment API failed: %s", e)
+        # Planner first: it is the observed student's own list, so it wins a
+        # collision. The per-course API is authorised course by course and
+        # quietly returns a partial list when some of them refuse.
+        for name, fetch in (("planner", canvas_planner_assignments),
+                            ("api", canvas_assignments_api)):
+            try:
+                rows = fetch()
+            except Exception as e:
+                log.warning("Canvas %s assignments failed: %s", name, e)
+                continue
+            if rows:
+                sources.append((name, rows))
     if u_canvas_ical():
         try:
             cal = fetch_ical(u_canvas_ical())
             if cal is not None:
-                ical_items = get_canvas_assignments_with_overdue(cal)
+                rows = get_canvas_assignments_with_overdue(cal)
+                if rows:
+                    sources.append(("ical", rows))
         except Exception as e:
             log.warning("Canvas iCal fetch failed: %s", e)
 
-    if not api_items and not ical_items:
+    if not sources:
         if _canvas_configured() or u_canvas_ical():
             return []          # connected, genuinely nothing due
         raise RuntimeError("Canvas is not configured: no login and no iCal feed URL.")
 
-    # Union rather than either/or: the API can be refused for some courses
-    # while the feed still carries them, and vice versa. API rows win on a
-    # collision because they carry points, links and submission state.
-    items, seen = list(api_items), {_assignment_key(a) for a in api_items}
-    for a in ical_items:
-        k = _assignment_key(a)
-        if k not in seen:
+    items, seen = [], set()
+    for _name, rows in sources:
+        for a in rows:
+            k = _assignment_key(a)
+            if k in seen:
+                continue
             seen.add(k)
             items.append(a)
     items.sort(key=lambda x: x.get("due_iso") or "")
-    source = ("api+ical" if api_items and ical_items
-              else "api" if api_items else "ical")
+    source = "+".join(name for name, _rows in sources)
 
     conn = get_db()
     cur = conn.cursor()
@@ -4476,6 +4633,23 @@ def api_canvas_debug():
         })
     out["assignments_per_course"] = per_course
 
+    # The planner is the dashboard's own list and the one an observer can
+    # actually read in full, so report it separately from the per-course API.
+    observee = canvas_observee_id()
+    planner_raw = _canvas_get_paged("/api/v1/planner/items", params={
+        "per_page": 100,
+        **({"observed_user_id": observee} if observee else {})})
+    planner_items = canvas_planner_assignments()
+    out["steps"].append({
+        "step": "planner", "ok": bool(planner_items),
+        "detail": (("observing user " + str(observee)) if observee
+                   else "not an observer account (no observed_user_id sent)")
+                  + f"; {len(planner_raw)} planner rows, "
+                  + f"{len(planner_items)} of them graded work in range",
+    })
+    out["planner_types"] = sorted({
+        r.get("plannable_type") for r in planner_raw if isinstance(r, dict)} - {None})
+
     api_items = canvas_assignments_api()
     ical_url = u_canvas_ical()
     ical_n = 0
@@ -4493,7 +4667,7 @@ def api_canvas_debug():
         build_err = None
     out["steps"].append({
         "step": "assignments", "ok": bool(built),
-        "detail": (f"api={len(api_items)} ical="
+        "detail": (f"planner={len(planner_items)} api={len(api_items)} ical="
                    + ("not configured" if not ical_url else
                       "fetch failed" if ical_n < 0 else str(ical_n))
                    + f" merged={len(built)}"

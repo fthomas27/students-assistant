@@ -260,27 +260,49 @@ What the live page actually looks like, and what the parser must handle:
 
 ## Assignments
 
-`build_assignments()` **unions** two sources rather than choosing one:
+`build_assignments()` **unions** three sources rather than choosing between
+them, in this precedence order:
 
-1. `canvas_assignments_api()` — `/api/v1/courses/<id>/assignments` per active
-   course. Richer (points, links, submission state) and it keeps past-due work.
-2. The iCal feed, via `get_canvas_assignments_with_overdue()`.
+1. `canvas_planner_assignments()` — `/api/v1/planner/items`, the list Canvas'
+   own dashboard renders in List View. **This is the one that works for an
+   observer**, and it is the primary source for the same reason `/grades` is
+   the primary source for grades: it is served for the *observed student*,
+   not for the observer's own account.
+2. `canvas_assignments_api()` — `/api/v1/courses/<id>/assignments` per active
+   course. Richer (description, links) but authorised course by course.
+3. The iCal feed, via `get_canvas_assignments_with_overdue()`.
 
 They are merged and de-duplicated on `(title, due date)` by `_assignment_key()`,
-with API rows winning a collision. Either/or was wrong: an observer login is
-refused the assignment list for *some* courses, so a partial API result would
-silently suppress everything the feed carried. The result records which sources
-contributed in `source` (`api`, `ical`, or `api+ical`).
+earlier sources winning a collision. Either/or was wrong: an observer login is
+refused the assignment list for *some* courses — at Park City, for all of them
+— so a partial API result would silently suppress everything the other sources
+carried. The result records which sources contributed in `source`, e.g.
+`planner`, `planner+ical`, `planner+api+ical`.
 
-Two observer-specific behaviours to keep:
+Observer-specific behaviours to keep:
 
+- **The planner needs `observed_user_id`.** `canvas_observee_id()` reads
+  `/api/v1/users/self/observees`; without that parameter Canvas returns the
+  *observer's* planner, which is empty. A student login has no observees, the
+  parameter is left off, and the planner still returns their own work. If an
+  install rejects the parameter, the fetch retries once without it.
+- **`submissions` is `false`, not `{}`, for an item that can't be submitted.**
+  Calling `.get()` on it is an AttributeError, which kills the whole fetch.
+- **Planner paging lives in the `Link` header.** `_canvas_get_paged()` follows
+  `rel="next"`; a single GET silently returns only the first page. This is why
+  `_canvas_request()` hands back the response and `_canvas_get()` unwraps it —
+  a caller that only ever sees `.json()` cannot tell truncated from complete.
 - `include[]=submission` is often refused for an observer, which fails the whole
   per-course request. The fetch retries once without the include.
 - Courses the account cannot read return 403 and are simply skipped.
+- Planner rows are filtered to graded work (`_PLANNER_GRADED`); `planner_note`
+  and `calendar_event` are planner items too, but they belong on the calendar.
 
-`GET /api/canvas/debug` reports assignments per course — what each returned,
-whether the submission include was refused, and the api/ical/merged counts —
-so a short list can be traced to the course that refused rather than guessed at.
+`GET /api/canvas/debug` reports the observee id, the planner row count and the
+`plannable_type`s it saw, then assignments per course — what each returned,
+whether the submission include was refused — and the planner/api/ical/merged
+counts, so a short list can be traced to the source that came up empty rather
+than guessed at.
 
 `GET /api/canvas/debug?raw=1` dumps the first table's markup even when parsing
 succeeded, which is how to fix what it got *wrong* rather than what it missed.
